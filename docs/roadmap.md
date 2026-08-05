@@ -10,7 +10,7 @@
 |------|------|------|
 | NETSTACK2-000 | **Completed** | 开仓 + 测试底座, commit `628eb60`, tag `v0.1.0` |
 | NETSTACK2-001 | Planned | P0 测量框架, 不阻塞 002–004 |
-| NETSTACK2-002 | **In Progress** | Buffer 与 Packet I/O 契约 |
+| NETSTACK2-002 | **Completed** | Buffer 与 Packet I/O 契约, commit `8e20940` |
 | NETSTACK2-003 | Blocked by 002 | Linux TapPacketIo |
 | NETSTACK2-004 | Blocked by 003 | Dispatcher 与 StackShard |
 | NETSTACK2-API-FREEZE-001 | Blocked by 002–004 | 精确冻结公共 API |
@@ -23,6 +23,7 @@
 | 里程碑 | commit | tag |
 |------|--------|-----|
 | NETSTACK2-000 | `628eb60` | `v0.1.0`(annotated) |
+| NETSTACK2-002 | `8e20940` | 无(tag 留给 v0.2.0) |
 
 规则:
 
@@ -56,7 +57,7 @@ pool miss、queue drop、RTT×丢包矩阵、1/2/4/8/16 核扩展)。
 
 门禁: 协议与数据格式固定; run 脚本可复现。
 
-### NETSTACK2-002: Buffer 和 Packet I/O (In Progress)
+### NETSTACK2-002: Buffer 和 Packet I/O (Completed)
 
 范围: PktBuffer; PktBufferPool; BufferLease(move-only, noexcept, 析构归还
 owner pool, 跨线程归还走 owner return queue); BufferSlice(trivially
@@ -67,11 +68,16 @@ buffer 上限和统计。
 
 前置: NETSTACK2-000。
 
-门禁: 所有 buffer 测试从占位变为真实实现; ASan/UBSan 全绿; TSan 全绿;
-泄漏为 0; double-release 可检测(death test); 热路径无每包 atomic refcount。
+门禁(已全部通过): 所有 buffer 测试从占位变为真实实现; 普通/ASan/UBSan/
+TSan 全绿; 泄漏为 0; double-release 可检测(death test, 含 queued 状态);
+热路径无每包 atomic refcount; include-boundary 与 consumer TU 通过;
+`git diff --check` 通过。
 
-当前文件: `include/tcpip2/packet_io.h`、`src/packetio/null_io.cpp`、
-`tests/unit/buffer_pool_test.cpp`(未提交, 完成门禁后单独提交)。
+实现文件(commit `8e20940`, 未打 tag): `include/tcpip2/buffer.h`、
+`include/tcpip2/packet_io.h`、`src/core/buffer_pool.cpp`、
+`src/packetio/null_io.cpp`、`tests/unit/buffer_pool_test.cpp`、
+`tests/unit/packet_io_contract_test.cpp`、`tests/unit/shard_ownership_test.cpp`、
+`tests/unit/compile_contract_test.cpp`。
 
 ### NETSTACK2-003: Linux TapPacketIo (Blocked by 002)
 
@@ -142,8 +148,6 @@ P7 性能和功耗调优
   不阻塞 000/001。恢复流程: 获取 host key → 与官方 fingerprint 核验 →
   写入 `known_hosts` → `ssh -T git@github.com` → `git ls-remote` → 创建推送仓库。
   禁止将本地绝对路径写入 `.gitmodules`。
-* **NETSTACK2-002 未提交**: 三个文件已改动但未提交, 待实现和门禁完整后
-  单独提交, 不并入架构文档提交。
 * **lwIP 保留**: 迁移期间 lwIP 保留为回退路径; 同一运行实例只启用一个
   TCP/IP engine, 切换在启动阶段完成, 不做运行中热切换。
 
