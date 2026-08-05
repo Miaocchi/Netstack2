@@ -1,0 +1,23 @@
+# Build artifacts
+/build/
+/build-asan/
+/build-tsan/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.obj
+*.pch
+*.gch
+*.out
+
+# Tooling
+.cache/
+compile_commands.json
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

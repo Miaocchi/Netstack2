@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "netstack2-bench-record",
+  "title": "Netstack2 P0 benchmark record",
+  "description": "One benchmark run result. Written to runs/<ts>/record.json; immutable once committed.",
+  "type": "object",
+  "required": ["schema_version", "scenario", "git_rev", "date_utc", "metrics"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "scenario": {
+      "type": "string",
+      "enum": ["null-rx", "null-tx", "pool-alloc-release", "timer-wheel-advance", "shard-dispatch"]
+    },
+    "git_rev": { "type": "string", "description": "Commit the benchmark ran against" },
+    "date_utc": { "type": "string", "format": "date-time" },
+    "params": {
+      "type": "object",
+      "description": "Scenario inputs (queue count, slot count, packet size, etc.)",
+      "additionalProperties": true
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ops_per_sec": { "type": "number", "exclusiveMinimum": 0 },
+        "bytes_per_sec": { "type": "number", "exclusiveMinimum": 0 },
+        "p50_us": { "type": "number", "exclusiveMinimum": 0 },
+        "p99_us": { "type": "number", "exclusiveMinimum": 0 },
+        "cpu_util_pct": { "type": "number", "minimum": 0, "maximum": 100 }
+      },
+      "minProperties": 1
+    },
+    "note": { "type": "string" }
+  }
+}

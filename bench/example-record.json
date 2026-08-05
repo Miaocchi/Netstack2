@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "scenario": "pool-alloc-release",
+  "git_rev": "HEAD",
+  "date_utc": "2026-08-05T00:00:00Z",
+  "params": { "slot_count": 4096, "slot_capacity": 2048, "threads": 1 },
+  "metrics": { "ops_per_sec": 0.0, "p50_us": 0.0 },
+  "note": "Example record for run_p0.sh skeleton validation; not a real measurement."
+}

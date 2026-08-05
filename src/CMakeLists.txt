@@ -1,0 +1,24 @@
+# The libtcpip2 core. Sources are listed explicitly — no glob. The library
+# depends only on the C++ standard library (plus pthreads via Threads).
+
+include(../cmake/compiler_flags.cmake)
+
+add_library(tcpip2 STATIC
+    core/buffer.cpp
+    core/buffer_pool.cpp
+    core/thread_ownership.cpp
+    core/timer_wheel.cpp
+    packetio/null_io.cpp
+)
+
+add_library(tcpip2::tcpip2 ALIAS tcpip2)
+tcpip2_apply_common(tcpip2)
+
+target_include_directories(tcpip2 PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
+    "$<INSTALL_INTERFACE:include>"
+)
+
+find_package(Threads REQUIRED)
+target_link_libraries(tcpip2 PUBLIC Threads::Threads)
