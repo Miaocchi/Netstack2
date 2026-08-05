@@ -6,7 +6,10 @@
  * Fixed-size pool with internally synchronized allocation/release. Slot
  * states are tracked so double release and invalid transitions abort
  * (death-tested). Release may occur on any thread; the buffer is routed back
- * to the pool that owns it.
+ * to the pool that owns it. Buffers returned on a foreign thread are parked
+ * in an owner return queue (still counted as outstanding) and freed by
+ * DrainReturnQueue() on the owner thread; Allocate() drains lazily when the
+ * free list runs empty.
  */
 
 #include <tcpip2/buffer.h>
@@ -16,6 +19,7 @@
 #include <cstdlib>
 #include <mutex>
 #include <new>
+#include <thread>
 #include <vector>
 
 namespace tcpip2 {
@@ -31,7 +35,8 @@ PktBufferPool::PktBufferPool(std::size_t slot_count, std::size_t slot_capacity)
     : slot_count_(slot_count),
       slots_(slot_count),
       states_(slot_count, SlotState::Free),
-      arena_(new (std::nothrow) std::uint8_t[slot_count * slot_capacity]) {
+      arena_(new (std::nothrow) std::uint8_t[slot_count * slot_capacity]),
+      owner_thread_id_(std::this_thread::get_id()) {
     free_slots_.reserve(slot_count);
     if (arena_ != nullptr) {
         for (std::size_t i = 0; i < slot_count; ++i) {
@@ -49,6 +54,9 @@ PktBufferPool::~PktBufferPool() = default;
 
 BufferLease PktBufferPool::Allocate() {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (free_slots_.empty() && !return_queue_.empty()) {
+        DrainLocked();
+    }
     if (free_slots_.empty()) return {};
     const std::size_t idx = free_slots_.back();
     free_slots_.pop_back();
@@ -80,11 +88,16 @@ void PktBufferPool::Unpin(BufferRef ref) {
     std::lock_guard<std::mutex> lock(mutex_);
     const std::size_t idx = p->slot_;
     if (states_[idx] != SlotState::Retained) Die("unpin on non-retained slot");
-    states_[idx] = SlotState::Free;
-    p->size_ = 0;
     --retained_;
-    --outstanding_;
-    free_slots_.push_back(idx);
+    if (std::this_thread::get_id() == owner_thread_id_) {
+        states_[idx] = SlotState::Free;
+        p->size_ = 0;
+        --outstanding_;
+        free_slots_.push_back(idx);
+    } else {
+        states_[idx] = SlotState::Queued;
+        return_queue_.push_back(idx);
+    }
 }
 
 void PktBufferPool::ReturnBuffer(PktBuffer* pkt) {
@@ -92,10 +105,39 @@ void PktBufferPool::ReturnBuffer(PktBuffer* pkt) {
     std::lock_guard<std::mutex> lock(mutex_);
     const std::size_t idx = pkt->slot_;
     if (states_[idx] != SlotState::Leased) Die("double release / invalid return");
-    states_[idx] = SlotState::Free;
-    pkt->size_ = 0;
-    --outstanding_;
-    free_slots_.push_back(idx);
+    if (std::this_thread::get_id() == owner_thread_id_) {
+        states_[idx] = SlotState::Free;
+        pkt->size_ = 0;
+        --outstanding_;
+        free_slots_.push_back(idx);
+    } else {
+        states_[idx] = SlotState::Queued;
+        return_queue_.push_back(idx);
+    }
+}
+
+void PktBufferPool::DrainLocked() noexcept {
+    while (!return_queue_.empty()) {
+        const std::size_t idx = return_queue_.front();
+        return_queue_.pop_front();
+        if (states_[idx] != SlotState::Queued) Die("drain on non-queued slot");
+        states_[idx] = SlotState::Free;
+        slots_[idx].size_ = 0;
+        --outstanding_;
+        free_slots_.push_back(idx);
+    }
+}
+
+std::size_t PktBufferPool::DrainReturnQueue() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::size_t drained = return_queue_.size();
+    DrainLocked();
+    return drained;
+}
+
+std::size_t PktBufferPool::ReturnQueueSize() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return return_queue_.size();
 }
 
 BufferLease::~BufferLease() { Release(); }

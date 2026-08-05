@@ -6,10 +6,19 @@
  * The Null backend is the reference implementation that the packet I/O
  * contract tests in NETSTACK2-002 are written against:
  *
- *   * RecvBatch() drains the injectable RX backlog; when the backlog is empty
+ *  * RecvBatch() drains the injectable RX backlog; when the backlog is empty
  *     it returns 0 with IoError::None (never WouldBlock — there is no device).
+ *     SetRecvWouldBlock() emulates a poll-based backend: an empty backlog is
+ *     then reported as 0 with IoError::WouldBlock.
  *   * SendBatch() accepts every lease (n == count), copies the bytes into the
  *     egress capture, and releases the leases back to their owning pools.
+ *     SetMaxSendPerBatch() caps the per-call budget so contract tests can
+ *     exercise the partial-send ownership rule (first n to the backend, the
+ *     rest stay with the caller). SetSendWouldBlock() emulates a full backend:
+ *     no lease is accepted and IoError::WouldBlock is returned.
+ *   * SetAsyncTxCompletion() emulates an async TX backend: accepted leases are
+ *     held pending instead of being reset inline; DrainTxCompletions() returns
+ *     them to their owning pools (the backend's completion path).
  *   * Inject() may be called from any thread; the queue mutex makes the
  *     backend thread-safe as a contract baseline.
  *
@@ -31,8 +40,13 @@ namespace tcpip2 {
 
 struct NullPacketIo::Impl {
     std::size_t queue_count = 0;
+    std::size_t max_send_per_batch = 0;
+    bool recv_would_block = false;
+    bool send_would_block = false;
+    bool async_tx_completion = false;
     mutable std::mutex mutex;
     std::vector<std::deque<BufferLease>> rx_backlog;
+    std::vector<std::deque<BufferLease>> pending_tx;
     std::vector<std::vector<std::vector<std::uint8_t>>> egress;
     std::vector<std::function<void()>> recv_handler;
 };
@@ -58,6 +72,9 @@ public:
             if (!lease) continue;
             out[taken++] = std::move(lease);
         }
+        if (taken == 0 && impl_->recv_would_block) {
+            error = IoError::WouldBlock;
+        }
         return taken;
     }
 
@@ -67,15 +84,29 @@ public:
             return 0;
         }
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        error = IoError::None;
-        auto& egress = impl_->egress[queue_id_];
-        for (std::size_t i = 0; i < count; ++i) {
-            // Copy egress bytes first; then release the lease (transfer to the
-            // backend, i.e. return the buffer to its owning pool).
-            egress.emplace_back(packets[i].Data(), packets[i].Data() + packets[i].Size());
-            packets[i].Reset();
+        if (impl_->send_would_block) {
+            error = IoError::WouldBlock;
+            return 0;
         }
-        return count;
+        error = IoError::None;
+        std::size_t budget = count;
+        if (impl_->max_send_per_batch != 0 && impl_->max_send_per_batch < budget) {
+            budget = impl_->max_send_per_batch;
+        }
+        auto& egress = impl_->egress[queue_id_];
+        for (std::size_t i = 0; i < budget; ++i) {
+            if (!packets[i]) continue;
+            // Copy egress bytes first; then transfer the lease to the backend.
+            egress.emplace_back(packets[i].Data(), packets[i].Data() + packets[i].Size());
+            if (impl_->async_tx_completion) {
+                // Async backend: hold the lease until DrainTxCompletions().
+                impl_->pending_tx[queue_id_].push_back(std::move(packets[i]));
+            } else {
+                // Sync backend: return the buffer to its owning pool now.
+                packets[i].Reset();
+            }
+        }
+        return budget;
     }
 
     std::size_t QueueId() const noexcept override { return queue_id_; }
@@ -96,6 +127,7 @@ NullPacketIo::NullPacketIo(std::size_t queue_count)
     : impl_(std::make_shared<Impl>()) {
     impl_->queue_count = queue_count;
     impl_->rx_backlog.resize(queue_count);
+    impl_->pending_tx.resize(queue_count);
     impl_->egress.resize(queue_count);
     impl_->recv_handler.resize(queue_count);
 }
@@ -114,6 +146,42 @@ bool NullPacketIo::Inject(std::size_t queue_id, BufferLease&& lease) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->rx_backlog[queue_id].push_back(std::move(lease));
     return true;
+}
+
+void NullPacketIo::SetMaxSendPerBatch(std::size_t n) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->max_send_per_batch = n;
+}
+
+void NullPacketIo::SetRecvWouldBlock(bool on) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->recv_would_block = on;
+}
+
+void NullPacketIo::SetSendWouldBlock(bool on) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->send_would_block = on;
+}
+
+void NullPacketIo::SetAsyncTxCompletion(bool on) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->async_tx_completion = on;
+}
+
+void NullPacketIo::DrainTxCompletions(std::size_t queue_id) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (queue_id >= impl_->queue_count) return;
+    auto& pending = impl_->pending_tx[queue_id];
+    while (!pending.empty()) {
+        pending.front().Reset();
+        pending.pop_front();
+    }
+}
+
+std::size_t NullPacketIo::PendingTxCompletions(std::size_t queue_id) const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (queue_id >= impl_->queue_count) return 0;
+    return impl_->pending_tx[queue_id].size();
 }
 
 const std::vector<std::vector<std::uint8_t>>& NullPacketIo::Egress(std::size_t queue_id) const {

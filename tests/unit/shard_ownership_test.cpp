@@ -57,10 +57,17 @@ TCPIP2_TEST(CrossThreadLeaseReleaseRoutesToPool) {
     lease.Resize(16);
     std::thread t([&pool, lease = std::move(lease)]() mutable {
         TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
+        // Foreign-thread release parks the buffer in the owner return queue.
         lease.Reset();
-        TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+        TCPIP2_EXPECT_EQ(std::size_t{1}, pool.OutstandingCount());
+        TCPIP2_EXPECT_EQ(std::size_t{1}, pool.ReturnQueueSize());
     });
     t.join();
+    // Still outstanding until the owner thread drains the return queue.
+    TCPIP2_EXPECT_EQ(std::size_t{1}, pool.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{3}, pool.FreeCount());
+    TCPIP2_EXPECT_EQ(std::size_t{1}, pool.ReturnQueueSize());
+    TCPIP2_EXPECT_EQ(std::size_t{1}, pool.DrainReturnQueue());
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
     TCPIP2_EXPECT_EQ(std::size_t{4}, pool.FreeCount());
 }
@@ -75,9 +82,11 @@ TCPIP2_TEST(ShardMessageCarriesOwnershipAcrossThreads) {
         TCPIP2_EXPECT_TRUE(static_cast<bool>(msg.data));
         TCPIP2_EXPECT_TRUE(msg.flow_id == FlowId{42});
         msg.data.Reset();
-        TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+        TCPIP2_EXPECT_EQ(std::size_t{1}, pool.OutstandingCount());
     });
     t.join();
+    TCPIP2_EXPECT_EQ(std::size_t{1}, pool.OutstandingCount());
+    pool.DrainReturnQueue();
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
 }
 

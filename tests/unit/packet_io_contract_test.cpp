@@ -182,4 +182,118 @@ TCPIP2_TEST(CrossThreadInjectRecv) {
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
 }
 
+TCPIP2_TEST(PartialSendLeavesTailWithCaller) {
+    PktBufferPool pool(4, 512);
+    NullPacketIo io(1);
+    io.SetMaxSendPerBatch(1);
+    auto q = io.OpenQueue(0);
+    BufferLease pkts[2];
+    pkts[0] = pool.Allocate();
+    pkts[1] = pool.Allocate();
+    pkts[0].Data()[0] = 0xAA;
+    pkts[0].Resize(1);
+    pkts[1].Data()[0] = 0xBB;
+    pkts[1].Resize(1);
+    TCPIP2_EXPECT_EQ(std::size_t{2}, pool.OutstandingCount());
+
+    IoError err = IoError::Internal;
+    std::size_t n = q->SendBatch(pkts, 2, err);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, n);
+    TCPIP2_EXPECT_TRUE(err == IoError::None);
+    // First lease transferred to the backend, second stays with the caller.
+    TCPIP2_EXPECT_FALSE(static_cast<bool>(pkts[0]));
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(pkts[1]));
+    TCPIP2_EXPECT_EQ(std::size_t{1}, pool.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{1}, io.Egress(0).size());
+
+    // Resubmit the tail: it is now accepted.
+    n = q->SendBatch(&pkts[1], 1, err);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, n);
+    TCPIP2_EXPECT_TRUE(err == IoError::None);
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{2}, io.Egress(0).size());
+}
+
+TCPIP2_TEST(RecvWouldBlockOnEmptyBacklog) {
+    PktBufferPool pool(4, 512);
+    NullPacketIo io(1);
+    io.SetRecvWouldBlock(true);
+    auto q = io.OpenQueue(0);
+    BufferLease out[2];
+    IoError err = IoError::None;
+    std::size_t n = q->RecvBatch(out, 2, err);
+    TCPIP2_EXPECT_EQ(std::size_t{0}, n);
+    TCPIP2_EXPECT_TRUE(err == IoError::WouldBlock);
+
+    // With packets available the same call succeeds.
+    BufferLease l = pool.Allocate();
+    l.Resize(3);
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(l)));
+    err = IoError::None;
+    n = q->RecvBatch(out, 2, err);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, n);
+    TCPIP2_EXPECT_TRUE(err == IoError::None);
+    out[0].Reset();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+TCPIP2_TEST(SendWouldBlockKeepsAllLeasesWithCaller) {
+    PktBufferPool pool(4, 512);
+    NullPacketIo io(1);
+    io.SetSendWouldBlock(true);
+    auto q = io.OpenQueue(0);
+    BufferLease pkts[2];
+    pkts[0] = pool.Allocate();
+    pkts[1] = pool.Allocate();
+    pkts[0].Data()[0] = 0xCC;
+    pkts[0].Resize(1);
+    TCPIP2_EXPECT_EQ(std::size_t{2}, pool.OutstandingCount());
+
+    IoError err = IoError::None;
+    std::size_t n = q->SendBatch(pkts, 2, err);
+    TCPIP2_EXPECT_EQ(std::size_t{0}, n);
+    TCPIP2_EXPECT_TRUE(err == IoError::WouldBlock);
+    // No transfer on error: both leases still belong to the caller.
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(pkts[0]));
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(pkts[1]));
+    TCPIP2_EXPECT_EQ(std::size_t{2}, pool.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, io.Egress(0).size());
+
+    pkts[0].Reset();
+    pkts[1].Reset();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+TCPIP2_TEST(AsyncTxCompletionDefersRelease) {
+    PktBufferPool pool(4, 512);
+    NullPacketIo io(1);
+    io.SetAsyncTxCompletion(true);
+    auto q = io.OpenQueue(0);
+    BufferLease pkts[2];
+    pkts[0] = pool.Allocate();
+    pkts[1] = pool.Allocate();
+    pkts[0].Data()[0] = 0xDD;
+    pkts[0].Resize(1);
+    pkts[1].Data()[0] = 0xEE;
+    pkts[1].Resize(1);
+    TCPIP2_EXPECT_EQ(std::size_t{2}, pool.OutstandingCount());
+
+    IoError err = IoError::Internal;
+    std::size_t n = q->SendBatch(pkts, 2, err);
+    TCPIP2_EXPECT_EQ(std::size_t{2}, n);
+    TCPIP2_EXPECT_TRUE(err == IoError::None);
+    TCPIP2_EXPECT_FALSE(static_cast<bool>(pkts[0]));
+    TCPIP2_EXPECT_FALSE(static_cast<bool>(pkts[1]));
+    // Bytes captured, but the leases are held pending by the backend.
+    TCPIP2_EXPECT_EQ(std::size_t{2}, io.Egress(0).size());
+    TCPIP2_EXPECT_EQ(std::size_t{2}, io.PendingTxCompletions(0));
+    TCPIP2_EXPECT_EQ(std::size_t{2}, pool.OutstandingCount());
+
+    // Backend completion returns the buffers to their owning pool.
+    io.DrainTxCompletions(0);
+    TCPIP2_EXPECT_EQ(std::size_t{0}, io.PendingTxCompletions(0));
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{4}, pool.FreeCount());
+}
+
 TCPIP2_TEST_MAIN();

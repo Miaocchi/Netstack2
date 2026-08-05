@@ -81,6 +81,10 @@ TCPIP2_TEST(CrossThreadRelease) {
             lease.Reset();
         });
         t.join();
+        // Released on a foreign thread: parked in the owner return queue.
+        TCPIP2_EXPECT_EQ(std::size_t{1}, pool.OutstandingCount());
+        TCPIP2_EXPECT_EQ(std::size_t{1}, pool.ReturnQueueSize());
+        TCPIP2_EXPECT_EQ(std::size_t{1}, pool.DrainReturnQueue());
     }
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
     TCPIP2_EXPECT_EQ(std::size_t{8}, pool.FreeCount());
@@ -116,6 +120,95 @@ TCPIP2_TEST(RetainEmptyLeaseReturnsEmpty) {
     BufferRef ref = pool.Retain(BufferLease{});
     TCPIP2_EXPECT_FALSE(static_cast<bool>(ref));
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+TCPIP2_TEST(ReleaseRoutesToOwningPool) {
+    PktBufferPool poolA(4, 256);
+    PktBufferPool poolB(4, 256);
+    BufferLease a = poolA.Allocate();
+    BufferLease b = poolB.Allocate();
+    a.Resize(8);
+    b.Resize(16);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, poolA.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{1}, poolB.OutstandingCount());
+    a.Reset();
+    b.Reset();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, poolA.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, poolB.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{4}, poolA.FreeCount());
+    TCPIP2_EXPECT_EQ(std::size_t{4}, poolB.FreeCount());
+}
+
+TCPIP2_TEST(CrossThreadReleaseRoutesToOwningPool) {
+    PktBufferPool poolA(4, 256);
+    PktBufferPool poolB(4, 256);
+    std::thread t([&] {
+        BufferLease a = poolA.Allocate();
+        BufferLease b = poolB.Allocate();
+        a.Resize(1);
+        b.Resize(1);
+        // Release on a foreign thread; each buffer must route back to the
+        // pool that created it, not to a global free list.
+        a.Reset();
+        b.Reset();
+    });
+    t.join();
+    // Both pools park their buffer in their own owner return queue.
+    TCPIP2_EXPECT_EQ(std::size_t{1}, poolA.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{1}, poolB.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{1}, poolA.ReturnQueueSize());
+    TCPIP2_EXPECT_EQ(std::size_t{1}, poolB.ReturnQueueSize());
+    TCPIP2_EXPECT_EQ(std::size_t{1}, poolA.DrainReturnQueue());
+    TCPIP2_EXPECT_EQ(std::size_t{1}, poolB.DrainReturnQueue());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, poolA.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, poolB.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{4}, poolA.FreeCount());
+    TCPIP2_EXPECT_EQ(std::size_t{4}, poolB.FreeCount());
+}
+
+TCPIP2_TEST(OwnerThreadReleaseTakesFastPath) {
+    PktBufferPool pool(4, 512);
+    BufferLease lease = pool.Allocate();
+    TCPIP2_EXPECT_EQ(std::size_t{1}, pool.OutstandingCount());
+    // Released on the owner thread: straight back to the free list.
+    lease.Reset();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.ReturnQueueSize());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{4}, pool.FreeCount());
+}
+
+TCPIP2_TEST(AllocateLazilyDrainsReturnQueue) {
+    PktBufferPool pool(1, 512);
+    BufferLease lease = pool.Allocate();
+    std::thread t([lease = std::move(lease)]() mutable { lease.Reset(); });
+    t.join();
+    // The only buffer is parked in the return queue: the pool looks exhausted.
+    TCPIP2_EXPECT_EQ(std::size_t{1}, pool.ReturnQueueSize());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.FreeCount());
+    TCPIP2_EXPECT_EQ(std::size_t{1}, pool.OutstandingCount());
+    // Allocate() lazily drains the queue and reuses the buffer.
+    BufferLease again = pool.Allocate();
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(again));
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.ReturnQueueSize());
+    TCPIP2_EXPECT_EQ(std::size_t{1}, pool.OutstandingCount());
+    again.Reset();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+TCPIP2_TEST(DoubleReleaseWhileQueuedAborts) {
+    PktBufferPool pool(4, 512);
+    BufferLease lease = pool.Allocate();
+    PktBuffer* pkt = lease.Get();
+    TCPIP2_EXPECT_TRUE(pkt != nullptr);
+    std::thread t([lease = std::move(lease)]() mutable { lease.Reset(); });
+    t.join();
+    // The buffer is queued (still outstanding); returning it again is a
+    // double release and must abort even though it never hit the free list.
+    TCPIP2_EXPECT_EQ(std::size_t{1}, pool.ReturnQueueSize());
+    TCPIP2_EXPECT_DEATH(pool.ReturnBuffer(pkt););
+    pool.DrainReturnQueue();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{4}, pool.FreeCount());
 }
 
 TCPIP2_TEST_MAIN();

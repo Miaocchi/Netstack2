@@ -46,9 +46,15 @@ TCPIP2_TEST(PublicHeadersConsumeCleanly) {
     TCPIP2_EXPECT_TRUE(static_cast<bool>(ref));
     pool.Unpin(ref);
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.ReturnQueueSize());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.DrainReturnQueue());
 
     // packet I/O
     NullPacketIo io(1);
+    io.SetMaxSendPerBatch(1);
+    io.SetRecvWouldBlock(false);
+    io.SetSendWouldBlock(false);
+    io.SetAsyncTxCompletion(true);
     TCPIP2_EXPECT_EQ(std::size_t{1}, io.QueueCount());
     std::unique_ptr<IPacketQueue> q = io.OpenQueue(0);
     TCPIP2_EXPECT_TRUE(q != nullptr);
@@ -57,6 +63,8 @@ TCPIP2_TEST(PublicHeadersConsumeCleanly) {
     TCPIP2_EXPECT_EQ(std::size_t{0}, q->RecvBatch(out, 1, err));
     TCPIP2_EXPECT_TRUE(err == IoError::None);
     q->SetRecvHandler([] {});
+    TCPIP2_EXPECT_EQ(std::size_t{0}, io.PendingTxCompletions(0));
+    io.DrainTxCompletions(0);
 
     // transport session types
     BufferView view(nullptr, 0);

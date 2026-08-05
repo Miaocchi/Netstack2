@@ -15,7 +15,9 @@
  *
  *   BufferLease  unique ownership. Move-only; may be moved across threads,
  *                but release always routes back to the owning pool. When a
- *                lease is destroyed the buffer returns to the pool.
+ *                lease is destroyed the buffer returns to the pool. Releases
+ *                on a foreign thread park the buffer in the pool's owner
+ *                return queue until the owner thread drains it.
  *
  *   BufferSlice  non-owning, trivially copyable read-only view. Lifetime
  *                must not exceed the lease/ref it was derived from.
@@ -28,8 +30,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 namespace tcpip2 {
@@ -159,9 +163,16 @@ struct TxSegment {
  * Unpin() are internally synchronized, so release may happen on any thread
  * and is routed back to the owning pool.
  *
+ * The pool records the owner thread id at construction. Buffers returned on
+ * the owner thread take the fast path straight back to the free list;
+ * buffers returned on any other thread are parked in an owner return queue
+ * (SlotState::Queued, still counted as outstanding) and only become free
+ * after DrainReturnQueue(). Allocate() lazily drains the queue when the free
+ * list is empty.
+ *
  * The pool tracks slot states and aborts (death test) on double release or
- * invalid transitions; use OutstandingCount()/FreeCount() to assert against
- * leaks in tests.
+ * invalid transitions; use OutstandingCount()/FreeCount()/ReturnQueueSize()
+ * to assert against leaks in tests.
  */
 class PktBufferPool final {
 public:
@@ -190,21 +201,34 @@ public:
      */
     void ReturnBuffer(PktBuffer* pkt);
 
+    /**
+     * Move buffers parked by foreign-thread releases onto the free list.
+     * Returns the number of buffers freed. No-op when nothing is queued.
+     */
+    std::size_t DrainReturnQueue();
+
+    /** Number of buffers awaiting DrainReturnQueue() (for test assertions). */
+    std::size_t ReturnQueueSize() const noexcept;
+
     std::size_t SlotCount() const noexcept;
     std::size_t FreeCount() const noexcept;
-    /** Buffers currently leased or retained (not available for allocation). */
+    /** Buffers currently leased, retained, or queued (not available for allocation). */
     std::size_t OutstandingCount() const noexcept;
     std::size_t RetainedCount() const noexcept;
 
 private:
-    enum class SlotState : std::uint8_t { Free, Leased, Retained };
+    enum class SlotState : std::uint8_t { Free, Leased, Retained, Queued };
+
+    void DrainLocked() noexcept;
 
     std::size_t slot_count_;
     std::vector<PktBuffer> slots_;
     std::vector<SlotState> states_;
     std::vector<std::size_t> free_slots_;
+    std::deque<std::size_t> return_queue_;
     std::unique_ptr<std::uint8_t[]> arena_;
     mutable std::mutex mutex_;
+    std::thread::id owner_thread_id_;
     std::size_t outstanding_ = 0;
     std::size_t retained_ = 0;
 };
