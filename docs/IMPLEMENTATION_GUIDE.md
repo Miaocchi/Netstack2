@@ -777,9 +777,9 @@ src/l2/
 3. ✅ IPv6 fixed header/payload length/next-header validation (`src/ip/ipv6.h`/`.cpp`)。
 4. ✅ IPv6 extension header bounded walker, 设置最大 header 数(8)和总字节数(1024), loop detection (`src/ip/ipv6.cpp`)。
 5. ✅ TCP/UDP IPv4/IPv6 pseudo-header checksum (`src/ip/checksum.h`/`.cpp`: `InternetChecksum`、`Ipv4PseudoHeaderSeed`、`Ipv6PseudoHeaderSeed`)。
-6. ICMPv4 Destination Unreachable、Fragmentation Needed。
-7. ICMPv6 Destination Unreachable、Packet Too Big、必要 Parameter Problem。
-8. PMTU cache 带最小/最大值、过期和来源验证。
+6. ✅ ICMPv4 Destination Unreachable、Fragmentation Needed (`src/ip/icmpv4.h`/`.cpp`)。
+7. ✅ ICMPv6 Destination Unreachable、Packet Too Big、Parameter Problem (`src/ip/icmpv6.h`/`.cpp`)。
+8. ✅ PMTU cache 带最小/最大值、过期和来源验证 (`src/ip/pmtu.h`/`.cpp`)。
 9. 有界 IPv4 fragment reassembly; IPv6 fragment 作为单独子包交付。
 
 #### P3A-01 完成总结 (2026-08-07)
@@ -799,6 +799,34 @@ src/l2/
 - `tests/unit/ip/ipv6_parser_test.cpp` — 11 tests。
 
 测试结果: 普通 23/23, ASan 23/23, TSan 23/23, include boundaries OK。
+
+#### P3A-02 完成总结 (2026-08-07)
+
+步骤 6–8 已完成。实现文件:
+
+- `src/ip/icmpv4.h` / `src/ip/icmpv4.cpp` — ICMPv4 bounded parser: 8 字节最小长度, Echo/EchoReply 读 id+sequence, DestUnreachable code 4 读 MTU, checksum 验证 (`InternetChecksum(data, len, 0) == 0`), 所有错误类型设置 `quoted_payload`。
+- `src/ip/icmpv6.h` / `src/ip/icmpv6.cpp` — ICMPv6 bounded parser: 4 字节固定头 + 4 字节类型相关数据, PacketTooBig 读 MTU(u32), ParameterProblem 读 pointer(u32), Echo 读 id+sequence, `VerifyIcmpv6Checksum` 使用 IPv6 pseudo-header seed (protocol=58) + `InternetChecksum`。
+- `src/ip/pmtu.h` / `src/ip/pmtu.cpp` — PMTU cache: per-shard (非 thread-safe), per-family clamp (`kPmtuMinV4=576`/`kPmtuMinV6=1280`/`kPmtuMaxV4=65535`/`kPmtuMaxV6=65575`/`kPmtuDefaultTtlMs=600000`), `LowerFromIcmp` (只降) / `RaiseFromProbe` (只升) 分离接口, `uint32_t` 输入和存储避免 32 位 MTU 截断, null 地址和非法 ip_version 拒绝, 容量上限 `kPmtuMaxEntries=4096`, oldest-update eviction, IPv4 地址以 IPv4-mapped IPv6 统一 16 字节比较, expired entry 重新初始化 (不参与只升/只降比较), clock rollback guard (`IsExpired` helper)。
+
+测试文件:
+
+- `tests/unit/ip/icmpv4_parser_test.cpp` — 10 tests (Echo parse, Echo Reply, DestUnreachable Fragmentation Needed + MTU, bad checksum, truncated, etc.)。
+- `tests/unit/ip/icmpv6_test.cpp` — 11 tests (Echo, PacketTooBig + MTU, ParameterProblem + pointer, DestUnreachable, checksum verify good/bad, truncated, etc.)。
+- `tests/unit/ip/pmtu_test.cpp` — 47 tests (Lookup/Update/Purge, oldest-update eviction, expiry, IPv4-mapped IPv6 distinct, per-family clamp <576 IPv4 / <1280 IPv6 / zero MTU / 超上限 / 32 位 MTU 截断 / boundary, null 地址和非法 ip_version 拒绝, LowerFromIcmp 只降 / RaiseFromProbe 只升, expired entry 重新初始化, clock rollback guard for Lookup/Purge/Lower/Raise, IPv6 max 65575 > uint16 range, 等)。
+
+测试结果: 普通 26/26, ASan 26/26, TSan 26/26, include boundaries OK, `git diff --check` clean。
+
+设计决策:
+
+- ICMPv4 checksum 验证不阻止解析; `checksum_ok` flag 报告结果, bad checksum 包仍返回结构化解析结果。
+- ICMPv6 checksum 需要 IP 地址构成伪首部, parser 不持有 IP 地址; `checksum_ok` 默认 true, 调用者通过 `VerifyIcmpv6Checksum` 独立验证。
+- PMTU cache 设计为 per-shard 非 thread-safe; 调用者 (shard 线程) 保证线程安全。
+- PMTU clamp 按地址族分别处理: IPv4 下限 576 (RFC 791), IPv6 下限 1280 (RFC 8200 §5), IPv4 上限 65535, IPv6 上限 65575 (40 + 65535, 非 jumbogram)。`PmtuEntry::pmtu` 和 `PmtuLookupResult::pmtu` 使用 `uint32_t` 存储以表示 IPv6 的 65575。接口接收 `uint32_t` 以正确处理 ICMPv6 PTB 的 32 位 MTU 值。
+- PMTU 更新语义: `LowerFromIcmp` 只降不升 (ICMP 错误路径), `RaiseFromProbe` 只升不降 (探测成功路径)。两者均在 clamp 后与现有值比较。如果现有 entry 已过期 (包括 clock rollback 场景), 视为不存在并重新初始化, 不参与只升/只降比较。
+- PMTU eviction 策略为 oldest-update (淘汰 `timestamp_ms` 最小的条目), 不是严格 LRU: `Lookup` 不更新 timestamp。
+- PMTU 构造函数容量上限 `kPmtuMaxEntries=4096`, `reserve` 可能抛 `bad_alloc` — 构造函数非 `noexcept`。
+- PMTU `NormalizeIp` / `Lookup` 拒绝 null 地址和非 4/6 的 `ip_version`, 避免越界读取。
+- PMTU expiry 语义: `IsExpired(entry, now_ms)` helper 统一判断 — 当 `now_ms < timestamp_ms` (clock rollback) 或 `now_ms - timestamp_ms > expires_ms` 时为过期 (`==` 时仍有效)。`Lookup`、`Purge`、`LowerFromIcmp`、`RaiseFromProbe` 全部使用此 helper。
 
 解析规则:
 
@@ -1281,7 +1309,9 @@ P0 和测试框架全程并行, 但每个性能结论都依赖 P0。
 7. `NS2-ADAPTER-SPIKE-01`: OpenPPP2 Linux compile-only adapter。
 8. `NS2-003+004-SMOKE`: netns TUN multiqueue packet loop(需 root 或降级为 ADR-002 code review gate)。
 9. ✅ `NETSTACK2-API-FREEZE-001`。
-10. `P3A-01`: checksum + IPv4/IPv6 bounded parser。
+10. ✅ `P3A-01`: checksum + IPv4/IPv6 bounded parser。
+11. ✅ `P3A-02`: ICMPv4/ICMPv6 bounded parser + PMTU cache。
+12. `P3A-03`: IPv4/IPv6 fragment reassembly。
 
 在第 9 步之前不接 Netstack2 submodule, 不修改 OpenPPP2 默认 stack, 不开始完整
 TCP 状态机。

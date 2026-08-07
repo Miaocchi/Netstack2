@@ -18,7 +18,8 @@
 | NETSTACK2-ADAPTER-SPIKE | **Completed** | compile-only `OpenPppPacketIo` + `OpenPppSessionFactory` 编译通过; 新增 `session_factory.h`、`capabilities.h`、`address.h`、`flow.h` 公共头; `IPacketIo::Capabilities()` 虚方法加入; FlowId 统一到公共头 |
 | NETSTACK2-API-FREEZE-001 | **Completed** | 公共 API 冻结(10 头文件), ADR-004, tag `v0.2.0` |
 | P3A-01 | **Completed** | checked arithmetic、IPv4/IPv6 bounded parser、checksum，23/23 三套构建全绿 |
-| P3A (rest) / P3B / P3C | Planned | ICMP/PMTU/fragment → TCP 状态机 → 互操作与性能 |
+| P3A-02 | **Completed** | ICMPv4/ICMPv6 bounded parser + PMTU cache，26/26 三套构建全绿 |
+| P3A (rest) / P3B / P3C | Planned | fragment reassembly → TCP 状态机 → 互操作与性能 |
 | P4 | Planned | OpenPPP2 集成(在 API-FREEZE 之后接线) |
 | P5–P7 | Planned | 高性能 Packet I/O、平台铺开、调优 |
 
@@ -28,7 +29,9 @@
 |------|--------|-----|
 | NETSTACK2-000 | `628eb60` | `v0.1.0`(annotated) |
 | NETSTACK2-002 | `8e20940` | 无(tag 留给 v0.2.0) |
-| NETSTACK2-API-FREEZE-001 | 见 tag `v0.2.0` | `v0.2.0`(annotated) |
+| NETSTACK2-API-FREEZE-001 | `3d82bb0` | `v0.2.0`(annotated) |
+| P3A-01 | `707b14a` | 无 |
+| P3A-02 | (pending commit) | 无 |
 
 规则:
 
@@ -240,7 +243,8 @@ NETSTACK2-003 TapPacketIo ✅ (ADR-001 v2: per-shard pool, ADR-002: Tier 2 ✅)
 NETSTACK2-API-FREEZE-001 ✅
         ↓
 P3A-01 IPv4/IPv6 parser + checksum ✅
-  → P3A rest: ICMP/PMTU/fragment reassembly
+  → P3A-02 ICMPv4/ICMPv6 parser + PMTU cache ✅
+  → P3A rest: fragment reassembly
         ↓
 P3U UDP/ICMP + P3Q FQ/AQM
         ↓
