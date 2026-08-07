@@ -5,9 +5,8 @@
  * @brief Remote transport abstraction for the Netstack2 TCP engine.
  * @license GPL-3.0
  *
- * Experimental API (NETSTACK2-000). Backpressure and partial-write
- * semantics are validated by NETSTACK2-002; signatures may change until
- * NETSTACK2-API-FREEZE-001.
+ * Public API — frozen at NETSTACK2-API-FREEZE-001. Signature changes
+ * require an ADR and a consumer compile-contract test update.
  *
  * Hierarchy (see docs/architecture/transport_session.adr):
  *

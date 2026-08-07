@@ -5,8 +5,8 @@
  * @brief Netstack2 runtime configuration.
  * @license GPL-3.0
  *
- * Experimental API (NETSTACK2-000). Validated by config_test; may change
- * until NETSTACK2-API-FREEZE-001.
+ * Public API — frozen at NETSTACK2-API-FREEZE-001. Signature changes
+ * require an ADR and a consumer compile-contract test update.
  */
 
 #include <cstddef>
@@ -28,7 +28,12 @@ struct NetstackConfig {
      */
     std::vector<std::size_t> rx_queue_to_shard;
 
+    /** Per-shard buffer pool slot count. Total slots across all shards =
+     * shard_count × pool_slot_count; total pool arena =
+     * shard_count × pool_slot_count × pool_slot_capacity. */
     std::size_t pool_slot_count = 4096;
+
+    /** Per-slot capacity in bytes. */
     std::size_t pool_slot_capacity = 2048;
 
     std::uint32_t initial_tcp_window = 65536;
@@ -50,6 +55,25 @@ struct NetstackConfig {
         }
         if (pool_slot_count == 0) return false;
         if (pool_slot_capacity == 0) return false;
+
+        // Per-shard pool: total slots = shard_count * pool_slot_count, then
+        // total bytes = total_slots * pool_slot_capacity. Guard each
+        // multiplication against uint64_t wraparound (on 64-bit targets
+        // size_t == uint64_t, so the cast alone does not prevent overflow).
+        const std::uint64_t shard_count_u = shard_count;
+        const std::uint64_t slot_count_u = pool_slot_count;
+        const std::uint64_t slot_cap_u = pool_slot_capacity;
+        if (shard_count_u != 0 && slot_count_u > UINT64_MAX / shard_count_u) return false;
+        const std::uint64_t total_slots_u = shard_count_u * slot_count_u;
+        if (total_slots_u != 0 && slot_cap_u > UINT64_MAX / total_slots_u) return false;
+        const std::uint64_t total_bytes_u = total_slots_u * slot_cap_u;
+        // Reject if total exceeds SIZE_MAX (would overflow allocation).
+        if (total_bytes_u > static_cast<std::uint64_t>(SIZE_MAX)) return false;
+        // Reasonable process-level memory cap (4 GiB total pool arena).
+        static constexpr std::uint64_t max_total_pool_bytes =
+            std::uint64_t{4} * 1024 * 1024 * 1024;
+        if (total_bytes_u > max_total_pool_bytes) return false;
+
         if (initial_tcp_window == 0) return false;
         if (tcp_mss < 512) return false;
         if (rto_initial_ms == 0) return false;

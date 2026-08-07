@@ -31,5 +31,9 @@ static_assert(std::is_standard_layout_v<PktBuffer>,
               "PktBuffer must keep a fixed standard layout");
 static_assert(std::is_trivially_destructible_v<PktBuffer>,
               "PktBuffer must be trivially destructible");
+static_assert(std::is_copy_constructible_v<BufferRef>,
+              "BufferRef must be copyable (RAII retain count)");
+static_assert(std::is_move_constructible_v<BufferRef>,
+              "BufferRef must be move constructible");
 
 } // namespace tcpip2

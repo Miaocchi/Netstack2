@@ -163,6 +163,91 @@ TCPIP2_TEST(RecvHandlerStored) {
     TCPIP2_EXPECT_EQ(0, wake);
 }
 
+TCPIP2_TEST(InjectTriggersWakeOnEmptyToNonEmpty) {
+    PktBufferPool pool(4, 256);
+    NullPacketIo io(1);
+    auto q = io.OpenQueue(0);
+    int wake_count = 0;
+    q->SetRecvHandler([&] { ++wake_count; });
+
+    BufferLease l = pool.Allocate();
+    l.Resize(4);
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(l)));
+    TCPIP2_EXPECT_EQ(1, wake_count);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, pool.OutstandingCount());
+
+    // Clean up the injected lease.
+    BufferLease out[1];
+    IoError err = IoError::Internal;
+    TCPIP2_EXPECT_EQ(std::size_t{1}, q->RecvBatch(out, 1, err));
+    out[0].Reset();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+TCPIP2_TEST(InjectDoesNotWakeWhenBacklogNotEmpty) {
+    PktBufferPool pool(4, 256);
+    NullPacketIo io(1);
+    auto q = io.OpenQueue(0);
+    int wake_count = 0;
+    q->SetRecvHandler([&] { ++wake_count; });
+
+    BufferLease l1 = pool.Allocate();
+    BufferLease l2 = pool.Allocate();
+    io.Inject(0, std::move(l1));  // empty -> non-empty: wake
+    io.Inject(0, std::move(l2));  // already non-empty: no wake
+    TCPIP2_EXPECT_EQ(1, wake_count);
+    TCPIP2_EXPECT_EQ(std::size_t{2}, pool.OutstandingCount());
+
+    // Clean up the injected leases.
+    BufferLease out[2];
+    IoError err = IoError::Internal;
+    TCPIP2_EXPECT_EQ(std::size_t{2}, q->RecvBatch(out, 2, err));
+    out[0].Reset();
+    out[1].Reset();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+TCPIP2_TEST(InjectNoWakeAfterHandlerCleared) {
+    PktBufferPool pool(4, 256);
+    NullPacketIo io(1);
+    auto q = io.OpenQueue(0);
+    int wake_count = 0;
+    q->SetRecvHandler([&] { ++wake_count; });
+    q->SetRecvHandler(nullptr);
+
+    BufferLease l = pool.Allocate();
+    io.Inject(0, std::move(l));
+    TCPIP2_EXPECT_EQ(0, wake_count);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, pool.OutstandingCount());
+
+    // Clean up the injected lease.
+    BufferLease out[1];
+    IoError err = IoError::Internal;
+    TCPIP2_EXPECT_EQ(std::size_t{1}, q->RecvBatch(out, 1, err));
+    out[0].Reset();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+TCPIP2_TEST(WakeHandlerCanCallRecvWithoutDeadlock) {
+    PktBufferPool pool(4, 256);
+    NullPacketIo io(1);
+    auto q = io.OpenQueue(0);
+    std::size_t received = 0;
+    q->SetRecvHandler([&] {
+        BufferLease out[1];
+        IoError err = IoError::Internal;
+        received = q->RecvBatch(out, 1, err);
+        if (received > 0) out[0].Reset();
+    });
+
+    BufferLease l = pool.Allocate();
+    l.Resize(8);
+    io.Inject(0, std::move(l));
+    // If this doesn't deadlock, the wake was called outside the lock.
+    TCPIP2_EXPECT_EQ(std::size_t{1}, received);
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
 TCPIP2_TEST(CrossThreadInjectRecv) {
     PktBufferPool pool(4, 512);
     NullPacketIo io(1);

@@ -35,18 +35,36 @@ PktBufferPool::PktBufferPool(std::size_t slot_count, std::size_t slot_capacity)
     : slot_count_(slot_count),
       slots_(slot_count),
       states_(slot_count, SlotState::Free),
-      arena_(new (std::nothrow) std::uint8_t[slot_count * slot_capacity]),
+      arena_(nullptr),
       owner_thread_id_(std::this_thread::get_id()) {
+    // Guard against slot_count * slot_capacity overflow. PktBufferPool is a
+    // public type constructible independently of NetstackConfig::Validate(),
+    // so the constructor must validate its own arithmetic. On overflow or
+    // allocation failure, degrade to 0 usable slots (Allocate() returns empty).
+    const std::uint64_t slot_count_u = slot_count;
+    const std::uint64_t slot_cap_u = slot_capacity;
+    if (slot_count_u != 0 && slot_cap_u > UINT64_MAX / slot_count_u) {
+        return; // arithmetic overflow — degrade to 0 usable slots
+    }
+    const std::uint64_t total_bytes_u = slot_count_u * slot_cap_u;
+    if (total_bytes_u > static_cast<std::uint64_t>(SIZE_MAX)) {
+        return; // exceeds address space — degrade to 0 usable slots
+    }
+    arena_.reset(new (std::nothrow) std::uint8_t[total_bytes_u]);
+    if (arena_ == nullptr) {
+        // Arena allocation failed: degrade to 0 usable slots.
+        // slots_ and states_ exist but no buffer has valid data_.
+        // free_slots_ remains empty, so Allocate() always returns empty.
+        return;
+    }
     free_slots_.reserve(slot_count);
-    if (arena_ != nullptr) {
-        for (std::size_t i = 0; i < slot_count; ++i) {
-            PktBuffer& b = slots_[i];
-            b.pool_ = this;
-            b.slot_ = i;
-            b.capacity_ = slot_capacity;
-            b.data_ = arena_.get() + i * slot_capacity;
-            free_slots_.push_back(i);
-        }
+    for (std::size_t i = 0; i < slot_count; ++i) {
+        PktBuffer& b = slots_[i];
+        b.pool_ = this;
+        b.slot_ = i;
+        b.capacity_ = slot_capacity;
+        b.data_ = arena_.get() + i * slot_capacity;
+        free_slots_.push_back(i);
     }
 }
 
@@ -77,21 +95,23 @@ BufferRef PktBufferPool::Retain(BufferLease&& lease) {
         if (states_[idx] != SlotState::Leased) Die("retain on non-leased slot");
         states_[idx] = SlotState::Retained;
         ++retained_;
+        p->ref_count_ = 1;
     }
     lease.pkt_ = nullptr;
     return BufferRef(p);
 }
 
-void PktBufferPool::Unpin(BufferRef ref) {
-    PktBuffer* p = ref.Get();
-    if (p == nullptr) return;
+void PktBufferPool::ReleaseRetained(PktBuffer* pkt) {
+    if (pkt == nullptr) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    const std::size_t idx = p->slot_;
-    if (states_[idx] != SlotState::Retained) Die("unpin on non-retained slot");
+    if (pkt->pool_ != this) Die("buffer returned to wrong pool");
+    const std::size_t idx = pkt->slot_;
+    if (&slots_[idx] != pkt) Die("buffer pointer/slot mismatch");
+    if (states_[idx] != SlotState::Retained) Die("release on non-retained slot");
     --retained_;
     if (std::this_thread::get_id() == owner_thread_id_) {
         states_[idx] = SlotState::Free;
-        p->size_ = 0;
+        pkt->size_ = 0;
         --outstanding_;
         free_slots_.push_back(idx);
     } else {
@@ -103,7 +123,9 @@ void PktBufferPool::Unpin(BufferRef ref) {
 void PktBufferPool::ReturnBuffer(PktBuffer* pkt) {
     if (pkt == nullptr) return;
     std::lock_guard<std::mutex> lock(mutex_);
+    if (pkt->pool_ != this) Die("buffer returned to wrong pool");
     const std::size_t idx = pkt->slot_;
+    if (&slots_[idx] != pkt) Die("buffer pointer/slot mismatch");
     if (states_[idx] != SlotState::Leased) Die("double release / invalid return");
     if (std::this_thread::get_id() == owner_thread_id_) {
         states_[idx] = SlotState::Free;
@@ -155,6 +177,38 @@ void BufferLease::Release() noexcept {
     PktBuffer* p = pkt_;
     pkt_ = nullptr;
     if (p != nullptr) p->pool_->ReturnBuffer(p);
+}
+
+BufferRef::~BufferRef() { Release(); }
+
+BufferRef& BufferRef::operator=(const BufferRef& other) noexcept {
+    if (this != &other) {
+        Release();
+        pkt_ = other.pkt_;
+        if (pkt_) ++pkt_->ref_count_;
+    }
+    return *this;
+}
+
+BufferRef& BufferRef::operator=(BufferRef&& other) noexcept {
+    if (this != &other) {
+        Release();
+        pkt_ = other.pkt_;
+        other.pkt_ = nullptr;
+    }
+    return *this;
+}
+
+void BufferRef::Reset() noexcept { Release(); }
+
+void BufferRef::Release() noexcept {
+    PktBuffer* p = pkt_;
+    pkt_ = nullptr;
+    if (p != nullptr) {
+        if (--p->ref_count_ == 0) {
+            p->pool_->ReleaseRetained(p);
+        }
+    }
 }
 
 std::size_t PktBufferPool::SlotCount() const noexcept {

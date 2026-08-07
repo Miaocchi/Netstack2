@@ -111,6 +111,10 @@ public:
 
     std::size_t QueueId() const noexcept override { return queue_id_; }
 
+    void SetBufferPool(PktBufferPool* pool) noexcept override {
+        pool_ = pool;
+    }
+
     void SetRecvHandler(std::function<void()> wake) override {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->recv_handler[queue_id_] = std::move(wake);
@@ -119,6 +123,7 @@ public:
 private:
     std::size_t queue_id_;
     std::shared_ptr<NullPacketIo::Impl> impl_;
+    PktBufferPool* pool_ = nullptr;  // stored for interface conformance; NullQueue does not allocate from it
 };
 
 } // namespace
@@ -143,8 +148,18 @@ std::unique_ptr<IPacketQueue> NullPacketIo::OpenQueue(std::size_t queue_id) {
 
 bool NullPacketIo::Inject(std::size_t queue_id, BufferLease&& lease) {
     if (!lease || queue_id >= impl_->queue_count) return false;
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    impl_->rx_backlog[queue_id].push_back(std::move(lease));
+    std::function<void()> wake;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        const bool was_empty = impl_->rx_backlog[queue_id].empty();
+        impl_->rx_backlog[queue_id].push_back(std::move(lease));
+        if (was_empty) {
+            // Copy the handler under the lock; invoke it outside to avoid
+            // deadlock if the handler calls back into the queue (e.g. RecvBatch).
+            wake = impl_->recv_handler[queue_id];
+        }
+    }
+    if (wake) wake();
     return true;
 }
 

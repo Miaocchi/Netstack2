@@ -109,7 +109,7 @@ TCPIP2_TEST(RetainConsumesLease) {
     TCPIP2_EXPECT_TRUE(static_cast<bool>(ref));
     TCPIP2_EXPECT_EQ(std::size_t{1}, pool.OutstandingCount());
     TCPIP2_EXPECT_EQ(std::size_t{1}, pool.RetainedCount());
-    pool.Unpin(ref);
+    ref.Reset();
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.RetainedCount());
     TCPIP2_EXPECT_EQ(std::size_t{4}, pool.FreeCount());

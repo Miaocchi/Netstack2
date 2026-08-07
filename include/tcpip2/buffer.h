@@ -5,8 +5,8 @@
  * @brief Buffer ownership model for the Netstack2 packet path.
  * @license GPL-3.0
  *
- * Experimental API (NETSTACK2-000). Ownership is validated by
- * NETSTACK2-002; signatures may change until NETSTACK2-API-FREEZE-001.
+ * Public API — frozen at NETSTACK2-API-FREEZE-001. Signature changes
+ * require an ADR and a consumer compile-contract test update.
  *
  * Ownership taxonomy (see docs/architecture/ownership.adr):
  *
@@ -24,12 +24,14 @@
  *
  *   BufferRef    shard-local retained handle. Used only where a payload must
  *                outlive its originating lease (retransmission, reassembly).
- *                Multiple BufferRef copies are allowed; the retaining flow
- *                owns the buffer and must Unpin() it exactly once.
+ *                Multiple BufferRef copies are allowed; the buffer is returned
+ *                to the pool when the last copy is destroyed or reset.
  */
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -55,7 +57,13 @@ public:
     const std::uint8_t* Data() const noexcept { return data_; }
     std::size_t Capacity() const noexcept { return capacity_; }
     std::size_t Size() const noexcept { return size_; }
-    void Resize(std::size_t n) noexcept { size_ = n; }
+    void Resize(std::size_t n) noexcept {
+        if (n > capacity_) {
+            std::fprintf(stderr, "tcpip2: resize exceeds capacity (%zu > %zu)\n", n, capacity_);
+            std::abort();
+        }
+        size_ = n;
+    }
 
 private:
     friend class PktBufferPool;
@@ -67,6 +75,7 @@ private:
     std::size_t capacity_ = 0;
     std::size_t size_ = 0;
     std::size_t slot_ = 0;
+    std::uint32_t ref_count_ = 0;
 };
 
 /**
@@ -132,20 +141,34 @@ private:
 
 /**
  * Shard-local retained handle to a pool buffer. Copies are allowed; the
- * retaining flow owns the underlying buffer and releases it via Unpin().
+ * underlying buffer is returned to the pool when the last BufferRef is
+ * destroyed or reset (non-atomic retain count, shard-local).
  */
 class BufferRef final {
 public:
     BufferRef() noexcept = default;
+    ~BufferRef();
+
+    BufferRef(const BufferRef& other) noexcept : pkt_(other.pkt_) {
+        if (pkt_) ++pkt_->ref_count_;
+    }
+    BufferRef& operator=(const BufferRef& other) noexcept;
+    BufferRef(BufferRef&& other) noexcept : pkt_(other.pkt_) { other.pkt_ = nullptr; }
+    BufferRef& operator=(BufferRef&& other) noexcept;
 
     PktBuffer* Get() const noexcept { return pkt_; }
     const std::uint8_t* Data() const noexcept { return pkt_ ? pkt_->Data() : nullptr; }
     std::size_t Size() const noexcept { return pkt_ ? pkt_->Size() : 0; }
     explicit operator bool() const noexcept { return pkt_ != nullptr; }
 
+    /** Release this reference. If it was the last reference, return the buffer to its pool. */
+    void Reset() noexcept;
+
 private:
     friend class PktBufferPool;
     explicit BufferRef(PktBuffer* pkt) noexcept : pkt_(pkt) {}
+
+    void Release() noexcept;
 
     PktBuffer* pkt_ = nullptr;
 };
@@ -159,9 +182,9 @@ struct TxSegment {
 };
 
 /**
- * Fixed-size pool of packet buffers. Allocate()/ReturnBuffer()/Retain()/
- * Unpin() are internally synchronized, so release may happen on any thread
- * and is routed back to the owning pool.
+ * Fixed-size pool of packet buffers. Allocate()/ReturnBuffer()/Retain() are
+ * internally synchronized, so release may happen on any thread and is routed
+ * back to the owning pool.
  *
  * The pool records the owner thread id at construction. Buffers returned on
  * the owner thread take the fast path straight back to the free list;
@@ -191,9 +214,6 @@ public:
      */
     BufferRef Retain(BufferLease&& lease);
 
-    /** Release a retained buffer back to the pool. Must be called exactly once. */
-    void Unpin(BufferRef ref);
-
     /**
      * Internal: return a buffer to the free list. Used by BufferLease;
      * calling directly is a contract violation and the second return of the
@@ -216,10 +236,26 @@ public:
     std::size_t OutstandingCount() const noexcept;
     std::size_t RetainedCount() const noexcept;
 
+    /**
+     * Reassign the owner thread to @p id. Called once from the shard's Run()
+     * before the first allocation so that Allocate()/ReturnBuffer() take the
+     * owner-local uncontended fast path on the shard thread: the mutex is
+     * still acquired, but only the owner shard thread contends for it on the
+     * hot path (per-shard pool model, ADR-001). Safe to call before the pool
+     * is in use; racing with an in-flight Allocate()/ReturnBuffer() is a
+     * contract violation.
+     */
+    void SetOwnerThread(std::thread::id id) noexcept { owner_thread_id_ = id; }
+
 private:
     enum class SlotState : std::uint8_t { Free, Leased, Retained, Queued };
 
+    friend class BufferRef;
+
     void DrainLocked() noexcept;
+
+    /** Return a retained buffer to the pool (called by BufferRef on last reference). */
+    void ReleaseRetained(PktBuffer* pkt);
 
     std::size_t slot_count_;
     std::vector<PktBuffer> slots_;
