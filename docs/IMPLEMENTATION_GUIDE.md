@@ -772,15 +772,33 @@ src/l2/
 
 实现顺序:
 
-1. 只读 cursor parser, 所有 length 计算使用 checked arithmetic。
-2. IPv4 version/IHL/total length/checksum/fragment validation。
-3. IPv6 fixed header/payload length/next-header validation。
-4. IPv6 extension header bounded walker, 设置最大 header 数和总字节数。
-5. TCP/UDP IPv4/IPv6 pseudo-header checksum。
+1. ✅ 只读 cursor parser, 所有 length 计算使用 checked arithmetic (`src/ip/checked.h`: `ReadCursor` + `CheckedMul`/`CheckedAdd`)。
+2. ✅ IPv4 version/IHL/total length/checksum/fragment validation (`src/ip/ipv4.h`/`.cpp`)。
+3. ✅ IPv6 fixed header/payload length/next-header validation (`src/ip/ipv6.h`/`.cpp`)。
+4. ✅ IPv6 extension header bounded walker, 设置最大 header 数(8)和总字节数(1024), loop detection (`src/ip/ipv6.cpp`)。
+5. ✅ TCP/UDP IPv4/IPv6 pseudo-header checksum (`src/ip/checksum.h`/`.cpp`: `InternetChecksum`、`Ipv4PseudoHeaderSeed`、`Ipv6PseudoHeaderSeed`)。
 6. ICMPv4 Destination Unreachable、Fragmentation Needed。
 7. ICMPv6 Destination Unreachable、Packet Too Big、必要 Parameter Problem。
 8. PMTU cache 带最小/最大值、过期和来源验证。
 9. 有界 IPv4 fragment reassembly; IPv6 fragment 作为单独子包交付。
+
+#### P3A-01 完成总结 (2026-08-07)
+
+步骤 1–5 已完成。实现文件:
+
+- `src/ip/checked.h` — `ReadCursor` 类 + `CheckedMul`/`CheckedAdd` 模板。
+- `src/ip/checksum.h` / `src/ip/checksum.cpp` — RFC 1071 `InternetChecksum`、IPv4/IPv6 pseudo-header seed。
+- `src/ip/ipv4.h` / `src/ip/ipv4.cpp` — bounded IPv4 parser with IHL validation + checksum verification。
+- `src/ip/ipv6.h` / `src/ip/ipv6.cpp` — bounded IPv6 parser with extension header walker (max 8 headers, max 1024 bytes, loop detection)。
+
+测试文件:
+
+- `tests/unit/ip/checked_test.cpp` — 16 tests (CheckedMul 4, CheckedAdd 2, ReadCursor 10)。
+- `tests/unit/ip/checksum_test.cpp` — 9 tests (InternetChecksum 5, Ipv4PseudoHeaderSeed 2, Ipv6PseudoHeaderSeed 2)。
+- `tests/unit/ip/ipv4_parser_test.cpp` — 10 tests。
+- `tests/unit/ip/ipv6_parser_test.cpp` — 11 tests。
+
+测试结果: 普通 23/23, ASan 23/23, TSan 23/23, include boundaries OK。
 
 解析规则:
 

@@ -15,6 +15,9 @@ add_library(tcpip2 STATIC
     core/timer_wheel.cpp
     packetio/null_io.cpp
     packetio/tap_io.cpp
+    ip/checksum.cpp
+    ip/ipv4.cpp
+    ip/ipv6.cpp
 )
 
 add_library(tcpip2::tcpip2 ALIAS tcpip2)

@@ -17,7 +17,8 @@
 | NETSTACK2-004 | **Completed** | Dispatcher 与 StackShard, 与 003 并行完成 |
 | NETSTACK2-ADAPTER-SPIKE | **Completed** | compile-only `OpenPppPacketIo` + `OpenPppSessionFactory` 编译通过; 新增 `session_factory.h`、`capabilities.h`、`address.h`、`flow.h` 公共头; `IPacketIo::Capabilities()` 虚方法加入; FlowId 统一到公共头 |
 | NETSTACK2-API-FREEZE-001 | **Completed** | 公共 API 冻结(10 头文件), ADR-004, tag `v0.2.0` |
-| P3A / P3B / P3C | Planned | IPv4/IPv6/L3 → TCP 状态机 → 互操作与性能 |
+| P3A-01 | **Completed** | checked arithmetic、IPv4/IPv6 bounded parser、checksum，23/23 三套构建全绿 |
+| P3A (rest) / P3B / P3C | Planned | ICMP/PMTU/fragment → TCP 状态机 → 互操作与性能 |
 | P4 | Planned | OpenPPP2 集成(在 API-FREEZE 之后接线) |
 | P5–P7 | Planned | 高性能 Packet I/O、平台铺开、调优 |
 
@@ -238,7 +239,8 @@ NETSTACK2-003 TapPacketIo ✅ (ADR-001 v2: per-shard pool, ADR-002: Tier 2 ✅)
         ↓
 NETSTACK2-API-FREEZE-001 ✅
         ↓
-P3A IPv4/IPv6/L3
+P3A-01 IPv4/IPv6 parser + checksum ✅
+  → P3A rest: ICMP/PMTU/fragment reassembly
         ↓
 P3U UDP/ICMP + P3Q FQ/AQM
         ↓

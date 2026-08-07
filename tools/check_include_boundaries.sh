@@ -38,7 +38,7 @@ check_file() {
 for f in "$ROOT"/include/tcpip2/*.h; do
     check_file "$f"
 done
-for f in "$ROOT"/src/core/*.cpp "$ROOT"/src/packetio/*.cpp; do
+for f in "$ROOT"/src/core/*.cpp "$ROOT"/src/packetio/*.cpp "$ROOT"/src/ip/*.cpp; do
     check_file "$f"
 done
 
