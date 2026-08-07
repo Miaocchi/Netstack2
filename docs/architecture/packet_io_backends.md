@@ -1,7 +1,8 @@
 # Packet I/O Backends — Design Direction
 
 > **Status:** direction (recorded for NETSTACK2-000; ratified by the packet I/O
-> contract in NETSTACK2-002 and the AF_XDP backend in NETSTACK2-003).
+> contract in NETSTACK2-002. Linux TUN/TAP lands in NETSTACK2-003; AF_XDP is
+> a later P5 backend.
 > Not an ADR yet; an ADR is required before `NETSTACK2-API-FREEZE-001`.
 
 ## Decision
@@ -34,11 +35,11 @@ same host. The direction is:
   same interface/queue that they left (RX after TX on the same queue) without
   deadlock or ownership confusion: a lease that leaves via `SendBatch()` may
   legitimately come back via `RecvBatch()` on the same `IPacketQueue`.
-- NETSTACK2-003 must add a contract test for the hairpin path (echo a packet
-  into the same queue it was sent from and verify the engine treats it as a
-  fresh RX packet with a fresh lease).
+- The AF_XDP work package must add a contract test for the hairpin path (echo a
+  packet into the same queue it was sent from and verify the engine treats it
+  as a fresh RX packet with a fresh lease).
 
 ## Scope
 
 This note captures direction only. Backend-specific design (XDP program layout,
-UMEM/pool wiring, hairpin test vectors) is deferred to NETSTACK2-003.
+UMEM/pool wiring, hairpin test vectors) is deferred to the P5 AF_XDP work package.

@@ -1,8 +1,9 @@
 # OpenPPP2 集成规划
 
 > **状态**: read-only audit + 集成规划 (对应 NETSTACK2-002 并行工作)。
-> 本文档只做只读审计和规划; 未接 submodule、未改 OpenPPP2 构建、未替换 lwIP。
-> 真实 OpenPPP2 构建与运行时接线在 `NETSTACK2-API-FREEZE-001` 之后 (P4)。
+> 本文档主体是只读审计和规划; 未接 submodule、未改 OpenPPP2 构建、未替换 lwIP。
+> API freeze 前只允许 compile-only adapter spike 验证公共契约; 真实 OpenPPP2
+> 构建依赖和运行时接线仍在 `NETSTACK2-API-FREEZE-001` 之后 (P4)。
 > 架构基线见 `docs/architecture/NETSTACK2_ARCHITECTURE.md`; 任务进度见 `docs/roadmap.md`。
 > 审计基于本地 `/home/openppp2` (当前工作区, 不含 `.tmp-v215-src` 备份)。
 
@@ -255,7 +256,7 @@ lwIP 代码与 loopback 腿在迁移期保留 (回退), 由启动期 engine 选�
 
 * 所有平台收包目前是**同步单包** (async_read_some 单 shot / 同步 handler)。
   Netstack2 `RecvBatch` 批量语义需要桥接层聚合; Linux TUN batch read 在
-  NETSTACK2-003, iOS/Android/Windows 聚合留 P6。
+  NETSTACK2-003 ✅, iOS/Android/Windows 聚合留 P6。
 * 所有平台 `ITap::_packet` 是**栈/成员内复用 buffer**, 非池化。Netstack2
   要求 `RecvBatch` 产出 `BufferLease`, 桥接层必须改为从
   `PktBufferPool` 分配后再交给 handler。
@@ -267,7 +268,7 @@ lwIP 代码与 loopback 腿在迁移期保留 (回退), 由启动期 engine 选�
 | `ppp/ethernet/VEthernet.cpp/.h` | PacketInput 三分支 (netstack2/lwip/native); mta/SSMT 适配 | P4 |
 | `ppp/ethernet/VNetstack.cpp/.h` | 保留 native; netstack2 模式旁路 lwIP/loopback; session 接线 | P4 |
 | `ppp/app/ApplicationConfig.cpp/.h` | `--stack`/`--linux-datapath`/`--netstack-*` 解析 | P4 |
-| `linux/ppp/tap/TapLinux.cpp/.h` | `TapPacketIo` 对齐 (NETSTACK2-003); Ssmt/SsmtMQ 复刻 | P4 + 003 |
+| `linux/ppp/tap/TapLinux.cpp/.h` | `TapPacketIo` 对齐 (NETSTACK2-003 ✅); Ssmt/SsmtMQ 复刻 | P4 + 003 ✅ |
 | `ios/OpenPPP2PacketTunnelBridge.cpp` | `mta=false` 修正; `TapIosIo` 接线 | P4/P6 |
 | `ios/App/.../OpenPPP2PacketTunnelAdapter.swift` | 收包改 pool buffer; batch | P6 |
 | `android/libopenppp2.cpp` | `lwip=false` → 读配置; `TapLinuxIo` 接线 | P4/P6 |
@@ -280,7 +281,8 @@ lwIP 代码与 loopback 腿在迁移期保留 (回退), 由启动期 engine 选�
 
 ## 9. P4 前置条件
 
-1. `NETSTACK2-002/003/004` 完成, `NETSTACK2-API-FREEZE-001` 通过
+1. ~~`NETSTACK2-002H/003/004` 完成~~ ✅, compile-only adapter spike 验证通过,
+   `NETSTACK2-API-FREEZE-001` 通过
    (public header 精确签名冻结);
 2. GitHub SSH 恢复 + `git submodule add git@github.com:Miaocchi/netstack2.git
    common/libtcpip2` (禁止本地绝对路径写 `.gitmodules`);
@@ -297,6 +299,10 @@ lwIP 代码与 loopback 腿在迁移期保留 (回退), 由启动期 engine 选�
 * AF_XDP / netmap / DPDK 后端接线 (P5);
 * Android/iOS/Windows 平台适配 (P6);
 * Onload / EF_VI session (P5/P7)。
+
+允许的唯一例外是 compile-only adapter spike: 它只验证 public header 是否足以
+表达 Packet I/O、Session 创建、路由元数据和 shutdown, 不合入默认数据路径,
+不添加 submodule, 不替换 lwIP。
 
 ## 11. 已知风险与未决点
 
@@ -331,4 +337,5 @@ OS tunnel
 
 净效果: 删除 lwIP 终结 + loopback 内核终结的双重路径; 保留
 `KernelSocketSession` 复用现有 Rinetd/VMUX/VPN 转发层; lwIP 全程回退可用。
-NETSTACK2-002/003/004 期间不触碰 OpenPPP2 任何构建与运行时接线。
+NETSTACK2-002H/003/004 已完成, 期间不触碰 OpenPPP2 默认构建与运行时接线; 仅允许
+compile-only adapter spike 验证公共 API。
