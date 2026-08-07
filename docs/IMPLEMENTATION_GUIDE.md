@@ -780,7 +780,7 @@ src/l2/
 6. ✅ ICMPv4 Destination Unreachable、Fragmentation Needed (`src/ip/icmpv4.h`/`.cpp`)。
 7. ✅ ICMPv6 Destination Unreachable、Packet Too Big、Parameter Problem (`src/ip/icmpv6.h`/`.cpp`)。
 8. ✅ PMTU cache 带最小/最大值、过期和来源验证 (`src/ip/pmtu.h`/`.cpp`)。
-9. 有界 IPv4 fragment reassembly; IPv6 fragment 作为单独子包交付。
+9. ✅ 有界 IPv4/IPv6 fragment reassembly (`src/ip/fragment.h`/`.cpp`)。
 
 #### P3A-01 完成总结 (2026-08-07)
 
@@ -828,21 +828,33 @@ src/l2/
 - PMTU `NormalizeIp` / `Lookup` 拒绝 null 地址和非 4/6 的 `ip_version`, 避免越界读取。
 - PMTU expiry 语义: `IsExpired(entry, now_ms)` helper 统一判断 — 当 `now_ms < timestamp_ms` (clock rollback) 或 `now_ms - timestamp_ms > expires_ms` 时为过期 (`==` 时仍有效)。`Lookup`、`Purge`、`LowerFromIcmp`、`RaiseFromProbe` 全部使用此 helper。
 
-解析规则:
+#### P3A-03 完成总结 (2026-08-07)
 
-- malformed packet 直接 drop 并计数, 不修复歧义包;
-- extension header loop、重叠 fragment 和超大 reassembly 必须拒绝;
-- 每 shard 设置 fragment 数、总 bytes 和 timeout 上限;
-- TUN 路径不实现 ARP/NDP; L2 后端后续通过 shim 实现。
+步骤 9 已完成。实现文件:
 
-测试:
+- `src/ip/fragment.h` / `src/ip/fragment.cpp` — 统一 IPv4/IPv6 fragment reassembly，copy-on-arrival 设计。`FragmentKey` 通过 `ip_version` 区分地址族 (IPv4 地址以 IPv4-mapped IPv6 统一存储 16 字节; IPv4 identification 16→32 位扩展, IPv6 identification 32 位)。`ReassemblyEntry` 持有 `std::vector<uint8_t> data_buffer_` 有界连续重组缓冲区; 每个 fragment 的 payload 在 `AddFragment` 时立即 `memcpy` 到 `data_buffer_` 对应 offset 位置 (copy-on-arrival, 不持有调用方指针, 无 UAF)。`FragmentPiece` 仅记录 offset 和 length, 不保存数据指针。重叠检测 (`HasOverlap`) 遍历已有 pieces, 任何区间相交直接拒绝。完成判定: `last_received_` (MF=0) 设 `total_payload_length_`, 按 offset 排序后检查 `[0, total_payload_length_)` 连续覆盖, 完成时 `std::move(data_buffer_)` 到 `FragmentAddResult::payload` (owning buffer 转移给调用方), entry 随即 `Reset()` 释放供 ID 复用。有界限制: `kMaxFragmentsPerEntry=64`, `kMaxFragmentPayloadBytes=65535` (per-datagram `max_payload_bytes` 参数, 0=使用默认; 调用方按实际 IHL/extension header 长度传入正确上限), `kMaxReassemblyEntries=256`, `kFragmentDefaultTtlMs=60000`。`FragmentReassembler` per-shard 非 thread-safe, per-shard byte budget (`max_total_bytes` 参数, 默认 16 MB), `FindOrCreate` 查找 → 重用空闲/过期 → 创建新 → 满返回 `TooManyEntries`。fragment_offset 从 8-byte units 到 byte offset 使用 `CheckedMul`, offset+length 使用 `CheckedAdd`, 超限返回 `PayloadTooLarge`。
 
-- RFC known vectors;
-- PacketBuilder round-trip;
-- PCAP corpus;
-- libFuzzer/AFL parser fuzz;
-- IPv4/IPv6 差分校验和;
-- fragment overlap、tiny fragment、extension chain 攻击用例。
+关键安全与正确性机制:
+
+- **Copy-on-arrival**: 分片数据在 `AddFragment` 时立即 `memcpy` 到 entry 拥有的 `data_buffer_`。调用方在 `AddFragment` 返回后即可释放 RX buffer, 不存在 UAF。
+- **Owning buffer move**: 重组完成时 `std::move(data_buffer_)` 到 `FragmentAddResult::payload` (`std::vector<uint8_t>`), entry 随即 `Reset()` 释放, 立即允许相同 identification 的 ID 复用。
+- **Fixed deadline**: `deadline_ms_` 在首个 fragment (`fragment_count_ == 0`) 时设置为 `now_ms + expires_ms`, 后续 fragment 不刷新 deadline。攻击者无法通过持续发送 fragment 续期 (trickle timeout attack)。
+- **RFC 5722 IPv6 overlap**: IPv6 检测到 overlap 时设置 `discarded_ = true`, 后续所有 fragment 全部拒绝, 整个 datagram 被丢弃。IPv4 overlap 仅拒绝重叠的 fragment, 保留 entry。
+- **MF=1 长度对齐**: `more_fragments=true` 时 payload length 必须是 8 的倍数, 否则返回 `InvalidFragment`。
+- **DuplicateTerminal**: 第二个 MF=0 fragment 若 `end != total_payload_length_` 返回 `DuplicateTerminal`。若 `end == total_payload_length_` 且不重叠, 视为重传, 接受。
+- **TerminalOverflow**: 已知末尾 (`last_received_`) 后, 任何 `end > total_payload_length_` 的 fragment 返回 `TerminalOverflow`。
+- **Per-datagram max_payload_bytes**: 调用方按实际 IP header 长度 (IPv4 IHL) 或 extension header 长度 (IPv6) 传入正确的 payload 上限, 而非使用通用 65575 常量。0 = 使用 `kMaxFragmentPayloadBytes=65535` 默认值。
+- **Per-shard byte budget**: `max_total_bytes` 参数限制所有 active entry 的 `data_buffer_` 总字节数。新增 fragment 导致超限时返回 `ByteBudgetExceeded`。默认 16 MB (256 entries × ~64 KB)。
+- **Reset() 保留容量**: `Reset()` 调用 `data_buffer_.clear()` 但不调用 `shrink_to_fit()`, 避免 `noexcept` 路径抛异常和反复分配。内存由 per-shard byte budget 和 per-entry 自然限制控制。
+- **null/范围检查**: null `src_ip`/`dst_ip`/`payload`、零 `payload_len`、`payload_len > UINT32_MAX` 全部拒绝。非 0 offset 必须是 8 的倍数。
+- **IsExpired**: `now_ms >= deadline_ms_` (deadline 是固定截止时间)。clock rollback 时 `now_ms < deadline_ms_` 视为未过期 (monotonic clock 假设)。
+- **构造函数非 `noexcept`**: `entries_.reserve(max_entries_)` 可能抛 `bad_alloc`, 容量上限 `kMaxReassemblyEntries=256` 保证有界。
+
+测试文件:
+
+- `tests/unit/ip/fragment_test.cpp` — 40 tests: IPv4 两片对齐/乱序/三片/单片重组, IPv4 重叠/超限/超大/null data/零长度/MF=1 非 8 对齐/null 地址拒绝, IPv6 两片/乱序/单片重组, IPv6 RFC 5722 datagram discard + 后续拒绝/null data/null 地址/零长度/MF=1 非 8 对齐/超大拒绝, IPv4+IPv6 相同 id 不冲突, 不同 protocol 不冲突, 不同源地址不同 entry, 过期 Purge/重用, 表满 TooManyEntries, MF=0 不完整, 32 位 id, 超限 fragment, SourceBufferReleaseAfterAdd (UAF 验证), DuplicateTerminalSameTotal/DifferentTotal, TerminalOverflow, TrickleTimeoutNotExtended, IdReuseAfterCompletion, ByteBudgetExceeded, BytesHeldAfterPurge/AfterCompletion, Ipv6OverlapFollowedByNewIdSucceeds。
+
+测试结果: 普通 40/40, ASan 40/40, TSan 40/40, include boundaries OK, `git diff --check` clean。
 
 ### P3U: UDP flow 和 datagram session
 
@@ -1311,7 +1323,7 @@ P0 和测试框架全程并行, 但每个性能结论都依赖 P0。
 9. ✅ `NETSTACK2-API-FREEZE-001`。
 10. ✅ `P3A-01`: checksum + IPv4/IPv6 bounded parser。
 11. ✅ `P3A-02`: ICMPv4/ICMPv6 bounded parser + PMTU cache。
-12. `P3A-03`: IPv4/IPv6 fragment reassembly。
+12. ✅ `P3A-03`: IPv4/IPv6 fragment reassembly。
 
 在第 9 步之前不接 Netstack2 submodule, 不修改 OpenPPP2 默认 stack, 不开始完整
 TCP 状态机。

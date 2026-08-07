@@ -21,6 +21,7 @@ add_library(tcpip2 STATIC
     ip/icmpv4.cpp
     ip/icmpv6.cpp
     ip/pmtu.cpp
+    ip/fragment.cpp
 )
 
 add_library(tcpip2::tcpip2 ALIAS tcpip2)
