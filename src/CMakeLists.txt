@@ -6,9 +6,15 @@ include(../cmake/compiler_flags.cmake)
 add_library(tcpip2 STATIC
     core/buffer.cpp
     core/buffer_pool.cpp
+    core/flow_hash.cpp
+    core/dispatcher.cpp
+    core/shard.cpp
+    core/runtime.cpp
+    core/netstack.cpp
     core/thread_ownership.cpp
     core/timer_wheel.cpp
     packetio/null_io.cpp
+    packetio/tap_io.cpp
 )
 
 add_library(tcpip2::tcpip2 ALIAS tcpip2)

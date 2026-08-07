@@ -5,8 +5,8 @@
  * @brief Pluggable packet I/O (kernel-bypass backends and virtio-style taps).
  * @license GPL-3.0
  *
- * Experimental API (NETSTACK2-000). Semantics are validated by
- * NETSTACK2-002; signatures may change until NETSTACK2-API-FREEZE-001.
+ * Public API — frozen at NETSTACK2-API-FREEZE-001. Signature changes
+ * require an ADR and a consumer compile-contract test update.
  *
  * Each hardware queue is modeled as exactly one IPacketQueue, opened by a
  * single owner thread (RX queue -> owner shard). Polling backends call
@@ -33,6 +33,7 @@
 #include <vector>
 
 #include <tcpip2/buffer.h>
+#include <tcpip2/capabilities.h>
 
 namespace tcpip2 {
 
@@ -71,6 +72,26 @@ public:
 
     virtual std::size_t QueueId() const noexcept = 0;
 
+    /**
+     * Inject the buffer pool used for RX allocation.
+     *
+     * Called by the runtime after OpenQueue() and before the shard starts
+     * polling. Every concrete IPacketQueue must override this: backends that
+     * allocate RX leases (TapQueue, future AF_XDP/DPDK) store and use the
+     * pool pointer; backends that source leases via other means
+     * (NullPacketIo) still must accept and store the pool for interface
+     * conformance.
+     *
+     * Making this pure virtual forces every backend to acknowledge the pool
+     * dependency at compile time — a backend that forgets to inject the pool
+     * would silently compile but fail at runtime.
+     *
+     * This breaks the global-pool anti-pattern: leases allocated in RecvBatch()
+     * must belong to the same pool the shard drains via DrainReturnQueue(),
+     * otherwise foreign-thread returns accumulate in an undrained pool.
+     */
+    virtual void SetBufferPool(PktBufferPool* pool) noexcept = 0;
+
     /** Event backends wake the owner thread by invoking @p wake. */
     virtual void SetRecvHandler(std::function<void()> wake) = 0;
 };
@@ -83,6 +104,13 @@ public:
 
     /** Open a queue for exclusive use by one thread; nullptr if invalid. */
     virtual std::unique_ptr<IPacketQueue> OpenQueue(std::size_t queue_id) = 0;
+
+    /**
+     * Declare backend capabilities. Non-pure: existing backends get default
+     * capabilities (L3, 1500 MTU, single queue, event mode, no offloads).
+     * Backends that need to advertise different capabilities override this.
+     */
+    virtual PacketIoCapabilities Capabilities() const noexcept { return {}; }
 };
 
 /**
