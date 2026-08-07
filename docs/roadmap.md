@@ -33,7 +33,7 @@
 | NETSTACK2-API-FREEZE-001 | `3d82bb0` | `v0.2.0`(annotated) |
 | P3A-01 | `707b14a` | 无 |
 | P3A-02 | `86d8adc` | 无 |
-| P3A-03 | (pending commit) | 无 |
+| P3A-03 | `c889289` | 无 |
 
 规则:
 
