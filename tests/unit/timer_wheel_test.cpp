@@ -1,4 +1,6 @@
 #include <cstdint>
+#include <limits>
+#include <stdexcept>
 #include <vector>
 
 #include <core/timer_wheel.h>
@@ -109,6 +111,19 @@ TCPIP2_TEST(DefaultSlotCountAcceptsFarDeadlines) {
     wheel.Schedule(2'000'000'000, [&] { fired.push_back(2); });
     TCPIP2_EXPECT_EQ(std::size_t{2}, wheel.AdvanceTo(2'000'000'000));
     TCPIP2_EXPECT_EQ(std::size_t{2}, fired.size());
+}
+
+TCPIP2_TEST(TerminalCursorRejectsNewTimer) {
+    TimerWheel wheel;
+    wheel.AdvanceTo(std::numeric_limits<std::uint64_t>::max());
+    bool threw = false;
+    try {
+        wheel.Schedule(std::numeric_limits<std::uint64_t>::max(), [] {});
+    } catch (const std::overflow_error&) {
+        threw = true;
+    }
+    TCPIP2_EXPECT_TRUE(threw);
+    TCPIP2_EXPECT_EQ(std::size_t{0}, wheel.PendingCount());
 }
 
 TCPIP2_TEST_MAIN();

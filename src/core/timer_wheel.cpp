@@ -14,6 +14,8 @@
 #include <core/timer_wheel.h>
 
 #include <algorithm>
+#include <limits>
+#include <stdexcept>
 #include <utility>
 
 namespace tcpip2 {
@@ -28,14 +30,30 @@ TimerId TimerWheel::Schedule(std::uint64_t deadline_ms, TimerCallback cb) {
     if (deadline_ms <= cursor_ms_) {
         // Deadlines in the past (or "now") are clamped to the next tick so a
         // timer scheduled from inside AdvanceTo() fires on the next advance.
+        if (cursor_ms_ == std::numeric_limits<std::uint64_t>::max()) {
+            throw std::overflow_error("timer wheel cursor exhausted");
+        }
         deadline_ms = cursor_ms_ + 1;
     }
-    const TimerId id{next_id_++};
+    TimerId id{next_id_++};
+    if (next_id_ == 0) next_id_ = 1;
+    while (id.value == 0 || by_id_.find(id.value) != by_id_.end()) {
+        id.value = next_id_++;
+        if (next_id_ == 0) next_id_ = 1;
+    }
     const std::size_t slot = static_cast<std::size_t>(deadline_ms % slot_count_);
     slots_[slot].push_back(Entry{id, deadline_ms, std::move(cb)});
     std::list<Entry>::iterator it = slots_[slot].end();
     --it;
-    by_id_.emplace(id.value, SlotPos{slot, it});
+    try {
+        const auto inserted = by_id_.emplace(id.value, SlotPos{slot, it});
+        if (!inserted.second) {
+            throw std::overflow_error("timer id space exhausted");
+        }
+    } catch (...) {
+        slots_[slot].erase(it);
+        throw;
+    }
     ++pending_;
     return id;
 }
