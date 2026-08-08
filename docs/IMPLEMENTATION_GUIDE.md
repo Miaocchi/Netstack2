@@ -843,8 +843,8 @@ src/l2/
 - **MF=1 长度对齐**: `more_fragments=true` 时 payload length 必须是 8 的倍数, 否则返回 `InvalidFragment`。
 - **DuplicateTerminal**: 第二个 MF=0 fragment 若 `end != total_payload_length_` 返回 `DuplicateTerminal`。若 `end == total_payload_length_` 且不重叠, 视为重传, 接受。
 - **TerminalOverflow**: 已知末尾 (`last_received_`) 后, 任何 `end > total_payload_length_` 的 fragment 返回 `TerminalOverflow`。
-- **Per-datagram max_payload_bytes**: 调用方按实际 IP header 长度 (IPv4 IHL) 或 extension header 长度 (IPv6) 传入正确的 payload 上限, 而非使用通用 65575 常量。0 = 使用 `kMaxFragmentPayloadBytes=65535` 默认值。
-- **Per-shard byte budget**: `max_total_bytes` 参数限制所有 active entry 的 `data_buffer_` 总字节数。新增 fragment 导致超限时返回 `ByteBudgetExceeded`。默认 16 MB (256 entries × ~64 KB)。
+- **Per-datagram max_payload_bytes**: 调用方按实际 IP header 长度 (IPv4 IHL) 或 extension header 长度 (IPv6) 传入正确的 payload 上限, 而非使用通用 65575 常量。IPv4 的 0 默认值使用保守 hard cap 65515, IPv6 使用 65535; 调用方传入更大值也会被协议 hard cap 钳制。
+- **Per-shard byte budget**: `max_total_bytes` 参数限制所有 active entry 的 `data_buffer_` 总字节数。预算检查基于 `offset + length` 导致的实际 buffer 投影增长, 同时覆盖 existing entry 扩容和高 offset 稀疏首片; 超限返回 `ByteBudgetExceeded`。默认 16 MB (256 entries × ~64 KB)。
 - **Reset() 保留容量**: `Reset()` 调用 `data_buffer_.clear()` 但不调用 `shrink_to_fit()`, 避免 `noexcept` 路径抛异常和反复分配。内存由 per-shard byte budget 和 per-entry 自然限制控制。
 - **null/范围检查**: null `src_ip`/`dst_ip`/`payload`、零 `payload_len`、`payload_len > UINT32_MAX` 全部拒绝。非 0 offset 必须是 8 的倍数。
 - **IsExpired**: `now_ms >= deadline_ms_` (deadline 是固定截止时间)。clock rollback 时 `now_ms < deadline_ms_` 视为未过期 (monotonic clock 假设)。
@@ -852,9 +852,9 @@ src/l2/
 
 测试文件:
 
-- `tests/unit/ip/fragment_test.cpp` — 40 tests: IPv4 两片对齐/乱序/三片/单片重组, IPv4 重叠/超限/超大/null data/零长度/MF=1 非 8 对齐/null 地址拒绝, IPv6 两片/乱序/单片重组, IPv6 RFC 5722 datagram discard + 后续拒绝/null data/null 地址/零长度/MF=1 非 8 对齐/超大拒绝, IPv4+IPv6 相同 id 不冲突, 不同 protocol 不冲突, 不同源地址不同 entry, 过期 Purge/重用, 表满 TooManyEntries, MF=0 不完整, 32 位 id, 超限 fragment, SourceBufferReleaseAfterAdd (UAF 验证), DuplicateTerminalSameTotal/DifferentTotal, TerminalOverflow, TrickleTimeoutNotExtended, IdReuseAfterCompletion, ByteBudgetExceeded, BytesHeldAfterPurge/AfterCompletion, Ipv6OverlapFollowedByNewIdSucceeds。
+- `tests/unit/ip/fragment_test.cpp` — 44 tests: 在原 40 个重组、overlap、ownership、timeout 和资源上限用例基础上, 增加 existing entry budget growth、稀疏首片 budget、custom payload hard-cap 绕过和同 key 过期 entry 新 datagram 重建回归。
 
-测试结果: 普通 40/40, ASan 40/40, TSan 40/40, include boundaries OK, `git diff --check` clean。
+测试结果: 普通 44/44, ASan 44/44, TSan 44/44, include boundaries OK, `git diff --check` clean。
 
 ### P3U: UDP flow 和 datagram session
 
@@ -933,7 +933,7 @@ Tcp/Udp packet generated
 
 按以下子阶段实现, 每阶段都能用 PacketBuilder 和 FakeClock 独立验证。
 
-#### P3B-1: PCB 和握手
+#### P3B-1: PCB 和握手 ✅ Implemented (2026-08-08, pending commit)
 
 - LISTEN、SYN-RECEIVED、ESTABLISHED、RST;
 - secure ISN;
@@ -941,6 +941,20 @@ Tcp/Udp packet generated
 - 4-tuple duplicate SYN lookup;
 - backlog、SYN flood 和 half-open 上限;
 - MSS、Window Scale、SACK Permitted、Timestamp negotiation。
+
+实现总结:
+
+- `src/tcp/segment.h` / `.cpp` 和 `input.h` / `.cpp`: 有界 TCP header/data-offset/checksum parser, IPv4/IPv6 pseudo-header 校验, IP checksum/protocol/fragment gate; fragment 必须先经过 P3A reassembly。
+- `src/tcp/options.h` / `.cpp`: allocation-free SYN option parser, 支持 EOL/NOP/unknown option, MSS、Window Scale (clamp 14)、SACK Permitted 和 Timestamp, 拒绝 truncated、非法长度和重复 known option。
+- `src/tcp/isn.h` / `.cpp`: SipHash-2-4 keyed RFC 6528-style ISN, 单调 4 us tick 模型, Linux `getrandom()` 提供每次 shard start 的 128-bit CSPRNG secret; entropy 失败时 shard 启动失败而不降级。
+- `src/tcp/handshake.h` / `.cpp`: shard-local bounded PCB table。无 PCB 的目标表示 transparent wildcard LISTEN; 新 SYN 进入 SYN-RECEIVED, 正确 ACK 进入 ESTABLISHED。exact 4-tuple duplicate SYN 复用 ISS/PCB/timer; per-destination listener backlog、per-shard half-open 和 total PCB 分别设 hard limit。被动 SYN-ACK 按固定 interval 重试并最终释放 quota; P3B-1 状态集合不含 SYN-SENT, active open 留到需要客户端 TCP 角色时单独扩展。
+- option negotiation 只启用 peer 已提供且本地允许的能力。SYN/SYN-ACK window 字段按 RFC 7323 保持未缩放; IPv4/IPv6 MSS 按 path MTU 分别扣除 fixed header。Timestamp 每次 SYN-ACK/retry 更新 TSval, final ACK 必须携带匹配 TSecr。
+- `src/tcp/output.h` / `.cpp`: 在调用方提供的 bounded buffer 内生成 IPv4/IPv6 SYN-ACK/RST, 包含 options、IP checksum 和 TCP checksum, 不引入额外 owning allocation。
+- `StackShard` 已接通 RX parse → handshake → bounded control TX。TX hard limit 64, `SendBatch` WouldBlock/partial-send 尾部继续由 shard 持有; shutdown 在 owner thread 取消 timer、释放 PCB/TX。Timer callback 使用 weak lifetime gate, detached due callback 不会访问已销毁 engine; `TimerWheel::Schedule` 具备插入失败回滚。
+- `tests/unit/tcp/handshake_test.cpp`: 23 tests, 覆盖 IPv4/IPv6 parse/output/checksum、malformed input、option negotiation、ISN golden vector/CSPRNG、SYN/ACK/RST、duplicate SYN、Timestamp final ACK、retry/timeout、backlog/half-open/SYN flood、shutdown callback lifetime 和 fragment gate。
+- `tests/unit/shard_runtime_test.cpp`: 真实 NullPacketIo SYN→SYN-ACK 路径, 验证 WouldBlock 时 TX lease 保留后重试成功; control inbox 无容量时 Stop atomic fallback。
+
+验证结果: 全量 CTest 普通 28/28, ASan/UBSan 28/28, TSan 28/28; TCP unit 23/23; include boundaries OK; `git diff --check` clean。P3B-2 receive data/reassembly、Session partial acceptance/backpressure 和 fragment reassembly 到 TCP 的完整数据路径尚未实现。
 
 #### P3B-2: 接收路径
 

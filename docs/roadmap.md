@@ -19,8 +19,9 @@
 | NETSTACK2-API-FREEZE-001 | **Completed** | 公共 API 冻结(10 头文件), ADR-004, tag `v0.2.0` |
 | P3A-01 | **Completed** | checked arithmetic、IPv4/IPv6 bounded parser、checksum，23/23 三套构建全绿 |
 | P3A-02 | **Completed** | ICMPv4/ICMPv6 bounded parser + PMTU cache，26/26 三套构建全绿 |
-| P3A-03 | **Completed** | IPv4/IPv6 fragment reassembly，40/40 三套构建全绿 |
-| P3B / P3C | Planned | TCP 状态机 → 互操作与性能 |
+| P3A-03 | **Completed** | IPv4/IPv6 fragment reassembly，44/44 三套构建全绿（含 byte-budget hardening） |
+| P3B-1 | **Implemented, pending commit** | bounded PCB + passive handshake + IPv4/IPv6 wire RX/TX，TCP 23/23、全量 28/28 三套构建全绿 |
+| P3B-2 / P3B-3 / P3B-4 / P3C | Planned | TCP 接收 → 发送 → 关闭 → 互操作与性能 |
 | P4 | Planned | OpenPPP2 集成(在 API-FREEZE 之后接线) |
 | P5–P7 | Planned | 高性能 Packet I/O、平台铺开、调优 |
 
@@ -247,11 +248,12 @@ NETSTACK2-API-FREEZE-001 ✅
 P3A-01 IPv4/IPv6 parser + checksum ✅
   → P3A-02 ICMPv4/ICMPv6 parser + PMTU cache ✅
   → P3A-03 fragment reassembly ✅
-  → P3B TCP state machine
+  → P3B-1 PCB + passive handshake ✅ (pending commit)
+  → P3B-2 receive path
         ↓
 P3U UDP/ICMP + P3Q FQ/AQM
         ↓
-P3B TCP 基础状态机
+P3B-3 send path + P3B-4 close
         ↓
 P3C TCP 互操作与性能
         ↓
