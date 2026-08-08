@@ -12,9 +12,13 @@
 #include <memory>
 #include <vector>
 
+#include <tcpip2/session_factory.h>
+
 #include <core/timer_wheel.h>
+#include <tcp/delivery.h>
 #include <tcp/isn.h>
 #include <tcp/options.h>
+#include <tcp/receive.h>
 #include <tcp/segment.h>
 
 namespace tcpip2 {
@@ -32,6 +36,8 @@ enum class TcpHandshakeError {
     HalfOpenLimit,
     PcbLimit,
     TimerFailure,
+    ReceiveBudget,
+    InvalidSession,
     Shutdown,
 };
 
@@ -46,6 +52,9 @@ struct TcpHandshakeConfig {
     bool enable_window_scale = true;
     bool enable_sack = true;
     bool enable_timestamps = true;
+    std::size_t receive_memory_budget = 16 * 1024 * 1024;
+    std::size_t delivery_call_budget = 16;
+    std::uint64_t delayed_ack_ms = 40;
     std::array<std::uint64_t, 4> syn_ack_retry_intervals_ms{{1000, 2000, 4000, 8000}};
 
     bool Validate() const noexcept;
@@ -69,6 +78,10 @@ struct TcpResponse {
     std::uint8_t flags = 0;
     std::uint16_t window = 0;
     TcpSynOptions syn_options;
+    bool timestamp_present = false;
+    std::uint32_t timestamp_value = 0;
+    std::uint32_t timestamp_echo = 0;
+    TcpSackBlockList sack_blocks;
 };
 
 struct TcpHandshakeResult {
@@ -84,6 +97,13 @@ struct TcpPcbSnapshot {
     std::uint32_t snd_una = 0;
     std::uint32_t snd_nxt = 0;
     std::uint32_t rcv_nxt = 0;
+    FlowId flow_id;
+    std::uint64_t generation = 0;
+    std::size_t receive_bytes = 0;
+    std::size_t ready_bytes = 0;
+    std::size_t out_of_order_bytes = 0;
+    std::size_t advertised_window = 0;
+    bool session_blocked = false;
     TcpNegotiatedOptions options;
 };
 
@@ -95,7 +115,8 @@ class TcpHandshakeEngine final {
 public:
     TcpHandshakeEngine(const TcpHandshakeConfig& config,
                        const TcpIsnGenerator& isn,
-                       TimerWheel& timers);
+                       TimerWheel& timers,
+                       std::uint64_t generation_epoch = 1);
     ~TcpHandshakeEngine();
 
     TcpHandshakeEngine(const TcpHandshakeEngine&) = delete;
@@ -103,19 +124,34 @@ public:
 
     TcpHandshakeResult OnSegment(const TcpSegmentView& segment,
                                  std::uint64_t now_ms) noexcept;
+    /** Caller retains @p session until OnSessionClosed acknowledges the binding. */
+    TcpHandshakeResult AttachSession(const FlowKey& incoming_flow,
+                                     ITransportSession* session,
+                                     std::uint64_t now_ms) noexcept;
+    TcpHandshakeResult OnSessionWritable(FlowId flow_id,
+                                         std::uint64_t generation,
+                                         std::uint64_t now_ms) noexcept;
+    bool OnSessionClosed(FlowId flow_id,
+                         std::uint64_t generation) noexcept;
+    void PumpSessionDeliveries(std::uint64_t now_ms,
+                               std::size_t pcb_budget = 64) noexcept;
 
     bool Find(const FlowKey& incoming_flow, TcpPcbSnapshot& out) const noexcept;
     bool PopPendingResponse(TcpResponse& out) noexcept;
+    void DeferResponse(const TcpResponse& response) noexcept {
+        QueueResponse(response);
+    }
     void Shutdown() noexcept;
 
     std::size_t PcbCount() const noexcept { return pcbs_.size(); }
     std::size_t HalfOpenCount() const noexcept { return half_open_count_; }
     std::size_t EstablishedCount() const noexcept;
-    std::size_t PendingResponseCount() const noexcept {
-        return pending_responses_.size();
-    }
+    std::size_t PendingResponseCount() const noexcept;
     std::size_t DroppedResponseCount() const noexcept {
         return dropped_responses_;
+    }
+    std::size_t ReceiveMemoryBytes() const noexcept {
+        return receive_memory_bytes_;
     }
 
 private:
@@ -132,9 +168,17 @@ private:
         std::uint32_t receive_window = 0;
         TcpNegotiatedOptions options;
         TcpSynOptions response_options;
+        std::unique_ptr<TcpReceiveBuffer> receive;
+        ITransportSession* session = nullptr;
+        bool session_bound = false;
+        FlowId flow_id;
         std::uint64_t generation = 0;
         std::size_t retry_index = 0;
         TimerId retry_timer;
+        TimerId delayed_ack_timer;
+        bool delivery_pending = false;
+        TcpResponse pending_ack;
+        bool pending_ack_valid = false;
     };
 
     struct CallbackGate {
@@ -144,9 +188,16 @@ private:
     std::size_t FindIndex(const FlowKey& incoming_flow) const noexcept;
     std::size_t ListenerHalfOpenCount(const FlowKey& incoming_flow) const noexcept;
     TcpResponse BuildSynAck(Pcb& pcb, std::uint64_t now_ms) noexcept;
+    TcpResponse BuildAck(Pcb& pcb, std::uint64_t now_ms) noexcept;
     static TcpResponse BuildReset(const TcpSegmentView& segment) noexcept;
     bool ScheduleRetry(Pcb& pcb, std::uint64_t deadline_ms) noexcept;
     void OnRetry(const FlowKey& incoming_flow, std::uint64_t generation) noexcept;
+    bool ScheduleDelayedAck(Pcb& pcb, std::uint64_t now_ms) noexcept;
+    void OnDelayedAck(const FlowKey& incoming_flow, std::uint64_t generation) noexcept;
+    TcpHandshakeResult ProcessEstablished(Pcb& pcb,
+                                          const TcpSegmentView& segment,
+                                          std::uint64_t now_ms) noexcept;
+    TcpDeliveryResult DrainSession(Pcb& pcb) noexcept;
     void RemoveAt(std::size_t index) noexcept;
     void QueueResponse(const TcpResponse& response) noexcept;
 
@@ -158,7 +209,9 @@ private:
     std::shared_ptr<CallbackGate> callback_gate_;
     std::size_t half_open_count_ = 0;
     std::size_t dropped_responses_ = 0;
-    std::uint64_t next_generation_ = 1;
+    std::size_t receive_memory_bytes_ = 0;
+    std::uint64_t next_flow_id_ = 1;
+    std::uint64_t generation_epoch_ = 1;
     bool shutdown_ = false;
 };
 

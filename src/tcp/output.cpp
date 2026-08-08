@@ -78,6 +78,52 @@ bool SerializeSynOptions(const TcpSynOptions& source,
     return true;
 }
 
+bool SerializeAckOptions(const TcpResponse& response,
+                         std::array<std::uint8_t, 40>& options,
+                         std::size_t& length) noexcept {
+    length = 0;
+    if (response.timestamp_present) {
+        if (!AppendByte(options, length, 1) || !AppendByte(options, length, 1) ||
+            !AppendByte(options, length, 8) || !AppendByte(options, length, 10)) {
+            return false;
+        }
+        for (int shift = 24; shift >= 0; shift -= 8) {
+            if (!AppendByte(options, length, static_cast<std::uint8_t>(
+                    (response.timestamp_value >> shift) & 0xffu))) return false;
+        }
+        for (int shift = 24; shift >= 0; shift -= 8) {
+            if (!AppendByte(options, length, static_cast<std::uint8_t>(
+                    (response.timestamp_echo >> shift) & 0xffu))) return false;
+        }
+    }
+
+    const std::size_t max_sack_blocks = response.timestamp_present ? 3 : 4;
+    const std::size_t sack_count = std::min(
+        response.sack_blocks.count, max_sack_blocks);
+    if (sack_count != 0) {
+        if (!AppendByte(options, length, 5) ||
+            !AppendByte(options, length,
+                        static_cast<std::uint8_t>(2 + sack_count * 8))) {
+            return false;
+        }
+        for (std::size_t i = 0; i < sack_count; ++i) {
+            const TcpSackBlock& block = response.sack_blocks.blocks[i];
+            for (int shift = 24; shift >= 0; shift -= 8) {
+                if (!AppendByte(options, length, static_cast<std::uint8_t>(
+                        (block.left_edge >> shift) & 0xffu))) return false;
+            }
+            for (int shift = 24; shift >= 0; shift -= 8) {
+                if (!AppendByte(options, length, static_cast<std::uint8_t>(
+                        (block.right_edge >> shift) & 0xffu))) return false;
+            }
+        }
+    }
+    while ((length % 4) != 0) {
+        if (!AppendByte(options, length, 0)) return false;
+    }
+    return true;
+}
+
 } // namespace
 
 TcpOutputResult BuildTcpControlPacket(const TcpResponse& response,
@@ -97,10 +143,16 @@ TcpOutputResult BuildTcpControlPacket(const TcpResponse& response,
 
     std::array<std::uint8_t, 40> options{};
     std::size_t options_length = 0;
-    if ((response.flags & TcpFlag::Syn) != 0 &&
-        !SerializeSynOptions(response.syn_options, options, options_length)) {
-        result.error = TcpOutputError::OptionsTooLong;
-        return result;
+    if ((response.flags & TcpFlag::Syn) != 0) {
+        if (!SerializeSynOptions(response.syn_options, options, options_length)) {
+            result.error = TcpOutputError::OptionsTooLong;
+            return result;
+        }
+    } else if ((response.flags & TcpFlag::Ack) != 0) {
+        if (!SerializeAckOptions(response, options, options_length)) {
+            result.error = TcpOutputError::OptionsTooLong;
+            return result;
+        }
     }
 
     const std::size_t ip_header_length = response.flow.source.IsIpv4() ? 20 : 40;
