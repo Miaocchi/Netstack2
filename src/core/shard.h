@@ -109,6 +109,7 @@ private:
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};
+    std::uint64_t tcp_engine_epoch_ = 0;
 
     // Counters (atomic: written on the shard thread, read from any thread)
     std::atomic<std::size_t> packets_received_{0};

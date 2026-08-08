@@ -63,9 +63,12 @@ bool StackShard::Start() noexcept {
     if (running_.load(std::memory_order_relaxed)) return false;
     std::array<std::uint64_t, 2> isn_secret{};
     if (!LoadTcpIsnSecret(isn_secret)) return false;
+    ++tcp_engine_epoch_;
+    if (tcp_engine_epoch_ == 0) ++tcp_engine_epoch_;
     try {
         tcp_ = std::make_unique<TcpHandshakeEngine>(
-            TcpHandshakeConfig{}, TcpIsnGenerator(isn_secret), timer_);
+            TcpHandshakeConfig{}, TcpIsnGenerator(isn_secret), timer_,
+            tcp_engine_epoch_);
         tcp_tx_.reserve(kTcpTxBudget);
     } catch (...) {
         tcp_.reset();
@@ -102,8 +105,8 @@ void StackShard::Stop() noexcept {
     if (thread_.joinable()) {
         thread_.join();
     }
+    running_.store(false, std::memory_order_release);
     tcp_.reset();
-    running_.store(false, std::memory_order_relaxed);
 }
 
 bool StackShard::PostMessage(ShardMessage&& msg) noexcept {
@@ -175,6 +178,16 @@ void StackShard::EventLoopIteration() noexcept {
             msg.data.Reset();
             break;
         }
+        if (msg.type == ShardMessageType::kSessionWritable && tcp_) {
+            const TcpHandshakeResult writable = tcp_->OnSessionWritable(
+                msg.flow_id, msg.generation, now_ms);
+            if (writable.response.valid && !EnqueueTcpResponse(writable.response)) {
+                tcp_->DeferResponse(writable.response);
+            }
+        }
+        if (msg.type == ShardMessageType::kSessionClosed && tcp_) {
+            tcp_->OnSessionClosed(msg.flow_id, msg.generation);
+        }
         messages_processed_.fetch_add(1, std::memory_order_relaxed);
         // Release any carried data.
         msg.data.Reset();
@@ -185,10 +198,14 @@ void StackShard::EventLoopIteration() noexcept {
     // Step 5: advance timers, then drain bounded retry/control output.
     timer_.AdvanceTo(now_ms);
     if (tcp_) {
+        tcp_->PumpSessionDeliveries(now_ms, kControlInboxBudget);
         TcpResponse response;
         while (tcp_tx_.size() < kTcpTxBudget &&
                tcp_->PopPendingResponse(response)) {
-            EnqueueTcpResponse(response);
+            if (!EnqueueTcpResponse(response)) {
+                tcp_->DeferResponse(response);
+                break;
+            }
         }
         tcp_pcb_count_.store(tcp_->PcbCount(), std::memory_order_relaxed);
         tcp_half_open_count_.store(tcp_->HalfOpenCount(), std::memory_order_relaxed);
@@ -216,7 +233,9 @@ void StackShard::ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexce
     if (result.error != TcpHandshakeError::None) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
     }
-    if (result.response.valid) EnqueueTcpResponse(result.response);
+    if (result.response.valid && !EnqueueTcpResponse(result.response)) {
+        tcp_->DeferResponse(result.response);
+    }
 }
 
 bool StackShard::EnqueueTcpResponse(const TcpResponse& response) noexcept {

@@ -27,6 +27,7 @@ namespace tcpip2 {
 enum class ShardMessageType {
     kPacketIn,
     kSessionData,
+    kSessionWritable,
     kControl,
     kSessionClosed,
     kStop,
@@ -36,6 +37,7 @@ enum class ShardMessageType {
 struct ShardMessage {
     ShardMessageType type = ShardMessageType::kControl;
     FlowId flow_id;
+    std::uint64_t generation = 0;
     BufferLease data;
     SessionError error = SessionError::None;
 };
