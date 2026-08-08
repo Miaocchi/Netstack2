@@ -23,11 +23,28 @@
 #include <core/shard.h>
 
 #include <chrono>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <utility>
 
+#include <tcp/handshake.h>
+#include <tcp/input.h>
+#include <tcp/isn.h>
+#include <tcp/output.h>
+
 namespace tcpip2 {
+
+namespace {
+
+std::uint64_t MonotonicNowMs() noexcept {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+} // namespace
 
 StackShard::StackShard(std::size_t shard_id, PktBufferPool& pool, IPacketQueue* queue,
                        std::size_t inbox_capacity) noexcept
@@ -44,9 +61,25 @@ StackShard::~StackShard() {
 
 bool StackShard::Start() noexcept {
     if (running_.load(std::memory_order_relaxed)) return false;
+    std::array<std::uint64_t, 2> isn_secret{};
+    if (!LoadTcpIsnSecret(isn_secret)) return false;
+    try {
+        tcp_ = std::make_unique<TcpHandshakeEngine>(
+            TcpHandshakeConfig{}, TcpIsnGenerator(isn_secret), timer_);
+        tcp_tx_.reserve(kTcpTxBudget);
+    } catch (...) {
+        tcp_.reset();
+        return false;
+    }
     stop_requested_.store(false, std::memory_order_relaxed);
     running_.store(true, std::memory_order_relaxed);
-    thread_ = std::thread([this] { Run(); });
+    try {
+        thread_ = std::thread([this] { Run(); });
+    } catch (...) {
+        running_.store(false, std::memory_order_relaxed);
+        tcp_.reset();
+        return false;
+    }
     return true;
 }
 
@@ -61,20 +94,28 @@ void StackShard::Stop() noexcept {
     // Post a stop message to the control inbox.
     ShardMessage msg;
     msg.type = ShardMessageType::kStop;
-    control_inbox_.Push(std::move(msg));
+    if (!control_inbox_.Push(std::move(msg))) {
+        stop_requested_.store(true, std::memory_order_relaxed);
+    }
     control_inbox_.Wake();
 
     if (thread_.joinable()) {
         thread_.join();
     }
+    tcp_.reset();
     running_.store(false, std::memory_order_relaxed);
 }
 
 bool StackShard::PostMessage(ShardMessage&& msg) noexcept {
+    if (!running_.load(std::memory_order_relaxed)) return false;
     return control_inbox_.Push(std::move(msg));
 }
 
 bool StackShard::PostPacket(BufferLease&& lease) noexcept {
+    if (!running_.load(std::memory_order_relaxed)) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
     if (packet_inbox_.Push(std::move(lease))) return true;
     packets_dropped_.fetch_add(1, std::memory_order_relaxed);
     return false;
@@ -90,12 +131,18 @@ void StackShard::Run() noexcept {
     while (!stop_requested_.load(std::memory_order_relaxed)) {
         EventLoopIteration();
     }
+    if (tcp_) tcp_->Shutdown();
+    tcp_tx_.clear();
+    tcp_pcb_count_.store(0, std::memory_order_relaxed);
+    tcp_half_open_count_.store(0, std::memory_order_relaxed);
     // Final drain so foreign-thread buffer releases are cleaned up.
     pool_.DrainReturnQueue();
     ownership_.ClearOwner();
 }
 
 void StackShard::EventLoopIteration() noexcept {
+    const std::uint64_t now_ms = MonotonicNowMs();
+
     // Step 1: DrainReturnQueue — recycle foreign-thread releases.
     pool_.DrainReturnQueue();
 
@@ -105,10 +152,8 @@ void StackShard::EventLoopIteration() noexcept {
         IoError error = IoError::None;
         const std::size_t n = queue_->RecvBatch(rx, kRxBudget, error);
         for (std::size_t i = 0; i < n; ++i) {
-            // Count the packet; the future TCP engine will parse headers here.
             packets_received_.fetch_add(1, std::memory_order_relaxed);
-            // Release immediately — no protocol work yet.
-            rx[i].Reset();
+            ProcessPacket(std::move(rx[i]), now_ms);
         }
     }
 
@@ -117,8 +162,7 @@ void StackShard::EventLoopIteration() noexcept {
         BufferLease lease;
         if (!packet_inbox_.Pop(lease)) break;
         packets_received_.fetch_add(1, std::memory_order_relaxed);
-        // No protocol work yet — release immediately.
-        lease.Reset();
+        ProcessPacket(std::move(lease), now_ms);
     }
 
     // Step 4: Drain control inbox (MPSC). Check for StopMessage first.
@@ -136,15 +180,85 @@ void StackShard::EventLoopIteration() noexcept {
         msg.data.Reset();
     }
 
-    // Step 5: Advance timers (no real clock — noop for now).
-    // Step 6-9: Noop (protocol, pacing, TX, counters publish).
-    (void)timer_;
+    if (stop_requested_.load(std::memory_order_relaxed)) return;
+
+    // Step 5: advance timers, then drain bounded retry/control output.
+    timer_.AdvanceTo(now_ms);
+    if (tcp_) {
+        TcpResponse response;
+        while (tcp_tx_.size() < kTcpTxBudget &&
+               tcp_->PopPendingResponse(response)) {
+            EnqueueTcpResponse(response);
+        }
+        tcp_pcb_count_.store(tcp_->PcbCount(), std::memory_order_relaxed);
+        tcp_half_open_count_.store(tcp_->HalfOpenCount(), std::memory_order_relaxed);
+    }
+
+    // Step 8: submit the bounded TCP control batch. Partial-send tails remain owned.
+    FlushTcpTx();
 
     // Step 10: Wait — block on the control inbox with a short timeout.
     // This keeps the shard responsive to control messages while avoiding
     // a busy spin when there is no RX work.
     if (!stop_requested_.load(std::memory_order_relaxed)) {
         control_inbox_.Wait(1);
+    }
+}
+
+void StackShard::ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexcept {
+    if (!lease || !tcp_) return;
+    const TcpInputResult input = ParseIpTcpPacket(lease.Data(), lease.Size());
+    if (input.error != TcpInputError::None) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const TcpHandshakeResult result = tcp_->OnSegment(input.segment, now_ms);
+    if (result.error != TcpHandshakeError::None) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (result.response.valid) EnqueueTcpResponse(result.response);
+}
+
+bool StackShard::EnqueueTcpResponse(const TcpResponse& response) noexcept {
+    if (queue_ == nullptr || tcp_tx_.size() >= kTcpTxBudget) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    BufferLease lease = pool_.Allocate();
+    if (!lease) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    const TcpOutputResult output = BuildTcpControlPacket(
+        response, lease.Data(), lease.Capacity());
+    if (output.error != TcpOutputError::None) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    lease.Resize(output.packet_length);
+    try {
+        tcp_tx_.push_back(std::move(lease));
+    } catch (...) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    return true;
+}
+
+void StackShard::FlushTcpTx() noexcept {
+    if (queue_ == nullptr || tcp_tx_.empty()) return;
+    IoError error = IoError::None;
+    std::size_t sent = queue_->SendBatch(tcp_tx_.data(), tcp_tx_.size(), error);
+    if (sent > tcp_tx_.size()) sent = tcp_tx_.size();
+    if (sent > 0) {
+        for (std::size_t i = sent; i < tcp_tx_.size(); ++i) {
+            tcp_tx_[i - sent] = std::move(tcp_tx_[i]);
+        }
+        tcp_tx_.resize(tcp_tx_.size() - sent);
+    }
+    if (error != IoError::None && error != IoError::WouldBlock) {
+        packets_dropped_.fetch_add(tcp_tx_.size(), std::memory_order_relaxed);
+        tcp_tx_.clear();
     }
 }
 

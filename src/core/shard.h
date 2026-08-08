@@ -19,7 +19,9 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <thread>
+#include <vector>
 
 #include <tcpip2/buffer.h>
 #include <tcpip2/packet_io.h>
@@ -32,6 +34,9 @@
 #include <core/timer_wheel.h>
 
 namespace tcpip2 {
+
+class TcpHandshakeEngine;
+struct TcpResponse;
 
 class StackShard {
 public:
@@ -71,15 +76,25 @@ public:
     std::size_t MessagesProcessed() const noexcept {
         return messages_processed_.load(std::memory_order_relaxed);
     }
+    std::size_t TcpPcbCount() const noexcept {
+        return tcp_pcb_count_.load(std::memory_order_relaxed);
+    }
+    std::size_t TcpHalfOpenCount() const noexcept {
+        return tcp_half_open_count_.load(std::memory_order_relaxed);
+    }
 
     // Budgets
     static constexpr std::size_t kRxBudget = 64;
     static constexpr std::size_t kPacketInboxBudget = 64;
     static constexpr std::size_t kControlInboxBudget = 256;
+    static constexpr std::size_t kTcpTxBudget = 64;
 
 private:
     void Run() noexcept;
     void EventLoopIteration() noexcept;
+    void ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexcept;
+    bool EnqueueTcpResponse(const TcpResponse& response) noexcept;
+    void FlushTcpTx() noexcept;
 
     std::size_t shard_id_;
     PktBufferPool& pool_;
@@ -88,6 +103,8 @@ private:
     InboxMpsc control_inbox_;
     ThreadOwnershipGuard ownership_;
     TimerWheel timer_;
+    std::unique_ptr<TcpHandshakeEngine> tcp_;
+    std::vector<BufferLease> tcp_tx_;
 
     std::thread thread_;
     std::atomic<bool> running_{false};
@@ -97,6 +114,8 @@ private:
     std::atomic<std::size_t> packets_received_{0};
     std::atomic<std::size_t> packets_dropped_{0};
     std::atomic<std::size_t> messages_processed_{0};
+    std::atomic<std::size_t> tcp_pcb_count_{0};
+    std::atomic<std::size_t> tcp_half_open_count_{0};
 };
 
 } // namespace tcpip2

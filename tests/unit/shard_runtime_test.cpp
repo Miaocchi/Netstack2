@@ -1,12 +1,16 @@
 #include <atomic>
+#include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <thread>
 #include <vector>
 
 #include <tcpip2/buffer.h>
+#include <tcpip2/packet_io.h>
 
 #include <core/shard.h>
 
+#include "PacketBuilder.h"
 #include "Test.h"
 
 using namespace tcpip2;
@@ -29,6 +33,14 @@ TCPIP2_TEST(ShardStartStop) {
     TCPIP2_EXPECT_TRUE(shard->IsRunning());
     shard->Stop();
     TCPIP2_EXPECT_FALSE(shard->IsRunning());
+}
+
+TCPIP2_TEST(ShardStopFallsBackWhenControlInboxHasZeroCapacity) {
+    PktBufferPool pool(16, 256);
+    StackShard shard(0, pool, nullptr, 0);
+    TCPIP2_EXPECT_TRUE(shard.Start());
+    shard.Stop();
+    TCPIP2_EXPECT_FALSE(shard.IsRunning());
 }
 
 TCPIP2_TEST(ShardStartTwiceReturnsFalse) {
@@ -217,6 +229,48 @@ TCPIP2_TEST(ShardStressConcurrent) {
     for (auto& t : producers) t.join();
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     shard->Stop();
+    pool.DrainReturnQueue();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+TCPIP2_TEST(ShardProcessesSynAndRetainsWouldBlockTx) {
+    NullPacketIo io(1);
+    PktBufferPool pool(16, 256);
+    std::unique_ptr<IPacketQueue> queue = io.OpenQueue(0);
+    queue->SetBufferPool(&pool);
+    StackShard shard(0, pool, queue.get(), 128);
+    io.SetSendWouldBlock(true);
+    TCPIP2_EXPECT_TRUE(shard.Start());
+
+    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
+        0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0,
+        test::TcpFlags::Syn, {});
+    BufferLease lease = pool.Allocate();
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
+    std::memcpy(lease.Data(), syn.data(), syn.size());
+    lease.Resize(syn.size());
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(lease)));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    TCPIP2_EXPECT_EQ(std::size_t{1}, shard.TcpHalfOpenCount());
+    io.SetSendWouldBlock(false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    shard.Stop();
+
+    const auto& egress = io.Egress(0);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, egress.size());
+    if (!egress.empty()) {
+        const test::ParsedPacket response = test::PacketParser::ParseIpv4Tcp(egress[0]);
+        TCPIP2_EXPECT_TRUE(response.valid);
+        TCPIP2_EXPECT_EQ(std::uint32_t{0x0a000002u}, response.src_ip);
+        TCPIP2_EXPECT_EQ(std::uint32_t{0x0a000001u}, response.dst_ip);
+        TCPIP2_EXPECT_EQ(std::uint16_t{443}, response.src_port);
+        TCPIP2_EXPECT_EQ(std::uint16_t{40000}, response.dst_port);
+        TCPIP2_EXPECT_EQ(std::uint32_t{1001}, response.ack);
+        TCPIP2_EXPECT_EQ(
+            static_cast<std::uint8_t>(test::TcpFlags::Syn | test::TcpFlags::Ack),
+            response.flags);
+    }
     pool.DrainReturnQueue();
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
 }
