@@ -933,7 +933,7 @@ Tcp/Udp packet generated
 
 按以下子阶段实现, 每阶段都能用 PacketBuilder 和 FakeClock 独立验证。
 
-#### P3B-1: PCB 和握手 ✅ Implemented (2026-08-08, pending commit)
+#### P3B-1: PCB 和握手 ✅ Completed (2026-08-08)
 
 - LISTEN、SYN-RECEIVED、ESTABLISHED、RST;
 - secure ISN;
@@ -954,9 +954,9 @@ Tcp/Udp packet generated
 - `tests/unit/tcp/handshake_test.cpp`: 23 tests, 覆盖 IPv4/IPv6 parse/output/checksum、malformed input、option negotiation、ISN golden vector/CSPRNG、SYN/ACK/RST、duplicate SYN、Timestamp final ACK、retry/timeout、backlog/half-open/SYN flood、shutdown callback lifetime 和 fragment gate。
 - `tests/unit/shard_runtime_test.cpp`: 真实 NullPacketIo SYN→SYN-ACK 路径, 验证 WouldBlock 时 TX lease 保留后重试成功; control inbox 无容量时 Stop atomic fallback。
 
-验证结果: 全量 CTest 普通 28/28, ASan/UBSan 28/28, TSan 28/28; TCP unit 23/23; include boundaries OK; `git diff --check` clean。P3B-2 receive data/reassembly、Session partial acceptance/backpressure 和 fragment reassembly 到 TCP 的完整数据路径尚未实现。
+验证结果: 全量 CTest 普通 28/28, ASan/UBSan 28/28, TSan 28/28; TCP unit 23/23; include boundaries OK; `git diff --check` clean。实现提交 `ab5a949`, shard 接线提交 `a3448b4`, 文档提交 `c7d7428`。
 
-#### P3B-2: 接收路径
+#### P3B-2: 接收路径 ✅ Implemented (2026-08-09, pending commit)
 
 - `RCV.NXT` 和 receive window validation;
 - overlap/duplicate/out-of-window segment;
@@ -965,6 +965,22 @@ Tcp/Udp packet generated
 - SACK block generation;
 - Session `TrySend` partial acceptance;
 - Session WouldBlock 时收缩 advertised window, writable callback 后恢复。
+
+实现总结:
+
+- `src/tcp/receive.h` / `.cpp`: construction-time 固定容量 sequence ring, byte storage + compact `uint64_t` occupancy bitmap, hot path 不分配。`first_undelivered` 与 `RCV.NXT` 分离, 因此已 cumulative-ACK 但尚未被 Session 接受的数据不会与新序列 alias。支持 32-bit sequence wrap、first-arrival-wins overlap、duplicate、双边 trim、RFC 9293 receive-window endpoint validation 和 gap fill。
+- 接收内存同时设 per-flow capacity 和 per-shard memory budget。建立连接时一次性预留 ring; 超预算拒绝建立并释放 PCB。`ready + out-of-order == bytes-held`, advertised window 从剩余容量推导。
+- 持久 `RCV.ADV` 单独记录已公告右边界。Session WouldBlock 时 wire window 立即降为 0, 但仍接受落在此前正窗口内的在途数据; writable 恢复后通过 window-update ACK 扩展右边界, 不发生非法 window retraction。
+- clean in-order 第一段使用 40 ms delayed ACK, 第二段立即 ACK 并取消 timer。OOO、duplicate/overlap、out-of-window、right trim、gap fill、PSH、zero-window 在途数据均立即 ACK。每个 PCB 持有一个可覆盖的 latest pending ACK, TX/pool 暂时不可用时不会被其他 flow 的 control response 挤掉。
+- SACK block 使用 `[left,right)`，触发本次 ACK 的 block 排第一, 其余按序输出。未协商 Timestamp 时最多 4 blocks; 协商 Timestamp 时最多 3 blocks, TCP options 始终不超过 40 bytes。IPv4/IPv6 ACK 继续由 `src/tcp/output.cpp` 生成并校验 checksum/data offset。
+- established Timestamp 路径实现 missing-TS reject、wrap-safe PAWS compare 和 accepted-segment-only `TS.Recent` commit。out-of-window 或 future-sequence pure ACK 不可污染 PAWS; stale segment ACK-and-drop。精确 RST 删除 flow, 非精确 RST 只产生 challenge ACK, payload 不进入 Session。
+- `src/tcp/delivery.h` / `.cpp`: bounded Session pump。始终先消费合法 `accepted_bytes`, 支持 full/partial Accepted、partial WouldBlock、跨 ring wrap delivery; zero-progress、超额 acceptance、Closed/Error 和抛异常均转为明确状态, 不忙循环或重复交付。单轮 `TrySend` call budget 耗尽后由 shard 后续 iteration 继续 pump。
+- `AttachSession` 是 owner-shard 内部接口; Session 必须保持存活直到 `{FlowId,generation}` 对应的 `OnSessionClosed` 被 owner 处理。`kSessionWritable` / `kSessionClosed` 消息增加 generation 校验; 每次 shard restart 使用递增 engine epoch, 防止旧 run callback 命中新 flow。真正的 `ISessionFactory` 创建、owning binding/callback pin 和 runtime dependency injection 仍属于 P4, 不在 P3B-2 中引入不完整 raw callback bridge。
+- 第三次握手 ACK 可携带 data 并继续进入 established receive path。Established payload 必须带 ACK 且 `SEG.ACK <= SND.NXT`; future ACK、无 ACK payload 和窗口外数据不会交付 Session。FIN sequence consumption 留给 P3B-4 close states。
+- `tests/unit/tcp/receive_test.cpp`: 23 tests, 覆盖 delayed ACK pairing、OOO/gap fill、wrap、overlap first-wins、RFC window cases、ring wrap、SACK ordering、RCV.ADV、memory bound 和全部 Session partial/error 组合。
+- `tests/unit/tcp/handshake_test.cpp`: 40 tests, 其中 P3B-2 集成覆盖 third-ACK data、delayed/immediate ACK timer、SACK wire options、WouldBlock→zero-window→writable、in-flight data、receive budget、PAWS poisoning、RST isolation、session generation teardown、pending ACK coalescing 和 restart epoch。
+
+验证结果: 全量 CTest 普通 29/29, ASan/UBSan 29/29, TSan 29/29; TCP handshake 40/40, receive/delivery 23/23; include boundaries OK; `git diff --check` clean。当前 IP input 对 fragment 仍返回 `FragmentRequiresReassembly`; P3A reassembler 到 shard TCP input 的 runtime 接线需在完整 L3 pipeline 集成时完成。
 
 #### P3B-3: 发送路径
 

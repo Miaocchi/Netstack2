@@ -20,8 +20,9 @@
 | P3A-01 | **Completed** | checked arithmetic、IPv4/IPv6 bounded parser、checksum，23/23 三套构建全绿 |
 | P3A-02 | **Completed** | ICMPv4/ICMPv6 bounded parser + PMTU cache，26/26 三套构建全绿 |
 | P3A-03 | **Completed** | IPv4/IPv6 fragment reassembly，44/44 三套构建全绿（含 byte-budget hardening） |
-| P3B-1 | **Implemented, pending commit** | bounded PCB + passive handshake + IPv4/IPv6 wire RX/TX，TCP 23/23、全量 28/28 三套构建全绿 |
-| P3B-2 / P3B-3 / P3B-4 / P3C | Planned | TCP 接收 → 发送 → 关闭 → 互操作与性能 |
+| P3B-1 | **Completed** | bounded PCB + passive handshake + IPv4/IPv6 wire RX/TX，TCP 23/23、全量 28/28 三套构建全绿 |
+| P3B-2 | **Implemented, pending commit** | bounded receive ring、delayed ACK/SACK、Session partial/WouldBlock，TCP 40+23、全量 29/29 三套构建全绿 |
+| P3B-3 / P3B-4 / P3C | Planned | TCP 发送 → 关闭 → 互操作与性能 |
 | P4 | Planned | OpenPPP2 集成(在 API-FREEZE 之后接线) |
 | P5–P7 | Planned | 高性能 Packet I/O、平台铺开、调优 |
 
@@ -34,7 +35,8 @@
 | NETSTACK2-API-FREEZE-001 | `3d82bb0` | `v0.2.0`(annotated) |
 | P3A-01 | `707b14a` | 无 |
 | P3A-02 | `86d8adc` | 无 |
-| P3A-03 | `c889289` | 无 |
+| P3A-03 | `c889289` + hardening `2b5607e` | 无 |
+| P3B-1 | `ab5a949` + shard wiring `a3448b4` | 无 |
 
 规则:
 
@@ -248,8 +250,8 @@ NETSTACK2-API-FREEZE-001 ✅
 P3A-01 IPv4/IPv6 parser + checksum ✅
   → P3A-02 ICMPv4/ICMPv6 parser + PMTU cache ✅
   → P3A-03 fragment reassembly ✅
-  → P3B-1 PCB + passive handshake ✅ (pending commit)
-  → P3B-2 receive path
+  → P3B-1 PCB + passive handshake ✅
+  → P3B-2 receive path ✅ (pending commit)
         ↓
 P3U UDP/ICMP + P3Q FQ/AQM
         ↓
