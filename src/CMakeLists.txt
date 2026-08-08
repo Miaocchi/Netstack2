@@ -28,6 +28,8 @@ add_library(tcpip2 STATIC
     tcp/isn.cpp
     tcp/handshake.cpp
     tcp/output.cpp
+    tcp/receive.cpp
+    tcp/delivery.cpp
 )
 
 add_library(tcpip2::tcpip2 ALIAS tcpip2)
