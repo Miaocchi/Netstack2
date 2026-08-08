@@ -54,6 +54,7 @@ struct Ipv6ParseResult {
     Ipv6Header header;
     std::uint8_t final_next_header = 0;  // terminal protocol (TCP, UDP, ICMPv6, etc.)
     std::size_t ext_header_count = 0;    // number of extension headers walked
+    bool fragment_header_present = false; // true when the chain contains a Fragment header
     std::size_t payload_offset = 0;      // offset to upper-layer payload
     std::size_t payload_length = 0;      // bytes of upper-layer payload
     const std::uint8_t* payload = nullptr; // points into input buffer

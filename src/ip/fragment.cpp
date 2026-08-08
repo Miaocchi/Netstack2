@@ -56,7 +56,8 @@ FragmentAddResult ReassemblyEntry::AddFragment(
     std::uint32_t offset, const std::uint8_t* data,
     std::uint32_t length, bool more_fragments,
     std::uint64_t now_ms, std::uint32_t expires_ms,
-    std::uint32_t max_payload_bytes) noexcept {
+    std::uint32_t max_payload_bytes,
+    std::size_t additional_byte_budget) noexcept {
 
     FragmentAddResult result;
 
@@ -137,6 +138,13 @@ FragmentAddResult ReassemblyEntry::AddFragment(
         return result;
     }
 
+    const std::size_t required_size = static_cast<std::size_t>(end);
+    if (required_size > data_buffer_.size() &&
+        required_size - data_buffer_.size() > additional_byte_budget) {
+        result.error = FragmentError::ByteBudgetExceeded;
+        return result;
+    }
+
     // --- Store the fragment: copy data into owned buffer. ---
     // The data_buffer_ is a contiguous reassembly buffer. We grow it to
     // accommodate the highest end seen, and copy the fragment at its offset.
@@ -144,12 +152,20 @@ FragmentAddResult ReassemblyEntry::AddFragment(
     // Set fixed deadline on first fragment (not refreshed by subsequent fragments).
     if (fragment_count_ == 0) {
         if (expires_ms == 0) expires_ms = kFragmentDefaultTtlMs;
-        deadline_ms_ = now_ms + expires_ms;
+        // Saturating add: if now_ms is near UINT64_MAX, deadline wraps to
+        // a very large value (entry stays alive), which is safe.
+        std::uint64_t deadline = now_ms;
+        if (expires_ms > std::numeric_limits<std::uint64_t>::max() - now_ms) {
+            deadline = std::numeric_limits<std::uint64_t>::max();
+        } else {
+            deadline = now_ms + expires_ms;
+        }
+        deadline_ms_ = deadline;
     }
 
-    if (data_buffer_.size() < end) {
+    if (data_buffer_.size() < required_size) {
         try {
-            data_buffer_.resize(end, 0);
+            data_buffer_.resize(required_size, 0);
         } catch (...) {
             result.error = FragmentError::InvalidFragment;
             return result;
@@ -285,8 +301,10 @@ FragmentAddResult FragmentReassembler::AddIpv4Fragment(
         return result;
     }
 
-    if (max_payload_bytes == 0) {
-        max_payload_bytes = static_cast<std::uint32_t>(kMaxFragmentPayloadBytes);
+    const std::uint32_t hard_payload_limit =
+        static_cast<std::uint32_t>(kMaxIpv4FragmentPayloadBytes);
+    if (max_payload_bytes == 0 || max_payload_bytes > hard_payload_limit) {
+        max_payload_bytes = hard_payload_limit;
     }
 
     FragmentKey key;
@@ -298,7 +316,7 @@ FragmentAddResult FragmentReassembler::AddIpv4Fragment(
 
     FragmentError find_error = FragmentError::None;
     ReassemblyEntry* entry = FindOrCreate(key, now_ms, expires_ms,
-                                           payload_len, find_error);
+                                           find_error);
     if (entry == nullptr) {
         result.error = find_error;
         return result;
@@ -306,11 +324,13 @@ FragmentAddResult FragmentReassembler::AddIpv4Fragment(
 
     // Track bytes before/after for budget accounting.
     std::size_t bytes_before = entry->BytesHeld();
+    const std::size_t additional_byte_budget =
+        current_bytes_ < max_total_bytes_ ? max_total_bytes_ - current_bytes_ : 0;
 
     result = entry->AddFragment(byte_offset, payload,
                                 static_cast<std::uint32_t>(payload_len),
                                 more_fragments, now_ms, expires_ms,
-                                max_payload_bytes);
+                                max_payload_bytes, additional_byte_budget);
 
     std::size_t bytes_after = entry->BytesHeld();
 
@@ -363,8 +383,10 @@ FragmentAddResult FragmentReassembler::AddIpv6Fragment(
         return result;
     }
 
-    if (max_payload_bytes == 0) {
-        max_payload_bytes = static_cast<std::uint32_t>(kMaxFragmentPayloadBytes);
+    const std::uint32_t hard_payload_limit =
+        static_cast<std::uint32_t>(kMaxFragmentPayloadBytes);
+    if (max_payload_bytes == 0 || max_payload_bytes > hard_payload_limit) {
+        max_payload_bytes = hard_payload_limit;
     }
 
     FragmentKey key;
@@ -376,18 +398,20 @@ FragmentAddResult FragmentReassembler::AddIpv6Fragment(
 
     FragmentError find_error = FragmentError::None;
     ReassemblyEntry* entry = FindOrCreate(key, now_ms, expires_ms,
-                                           payload_len, find_error);
+                                           find_error);
     if (entry == nullptr) {
         result.error = find_error;
         return result;
     }
 
     std::size_t bytes_before = entry->BytesHeld();
+    const std::size_t additional_byte_budget =
+        current_bytes_ < max_total_bytes_ ? max_total_bytes_ - current_bytes_ : 0;
 
     result = entry->AddFragment(byte_offset, payload,
                                 static_cast<std::uint32_t>(payload_len),
                                 more_fragments, now_ms, expires_ms,
-                                max_payload_bytes);
+                                max_payload_bytes, additional_byte_budget);
 
     std::size_t bytes_after = entry->BytesHeld();
 
@@ -403,7 +427,7 @@ FragmentAddResult FragmentReassembler::AddIpv6Fragment(
 
 ReassemblyEntry* FragmentReassembler::FindOrCreate(
     const FragmentKey& key, std::uint64_t now_ms,
-    std::uint32_t /*expires_ms*/, std::size_t fragment_len,
+    std::uint32_t /*expires_ms*/,
     FragmentError& error) noexcept {
 
     error = FragmentError::None;
@@ -411,6 +435,11 @@ ReassemblyEntry* FragmentReassembler::FindOrCreate(
     // 1. Search for an existing matching entry.
     for (std::size_t i = 0; i < entries_.size(); ++i) {
         if (entries_[i].InUse() && entries_[i].Key().Matches(key)) {
+            if (entries_[i].IsExpired(now_ms)) {
+                current_bytes_ -= entries_[i].BytesHeld();
+                entries_[i].Reset();
+                entries_[i].SetKey(key);
+            }
             // If the entry was discarded (RFC 5722), still return it so
             // AddFragment can reject the fragment.
             return &entries_[i];
@@ -435,11 +464,6 @@ ReassemblyEntry* FragmentReassembler::FindOrCreate(
 
     // 3. Create a new entry if there is room.
     if (entries_.size() < max_entries_) {
-        // Check byte budget before creating.
-        if (current_bytes_ + fragment_len > max_total_bytes_) {
-            error = FragmentError::ByteBudgetExceeded;
-            return nullptr;
-        }
         try {
             entries_.emplace_back();
         } catch (...) {

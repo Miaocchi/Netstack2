@@ -91,6 +91,9 @@ Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
     std::size_t visited_count = 0;
 
     while (IsExtensionHeader(current_nh)) {
+        if (current_nh == Ipv6ExtHeaderType::Fragment) {
+            result.fragment_header_present = true;
+        }
         // Loop detection: check if we've seen this next-header value before.
         bool loop = false;
         for (std::size_t i = 0; i < visited_count; ++i) {

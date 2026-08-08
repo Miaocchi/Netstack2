@@ -29,6 +29,7 @@ constexpr std::size_t kMaxReassemblyEntries = 256;
 /// For IPv6: 65535 (jumbograms not supported; fragmentable part = payload length).
 /// The caller must pass the correct per-datagram limit based on actual headers.
 constexpr std::size_t kMaxFragmentPayloadBytes = 65535;
+constexpr std::size_t kMaxIpv4FragmentPayloadBytes = 65515;
 
 /// A single fragment within a reassembly entry.
 /// Data is copied on arrival into the entry's owned buffer.
@@ -92,11 +93,13 @@ public:
     /// @param now_ms current monotonic time (used only for creation; deadline is fixed)
     /// @param expires_ms TTL for this entry (0 = use default)
     /// @param max_payload_bytes per-datagram payload upper bound
+    /// @param additional_byte_budget bytes this entry may grow before exhausting the shard budget
     FragmentAddResult AddFragment(std::uint32_t offset, const std::uint8_t* data,
                                   std::uint32_t length, bool more_fragments,
                                   std::uint64_t now_ms,
                                   std::uint32_t expires_ms,
-                                  std::uint32_t max_payload_bytes) noexcept;
+                                  std::uint32_t max_payload_bytes,
+                                  std::size_t additional_byte_budget) noexcept;
 
     /// Check if this entry has expired. Deadline is fixed at first fragment.
     bool IsExpired(std::uint64_t now_ms) const noexcept;
@@ -208,7 +211,6 @@ private:
 
     ReassemblyEntry* FindOrCreate(const FragmentKey& key, std::uint64_t now_ms,
                                   std::uint32_t expires_ms,
-                                  std::size_t fragment_len,
                                   FragmentError& error) noexcept;
 };
 

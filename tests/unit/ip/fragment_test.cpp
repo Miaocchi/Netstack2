@@ -743,6 +743,49 @@ TCPIP2_TEST(ByteBudgetExceeded) {
     TCPIP2_EXPECT_EQ(FragmentError::ByteBudgetExceeded, r3.error);
 }
 
+TCPIP2_TEST(ByteBudgetRejectsExistingEntryGrowth) {
+    FragmentReassembler r(kMaxReassemblyEntries, 128);
+    auto first = MakePayload(64, 0xAA);
+    auto second = MakePayload(72, 0xBB);
+
+    auto r1 = r.AddIpv4Fragment(kSrcIpv4, kDstIpv4, kProtoUdp, 1,
+                                 0, true, first.data(), first.size(), 1000);
+    TCPIP2_EXPECT_EQ(FragmentError::None, r1.error);
+
+    auto r2 = r.AddIpv4Fragment(kSrcIpv4, kDstIpv4, kProtoUdp, 1,
+                                 8, false, second.data(), second.size(), 1000);
+    TCPIP2_EXPECT_EQ(FragmentError::ByteBudgetExceeded, r2.error);
+    TCPIP2_EXPECT_EQ(std::size_t{64}, r.BytesHeld());
+}
+
+TCPIP2_TEST(ByteBudgetRejectsSparseFirstFragment) {
+    FragmentReassembler r(kMaxReassemblyEntries, 128);
+    auto payload = MakePayload(8, 0xAA);
+
+    auto result = r.AddIpv4Fragment(kSrcIpv4, kDstIpv4, kProtoUdp, 1,
+                                     16, false, payload.data(), payload.size(), 1000);
+    TCPIP2_EXPECT_EQ(FragmentError::ByteBudgetExceeded, result.error);
+    TCPIP2_EXPECT_EQ(std::size_t{0}, r.BytesHeld());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, r.Size());
+}
+
+TCPIP2_TEST(CustomPayloadLimitCannotExceedProtocolHardCap) {
+    FragmentReassembler r;
+    auto payload = MakePayload(8, 0xAA);
+    const auto oversized_limit =
+        static_cast<std::uint32_t>(kMaxFragmentPayloadBytes + 1);
+
+    auto ipv4 = r.AddIpv4Fragment(kSrcIpv4, kDstIpv4, kProtoUdp, 1,
+                                   8190, false, payload.data(), payload.size(),
+                                   1000, 0, oversized_limit);
+    TCPIP2_EXPECT_EQ(FragmentError::PayloadTooLarge, ipv4.error);
+
+    auto ipv6 = r.AddIpv6Fragment(kSrcIpv6, kDstIpv6, 2,
+                                   8191, false, payload.data(), payload.size(),
+                                   1000, 0, oversized_limit);
+    TCPIP2_EXPECT_EQ(FragmentError::PayloadTooLarge, ipv6.error);
+}
+
 TCPIP2_TEST(BytesHeldAfterPurge) {
     // Verify that BytesHeld() decreases correctly after Purge.
     FragmentReassembler r;
@@ -755,6 +798,24 @@ TCPIP2_TEST(BytesHeldAfterPurge) {
     // Purge at t=6001 (deadline=6000).
     r.Purge(6001);
     TCPIP2_EXPECT_EQ(std::size_t{0}, r.BytesHeld());
+}
+
+TCPIP2_TEST(ExpiredMatchingKeyStartsFreshDatagram) {
+    FragmentReassembler r;
+    auto old_payload = MakePayload(64, 0xAA);
+    auto new_payload = MakePayload(64, 0xBB);
+
+    r.AddIpv4Fragment(kSrcIpv4, kDstIpv4, kProtoUdp, 1,
+                      0, true, old_payload.data(), old_payload.size(),
+                      1000, 100);
+    auto fresh = r.AddIpv4Fragment(kSrcIpv4, kDstIpv4, kProtoUdp, 1,
+                                    0, true, new_payload.data(), new_payload.size(),
+                                    1100, 100);
+    TCPIP2_EXPECT_EQ(FragmentError::None, fresh.error);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, r.Size());
+    TCPIP2_EXPECT_EQ(std::size_t{64}, r.BytesHeld());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, r.Purge(1199));
+    TCPIP2_EXPECT_EQ(std::size_t{1}, r.Purge(1200));
 }
 
 TCPIP2_TEST(BytesHeldAfterCompletion) {
