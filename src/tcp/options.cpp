@@ -117,4 +117,38 @@ TcpOptionParseResult ParseTcpSynOptions(const std::uint8_t* data,
     return result;
 }
 
+TcpSackBlockList ParseTcpSackBlocks(const std::uint8_t* data,
+                                     std::size_t length) noexcept {
+    TcpSackBlockList result;
+    if (length == 0 || data == nullptr) return result;
+
+    std::size_t offset = 0;
+    while (offset < length) {
+        const std::uint8_t kind = data[offset];
+        if (kind == 0) break;
+        if (kind == 1) {
+            ++offset;
+            continue;
+        }
+        if (length - offset < 2) break;
+        const std::size_t option_length = data[offset + 1];
+        if (option_length < 2 || option_length > length - offset) break;
+
+        if (kind == 5) {
+            if (option_length < 2 || (option_length - 2) % 8 != 0) break;
+            const std::size_t num_blocks = (option_length - 2) / 8;
+            for (std::size_t i = 0; i < num_blocks && result.count < 4; ++i) {
+                const std::uint8_t* block_data = data + offset + 2 + i * 8;
+                TcpSackBlock block;
+                block.left_edge = Read32(block_data);
+                block.right_edge = Read32(block_data + 4);
+                result.blocks[result.count++] = block;
+            }
+        }
+        offset += option_length;
+    }
+
+    return result;
+}
+
 } // namespace tcpip2

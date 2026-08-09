@@ -1268,4 +1268,174 @@ TCPIP2_TEST(OutputDataSegmentWithSackOption) {
     TCPIP2_EXPECT_EQ(output[61], std::uint8_t{0xBB});
 }
 
+// ---------------------------------------------------------------------------
+// Send path wiring tests (EnqueueSendData + PumpSendPaths)
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(SendPathEnqueuesDataOnEstablishedPcb) {
+    TimerWheel timers;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot established = Establish(engine, flow);
+
+    const std::uint8_t data[] = {1, 2, 3, 4};
+    const std::size_t accepted = engine.EnqueueSendData(established.flow_id, data, sizeof(data));
+    TCPIP2_EXPECT_EQ(std::size_t{4}, accepted);
+}
+
+TCPIP2_TEST(SendPathEnqueueRejectsUnknownFlowId) {
+    TimerWheel timers;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    Establish(engine, flow);
+
+    const std::uint8_t data[] = {1};
+    const std::size_t accepted = engine.EnqueueSendData(FlowId{99999}, data, sizeof(data));
+    TCPIP2_EXPECT_EQ(std::size_t{0}, accepted);
+}
+
+TCPIP2_TEST(SendPathEnqueueRejectsNullOrEmpty) {
+    TimerWheel timers;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot established = Establish(engine, flow);
+
+    TCPIP2_EXPECT_EQ(std::size_t{0}, engine.EnqueueSendData(established.flow_id, nullptr, 4));
+    TCPIP2_EXPECT_EQ(std::size_t{0}, engine.EnqueueSendData(established.flow_id, reinterpret_cast<const std::uint8_t*>(""), 0));
+}
+
+TCPIP2_TEST(PumpSendPathsSerializesDataSegmentToTxLease) {
+    PktBufferPool pool(8, 2048);
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;  // Keep packet minimal for easier parsing.
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot established = Establish(engine, flow);
+
+    const std::uint8_t data[] = {0xAA, 0xBB, 0xCC};
+    engine.EnqueueSendData(established.flow_id, data, sizeof(data));
+
+    std::vector<BufferLease> tx_leases;
+    engine.PumpSendPaths(200, 64, pool, tx_leases, 64);
+
+    TCPIP2_EXPECT_EQ(std::size_t{1}, tx_leases.size());
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(tx_leases[0]));
+    TCPIP2_EXPECT_TRUE(tx_leases[0].Size() > 0);
+
+    // Parse the serialized packet: IPv4 header + TCP header + payload.
+    const std::uint8_t* pkt = tx_leases[0].Data();
+    const std::size_t pkt_len = tx_leases[0].Size();
+    const auto ip = ParseIpv4(pkt, pkt_len);
+    TCPIP2_EXPECT_EQ(Ipv4ParseError::None, ip.error);
+
+    // The response flow is the reverse of the incoming flow.
+    const FlowKey resp_flow = Reverse(flow);
+    const auto tcp = ParseTcpSegment(
+        resp_flow.source, resp_flow.destination,
+        ip.payload, ip.header.payload_length);
+    TCPIP2_EXPECT_EQ(TcpParseError::None, tcp.error);
+
+    // Verify the payload is present in the TCP segment.
+    TCPIP2_EXPECT_EQ(std::size_t{3}, tcp.segment.payload_length);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0xAA}, tcp.segment.payload[0]);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0xBB}, tcp.segment.payload[1]);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0xCC}, tcp.segment.payload[2]);
+
+    // The sequence number should be the ISS (snd_nxt at establishment).
+    TCPIP2_EXPECT_EQ(established.snd_nxt, tcp.segment.sequence);
+    // ACK flag should be set (data segment always ACKs).
+    TCPIP2_EXPECT_TRUE(tcp.segment.HasFlag(TcpFlag::Ack));
+}
+
+TCPIP2_TEST(PumpSendPathsAdvancesSndNxtAfterAck) {
+    PktBufferPool pool(8, 2048);
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot established = Establish(engine, flow);
+
+    const std::uint8_t data[] = {1, 2, 3, 4};
+    engine.EnqueueSendData(established.flow_id, data, sizeof(data));
+
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(200, 64, pool, tx, 64);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, tx.size());
+
+    // After pumping, snd_nxt should have advanced by payload length.
+    TcpPcbSnapshot after_pump;
+    engine.Find(flow, after_pump);
+    TCPIP2_EXPECT_EQ(established.snd_nxt + 4, after_pump.snd_nxt);
+
+    // Simulate peer ACKing the data.
+    engine.OnSegment(
+        MakeView(flow, established.rcv_nxt, established.snd_nxt + 4, TcpFlag::Ack), 210);
+
+    TcpPcbSnapshot after_ack;
+    engine.Find(flow, after_ack);
+    TCPIP2_EXPECT_EQ(established.snd_nxt + 4, after_ack.snd_una);
+    TCPIP2_EXPECT_EQ(after_ack.snd_una, after_ack.snd_nxt);
+}
+
+TCPIP2_TEST(PumpSendPathsNoSegmentWhenSendQueueEmpty) {
+    PktBufferPool pool(8, 2048);
+    TimerWheel timers;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    Establish(engine, flow);
+
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(200, 64, pool, tx, 64);
+    TCPIP2_EXPECT_EQ(std::size_t{0}, tx.size());
+}
+
+TCPIP2_TEST(PumpSendPathsPoolExhaustionDoesNotCrash) {
+    PktBufferPool pool(2, 2048);
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot established = Establish(engine, flow);
+
+    // Enqueue more data than the pool has slots.
+    std::vector<std::uint8_t> big_data(2048, 0x55);
+    engine.EnqueueSendData(established.flow_id, big_data.data(), big_data.size());
+
+    // Pool with only 2 slots — first segment succeeds (TX lease + owner Retain),
+    // subsequent allocation fails and send buffer should ResetPending.
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(200, 64, pool, tx, 64);
+    // At least one segment should have been produced.
+    TCPIP2_EXPECT_TRUE(tx.size() >= 1);
+    // Pool should be exhausted now.
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.FreeCount());
+
+    // Second pump should not crash; send buffer should have ResetPending.
+    std::vector<BufferLease> tx2;
+    engine.PumpSendPaths(201, 64, pool, tx2, 64);
+    // tx2 may be empty because pool is exhausted.
+}
+
+TCPIP2_TEST(SendBufferFreedOnPcbRemoval) {
+    TimerWheel timers;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot established = Establish(engine, flow);
+
+    // Enqueue data to ensure send buffer exists.
+    const std::uint8_t data[] = {1, 2};
+    engine.EnqueueSendData(established.flow_id, data, sizeof(data));
+
+    // Send a RST to remove the PCB.
+    const auto rst = engine.OnSegment(
+        MakeView(flow, established.rcv_nxt, established.snd_nxt, TcpFlag::Rst), 200);
+    TCPIP2_EXPECT_TRUE(rst.state_changed);
+    TCPIP2_EXPECT_EQ(std::size_t{0}, engine.PcbCount());
+
+    // Engine should be cleanly destructible (send buffer freed with PCB).
+}
+
 TCPIP2_TEST_MAIN()

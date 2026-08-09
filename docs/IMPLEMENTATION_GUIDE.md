@@ -982,15 +982,18 @@ Tcp/Udp packet generated
 
 验证结果: 全量 CTest 普通 29/29, ASan/UBSan 29/29, TSan 29/29; TCP handshake 40/40, receive/delivery 23/23; include boundaries OK; `git diff --check` clean。当前 IP input 对 fragment 仍返回 `FragmentRequiresReassembly`; P3A reassembler 到 shard TCP input 的 runtime 接线需在完整 L3 pipeline 集成时完成。
 
-#### P3B-3: 发送路径
+#### P3B-3: 发送路径 ✅ In progress (2026-08-09, pending final commit)
 
-- `SND.UNA/SND.NXT/SND.WND`;
-- segmentation by MSS/PMTU;
-- retransmission queue 持有 retained payload;
-- cumulative ACK 和 SACK scoreboard;
-- RFC 6298 RTT/RTO, RTT 使用 Karn 规则;
-- fast retransmit/recovery;
-- persist timer 和 zero window probe。
+- `src/tcp/send.h` / `send.cpp`: `TcpSendBuffer` 管理 unsent data queue 和 retransmission queue。retained `BufferRef` 持有 owner payload，避免 UAF。RFC 6298 RTO + Karn 规则 + 指数退避；fast retransmit/recovery (RFC 5681)；persist timer 和 zero-window probe；partial ACK / FIN 修剪；future ACK 拒绝。
+- `src/tcp/options.h` / `options.cpp`: `ParseTcpSackBlocks` 从 duplicate ACK 选项中解析 SACK blocks，供 `OnSack` 更新 scoreboard。
+- `src/tcp/send.h` / `send.cpp`: SACK scoreboard 跟踪 in-flight 记录的 SACK 覆盖、pipe 计算、fast retransmit 触发。
+- `src/tcp/output.h` / `output.cpp`: `BuildTcpControlPacket` 扩展支持 data segment 序列化 (IPv4/IPv6 + TCP header + payload + options)。
+- `src/tcp/handshake.h` / `handshake.cpp`: ESTABLISHED 转换时创建 `TcpSendBuffer`；`ProcessEstablished` 将 ACK+SACK 喂入 send buffer；`EnqueueSendData` 接受应用数据入队；`PumpSendPaths` 从 send buffer 取 segment → 分配 TX lease + owner Retain → `BuildTcpControlPacket` → `OnSent` → push tx。pool 耗尽时 `ResetPending` 避免崩溃。`Find` 使用 `send->SndUna()/SndNxt()` 返回实际发送状态。ACK 校验使用 send buffer 的 `SndNxt()` 而非旧 `pcb.snd_nxt`。
+- `src/core/shard.h` / `shard.cpp`: event loop 每轮调用 `PumpTcpSendPaths(now_ms)`，将已建立连接的待发数据驱动到 TX lease 列表。
+- `tests/unit/tcp/handshake_test.cpp`: 54 tests, P3B-3 send wiring 覆盖 enqueue、PumpSendPaths data segment 序列化与解析、SndNxt 推进与 ACK 确认、空队列不产生 segment、pool 耗尽安全、PCB 移除时 send buffer 释放。
+- `tests/unit/tcp/send_test.cpp`: 51 tests, 覆盖 retransmission queue 生命周期、partial ACK/FIN 修剪、future ACK 拒绝、RFC 6298/Karn、fast retransmit、MSS/window 裁剪、zero-window persist、persist 数据丢失修复、序列空洞修复、RTO/persist 冲突修复、关闭后 BufferRef 泄漏修复。
+
+验证结果: 全量 CTest 普通 30/30, ASan/UBSan 30/30, TSan 30/30; TCP handshake 54/54, send 51/51; include boundaries OK; `git diff --check` clean。FIN/close/TIME-WAIT 仍属 P3B-4。
 
 #### P3B-4: 关闭
 

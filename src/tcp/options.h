@@ -9,6 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <tcp/receive.h>
+
 namespace tcpip2 {
 
 enum class TcpOptionError {
@@ -39,5 +41,10 @@ struct TcpOptionParseResult {
 
 TcpOptionParseResult ParseTcpSynOptions(const std::uint8_t* data,
                                         std::size_t length) noexcept;
+
+/// Parse SACK option (kind 5) from a TCP segment's options field.
+/// Returns up to 4 SACK blocks. Non-SACK options are ignored.
+TcpSackBlockList ParseTcpSackBlocks(const std::uint8_t* data,
+                                     std::size_t length) noexcept;
 
 } // namespace tcpip2

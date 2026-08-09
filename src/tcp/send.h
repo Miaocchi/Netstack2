@@ -202,6 +202,10 @@ public:
     /// Cancel all timers (called on RST or PCB removal).
     void CancelTimers() noexcept;
 
+    /// Clear pending send state without committing (called when TX allocation
+    /// fails between NextSegment and OnSent).
+    void ResetPending() noexcept;
+
 private:
     struct SendRecord {
         std::uint32_t seq = 0;

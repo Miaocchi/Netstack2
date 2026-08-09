@@ -814,6 +814,13 @@ void TcpSendBuffer::CancelTimers() noexcept {
     persist_deadline_ms_ = 0;
 }
 
+void TcpSendBuffer::ResetPending() noexcept {
+    pending_kind_ = PendingKind::None;
+    pending_is_fin_ = false;
+    pending_seq_ = 0;
+    pending_len_ = 0;
+}
+
 std::size_t TcpSendBuffer::OnSack(const TcpSackBlockList& sack_blocks,
                                    std::uint64_t now_ms) noexcept {
     (void)now_ms;

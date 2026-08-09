@@ -21,8 +21,9 @@
 | P3A-02 | **Completed** | ICMPv4/ICMPv6 bounded parser + PMTU cache，26/26 三套构建全绿 |
 | P3A-03 | **Completed** | IPv4/IPv6 fragment reassembly，44/44 三套构建全绿（含 byte-budget hardening） |
 | P3B-1 | **Completed** | bounded PCB + passive handshake + IPv4/IPv6 wire RX/TX，TCP 23/23、全量 28/28 三套构建全绿 |
-| P3B-2 | **Implemented, pending commit** | bounded receive ring、delayed ACK/SACK、Session partial/WouldBlock，TCP 40+23、全量 29/29 三套构建全绿 |
-| P3B-3 / P3B-4 / P3C | Planned | TCP 发送 → 关闭 → 互操作与性能 |
+| P3B-2 | **Completed** | bounded receive ring、delayed ACK/SACK、Session partial/WouldBlock，TCP 40+23、全量 29/29 三套构建全绿 |
+| P3B-3 | **In progress** | retransmission queue + RTO、SACK scoreboard、data segment serialization、send buffer 接入 handshake engine 和 shard event loop，TCP 54+51、全量 30/30 三套构建全绿。FIN/close/TIME-WAIT 仍属 P3B-4 |
+| P3B-4 / P3C | Planned | TCP 关闭 → 互操作与性能 |
 | P4 | Planned | OpenPPP2 集成(在 API-FREEZE 之后接线) |
 | P5–P7 | Planned | 高性能 Packet I/O、平台铺开、调优 |
 
@@ -37,6 +38,10 @@
 | P3A-02 | `86d8adc` | 无 |
 | P3A-03 | `c889289` + hardening `2b5607e` | 无 |
 | P3B-1 | `ab5a949` + shard wiring `a3448b4` | 无 |
+| P3B-2 | `15c55f8` + integration `6a166d8` + shard `4ce7a35` | 无 |
+| P3B-3 (send core) | `6fb047b` | 无 |
+| P3B-3 (SACK scoreboard) | `5583c8d` | 无 |
+| P3B-3 (data segment output) | `8bdf43e` | 无 |
 
 规则:
 
@@ -251,11 +256,10 @@ P3A-01 IPv4/IPv6 parser + checksum ✅
   → P3A-02 ICMPv4/ICMPv6 parser + PMTU cache ✅
   → P3A-03 fragment reassembly ✅
   → P3B-1 PCB + passive handshake ✅
-  → P3B-2 receive path ✅ (pending commit)
+  → P3B-2 receive path ✅
+  → P3B-3 send path (retransmission, SACK, wiring) ✅ (pending commit)
         ↓
-P3U UDP/ICMP + P3Q FQ/AQM
-        ↓
-P3B-3 send path + P3B-4 close
+P3B-4 FIN/close/TIME-WAIT
         ↓
 P3C TCP 互操作与性能
         ↓

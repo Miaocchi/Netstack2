@@ -95,6 +95,7 @@ private:
     void ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexcept;
     bool EnqueueTcpResponse(const TcpResponse& response) noexcept;
     void FlushTcpTx() noexcept;
+    void PumpTcpSendPaths(std::uint64_t now_ms) noexcept;
 
     std::size_t shard_id_;
     PktBufferPool& pool_;

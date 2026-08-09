@@ -211,6 +211,11 @@ void StackShard::EventLoopIteration() noexcept {
         tcp_half_open_count_.store(tcp_->HalfOpenCount(), std::memory_order_relaxed);
     }
 
+    // Step 7: pump TCP send paths (new data, retransmissions, persist probes).
+    if (tcp_) {
+        PumpTcpSendPaths(now_ms);
+    }
+
     // Step 8: submit the bounded TCP control batch. Partial-send tails remain owned.
     FlushTcpTx();
 
@@ -262,6 +267,12 @@ bool StackShard::EnqueueTcpResponse(const TcpResponse& response) noexcept {
         return false;
     }
     return true;
+}
+
+void StackShard::PumpTcpSendPaths(std::uint64_t now_ms) noexcept {
+    if (!tcp_ || tcp_tx_.size() >= kTcpTxBudget) return;
+    const std::size_t remaining = kTcpTxBudget - tcp_tx_.size();
+    tcp_->PumpSendPaths(now_ms, kControlInboxBudget, pool_, tcp_tx_, remaining);
 }
 
 void StackShard::FlushTcpTx() noexcept {

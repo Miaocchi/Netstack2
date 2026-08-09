@@ -20,6 +20,7 @@
 #include <tcp/options.h>
 #include <tcp/receive.h>
 #include <tcp/segment.h>
+#include <tcp/send.h>
 
 namespace tcpip2 {
 
@@ -56,6 +57,17 @@ struct TcpHandshakeConfig {
     std::size_t delivery_call_budget = 16;
     std::uint64_t delayed_ack_ms = 40;
     std::array<std::uint64_t, 4> syn_ack_retry_intervals_ms{{1000, 2000, 4000, 8000}};
+
+    // Send path configuration
+    std::size_t send_queue_limit = 256 * 1024;
+    std::size_t retransmit_queue_limit = 256 * 1024;
+    std::uint64_t initial_rto_ms = 1000;
+    std::uint64_t min_rto_ms = 200;
+    std::uint64_t max_rto_ms = 120000;
+    std::uint64_t persist_timer_base_ms = 500;
+    std::uint64_t persist_timer_max_ms = 60000;
+    std::size_t max_retransmissions = 15;
+    std::size_t max_persist_probes = 15;
 
     bool Validate() const noexcept;
 };
@@ -140,6 +152,18 @@ public:
     void PumpSessionDeliveries(std::uint64_t now_ms,
                                std::size_t pcb_budget = 64) noexcept;
 
+    /// Enqueue application data for transmission on an established PCB.
+    /// Returns bytes accepted (0 if PCB not found or send buffer full).
+    std::size_t EnqueueSendData(FlowId flow_id, const std::uint8_t* data,
+                                 std::size_t length) noexcept;
+
+    /// Pump send paths for established PCBs: emit new data, retransmissions,
+    /// and persist probes as serialized TX leases.
+    void PumpSendPaths(std::uint64_t now_ms, std::size_t pcb_budget,
+                       PktBufferPool& pool,
+                       std::vector<BufferLease>& tx_leases,
+                       std::size_t max_segments) noexcept;
+
     bool Find(const FlowKey& incoming_flow, TcpPcbSnapshot& out) const noexcept;
     bool PopPendingResponse(TcpResponse& out) noexcept;
     void DeferResponse(const TcpResponse& response) noexcept {
@@ -173,6 +197,7 @@ private:
         TcpNegotiatedOptions options;
         TcpSynOptions response_options;
         std::unique_ptr<TcpReceiveBuffer> receive;
+        std::unique_ptr<TcpSendBuffer> send;
         ITransportSession* session = nullptr;
         bool session_bound = false;
         FlowId flow_id;

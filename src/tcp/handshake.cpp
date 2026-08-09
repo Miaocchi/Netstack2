@@ -1,6 +1,9 @@
 #include <tcp/handshake.h>
 
+#include <tcp/output.h>
+
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -84,6 +87,14 @@ bool TcpHandshakeConfig::Validate() const noexcept {
     for (std::uint64_t interval : syn_ack_retry_intervals_ms) {
         if (interval == 0) return false;
     }
+    if (send_queue_limit == 0 || retransmit_queue_limit == 0 ||
+        min_rto_ms == 0 || max_rto_ms == 0 ||
+        min_rto_ms > initial_rto_ms || initial_rto_ms > max_rto_ms ||
+        persist_timer_base_ms == 0 ||
+        persist_timer_base_ms > persist_timer_max_ms ||
+        max_retransmissions == 0 || max_persist_probes == 0) {
+        return false;
+    }
     return true;
 }
 
@@ -152,7 +163,7 @@ TcpResponse TcpHandshakeEngine::BuildAck(Pcb& pcb,
     }
     response.valid = true;
     response.flow = ReverseFlow(pcb.incoming_flow);
-    response.sequence = pcb.snd_nxt;
+    response.sequence = pcb.send ? pcb.send->SndNxt() : pcb.snd_nxt;
     response.acknowledgment = pcb.receive->RcvNxt();
     response.flags = TcpFlag::Ack;
 
@@ -336,7 +347,9 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
         result.error = TcpHandshakeError::InvalidFlags;
         return result;
     }
-    if (SequenceAfter(segment.acknowledgment, pcb.snd_nxt)) {
+    const std::uint32_t effective_snd_nxt =
+        pcb.send ? pcb.send->SndNxt() : pcb.snd_nxt;
+    if (SequenceAfter(segment.acknowledgment, effective_snd_nxt)) {
         result.response = BuildAck(pcb, now_ms);
         return result;
     }
@@ -358,6 +371,23 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
         }
         incoming_timestamp = parsed.options.timestamp_value;
         timestamp_present = true;
+    }
+
+    // Update peer window and feed ACK to send buffer.
+    pcb.peer_window = segment.window;
+    if (pcb.send) {
+        const std::uint32_t scaled_pw = pcb.options.window_scale
+            ? static_cast<std::uint32_t>(segment.window)
+                << pcb.options.send_window_scale
+            : static_cast<std::uint32_t>(segment.window);
+        const TcpSendAckResult ar = pcb.send->OnAck(
+            segment.acknowledgment, scaled_pw, now_ms,
+            segment.payload_length == 0);
+        if (ar.duplicate && pcb.options.sack_permitted) {
+            const TcpSackBlockList sacks =
+                ParseTcpSackBlocks(segment.options, segment.options_length);
+            if (sacks.count > 0) pcb.send->OnSack(sacks, now_ms);
+        }
     }
 
     if (segment.payload_length == 0) {
@@ -423,6 +453,9 @@ void TcpHandshakeEngine::RemoveAt(std::size_t index) noexcept {
         const std::size_t memory = pcb.receive->MemoryBytes();
         receive_memory_bytes_ = memory > receive_memory_bytes_
             ? 0 : receive_memory_bytes_ - memory;
+    }
+    if (pcb.send) {
+        pcb.send->CancelTimers();
     }
     if (pcb.state == TcpState::SynReceived && half_open_count_ > 0) {
         --half_open_count_;
@@ -514,6 +547,23 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
                     pcb.retry_timer = TimerId{};
                     pcb.snd_una = segment.acknowledgment;
                     pcb.state = TcpState::Established;
+                    try {
+                        pcb.send = std::make_unique<TcpSendBuffer>(
+                            pcb.snd_nxt, pcb.options.peer_mss,
+                            pcb.options.send_window_scale,
+                            config_.send_queue_limit,
+                            config_.retransmit_queue_limit,
+                            config_.initial_rto_ms, config_.min_rto_ms,
+                            config_.max_rto_ms, config_.persist_timer_base_ms,
+                            config_.persist_timer_max_ms,
+                            config_.max_retransmissions,
+                            config_.max_persist_probes);
+                    } catch (...) {
+                        result.response = BuildReset(segment);
+                        result.error = TcpHandshakeError::ReceiveBudget;
+                        RemoveAt(existing_index);
+                        return result;
+                    }
                     if (half_open_count_ > 0) --half_open_count_;
                     result.state_changed = true;
                     if (segment.payload_length != 0 || segment.HasFlag(TcpFlag::Fin)) {
@@ -639,8 +689,8 @@ bool TcpHandshakeEngine::Find(const FlowKey& incoming_flow,
     out.state = pcb.state;
     out.iss = pcb.iss;
     out.irs = pcb.irs;
-    out.snd_una = pcb.snd_una;
-    out.snd_nxt = pcb.snd_nxt;
+    out.snd_una = pcb.send ? pcb.send->SndUna() : pcb.snd_una;
+    out.snd_nxt = pcb.send ? pcb.send->SndNxt() : pcb.snd_nxt;
     out.rcv_nxt = pcb.rcv_nxt;
     out.flow_id = pcb.flow_id;
     out.generation = pcb.generation;
@@ -779,6 +829,75 @@ void TcpHandshakeEngine::Shutdown() noexcept {
     if (callback_gate_) callback_gate_->owner = nullptr;
     while (!pcbs_.empty()) RemoveAt(pcbs_.size() - 1);
     pending_responses_.clear();
+}
+
+std::size_t TcpHandshakeEngine::EnqueueSendData(FlowId flow_id,
+    const std::uint8_t* data, std::size_t length) noexcept {
+    if (data == nullptr || length == 0) return 0;
+    for (Pcb& pcb : pcbs_) {
+        if (pcb.flow_id == flow_id && pcb.state == TcpState::Established && pcb.send) {
+            return pcb.send->Enqueue(data, length);
+        }
+    }
+    return 0;
+}
+
+void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
+    std::size_t pcb_budget, PktBufferPool& pool,
+    std::vector<BufferLease>& tx_leases, std::size_t max_segments) noexcept {
+    std::size_t visited = 0, built = 0;
+    for (Pcb& pcb : pcbs_) {
+        if (visited >= pcb_budget || built >= max_segments) break;
+        if (pcb.state != TcpState::Established || !pcb.send || pcb.send->IsClosed())
+            continue;
+        ++visited;
+        const std::uint32_t spw = pcb.options.window_scale
+            ? static_cast<std::uint32_t>(pcb.peer_window)
+                << pcb.options.send_window_scale
+            : static_cast<std::uint32_t>(pcb.peer_window);
+        TcpSendNextResult next = pcb.send->NextSegment(spw, now_ms);
+        if (!next.has_segment) continue;
+        BufferLease tx = pool.Allocate();
+        if (!tx) { pcb.send->ResetPending(); continue; }
+        TcpResponse resp;
+        resp.valid = true;
+        resp.flow = ReverseFlow(pcb.incoming_flow);
+        resp.sequence = next.sequence;
+        resp.acknowledgment = pcb.receive ? pcb.receive->RcvNxt() : pcb.rcv_nxt;
+        resp.flags = TcpFlag::Ack | (next.is_fin ? TcpFlag::Fin : 0);
+        resp.timestamp_present = pcb.options.timestamps;
+        resp.timestamp_value = static_cast<std::uint32_t>(now_ms);
+        resp.timestamp_echo = pcb.options.peer_timestamp;
+        resp.payload = next.payload;
+        resp.payload_length = next.payload_length;
+        if (pcb.options.sack_permitted && pcb.receive)
+            resp.sack_blocks = pcb.receive->SackBlocks(
+                pcb.options.timestamps ? 3 : 4);
+        const std::uint8_t rcv_scale = pcb.options.window_scale
+            ? pcb.options.receive_window_scale : 0;
+        const std::size_t avail = pcb.receive ? pcb.receive->AdvertisedWindow() : 0;
+        resp.window = WireWindow(static_cast<std::uint32_t>(
+            std::min<std::size_t>(avail, UINT32_MAX)), rcv_scale);
+        const TcpOutputResult out = BuildTcpControlPacket(
+            resp, tx.Data(), tx.Capacity());
+        if (out.error != TcpOutputError::None) {
+            pcb.send->ResetPending(); continue;
+        }
+        tx.Resize(out.packet_length);
+        // Owner lease must be created before OnSent, because OnSent
+        // erases the send_queue_ front, invalidating next.payload.
+        BufferRef owner;
+        if (!next.is_retransmission && next.payload_length > 0) {
+            BufferLease ol = pool.Allocate();
+            if (!ol) { pcb.send->ResetPending(); continue; }
+            std::memcpy(ol.Data(), next.payload, next.payload_length);
+            ol.Resize(next.payload_length);
+            owner = pool.Retain(std::move(ol));
+        }
+        pcb.send->OnSent(std::move(owner), 0, now_ms);
+        try { tx_leases.push_back(std::move(tx)); ++built; }
+        catch (...) { break; }
+    }
 }
 
 } // namespace tcpip2
