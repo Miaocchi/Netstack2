@@ -30,6 +30,7 @@ add_library(tcpip2 STATIC
     tcp/output.cpp
     tcp/receive.cpp
     tcp/delivery.cpp
+    tcp/send.cpp
 )
 
 add_library(tcpip2::tcpip2 ALIAS tcpip2)
