@@ -27,6 +27,12 @@ namespace tcpip2 {
 enum class TcpState {
     SynReceived,
     Established,
+    FinWait1,
+    FinWait2,
+    CloseWait,
+    Closing,
+    LastAck,
+    TimeWait,
 };
 
 enum class TcpHandshakeError {
@@ -68,6 +74,9 @@ struct TcpHandshakeConfig {
     std::uint64_t persist_timer_max_ms = 60000;
     std::size_t max_retransmissions = 15;
     std::size_t max_persist_probes = 15;
+
+    std::size_t max_timewait_entries = 4096;
+    std::uint32_t timewait_ms = 120000;
 
     bool Validate() const noexcept;
 };
@@ -164,6 +173,9 @@ public:
                        std::vector<BufferLease>& tx_leases,
                        std::size_t max_segments) noexcept;
 
+    void CloseFlow(FlowId flow_id, std::uint64_t generation) noexcept;
+    void AbortFlow(FlowId flow_id, std::uint64_t generation) noexcept;
+
     bool Find(const FlowKey& incoming_flow, TcpPcbSnapshot& out) const noexcept;
     bool PopPendingResponse(TcpResponse& out) noexcept;
     void DeferResponse(const TcpResponse& response) noexcept {
@@ -208,6 +220,10 @@ private:
         bool delivery_pending = false;
         TcpResponse pending_ack;
         bool pending_ack_valid = false;
+        TimerId timewait_timer;
+        std::uint64_t timewait_deadline_ms = 0;
+        bool fin_received = false;
+        bool close_notified = false;
     };
 
     struct CallbackGate {
@@ -223,6 +239,8 @@ private:
     void OnRetry(const FlowKey& incoming_flow, std::uint64_t generation) noexcept;
     bool ScheduleDelayedAck(Pcb& pcb, std::uint64_t now_ms) noexcept;
     void OnDelayedAck(const FlowKey& incoming_flow, std::uint64_t generation) noexcept;
+    void OnTimeWaitExpired(const FlowKey& incoming_flow, std::uint64_t generation) noexcept;
+    bool ScheduleTimeWait(std::size_t index, std::uint64_t now_ms) noexcept;
     TcpHandshakeResult ProcessEstablished(Pcb& pcb,
                                           const TcpSegmentView& segment,
                                           std::uint64_t now_ms) noexcept;

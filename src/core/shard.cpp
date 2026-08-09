@@ -188,6 +188,12 @@ void StackShard::EventLoopIteration() noexcept {
         if (msg.type == ShardMessageType::kSessionClosed && tcp_) {
             tcp_->OnSessionClosed(msg.flow_id, msg.generation);
         }
+        if (msg.type == ShardMessageType::kFlowClose && tcp_) {
+            tcp_->CloseFlow(msg.flow_id, msg.generation);
+        }
+        if (msg.type == ShardMessageType::kFlowAbort && tcp_) {
+            tcp_->AbortFlow(msg.flow_id, msg.generation);
+        }
         messages_processed_.fetch_add(1, std::memory_order_relaxed);
         // Release any carried data.
         msg.data.Reset();

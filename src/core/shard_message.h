@@ -30,6 +30,8 @@ enum class ShardMessageType {
     kSessionWritable,
     kControl,
     kSessionClosed,
+    kFlowClose,
+    kFlowAbort,
     kStop,
 };
 

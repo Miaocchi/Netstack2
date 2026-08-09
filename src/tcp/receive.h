@@ -87,6 +87,8 @@ public:
         return bytes_held_ - ready_bytes_;
     }
     std::uint32_t RcvNxt() const noexcept { return rcv_nxt_; }
+    void ConsumeFin() noexcept;
+    bool FinReceived() const noexcept { return fin_received_; }
     std::size_t Capacity() const noexcept { return capacity_; }
     bool Blocked() const noexcept { return blocked_; }
     std::size_t MemoryBytes() const noexcept {
@@ -111,6 +113,7 @@ private:
     bool delayed_ack_pending_ = false;
     TcpSackBlock recent_sack_{};
     bool recent_sack_valid_ = false;
+    bool fin_received_ = false;
 };
 
 } // namespace tcpip2

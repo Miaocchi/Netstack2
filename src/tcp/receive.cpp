@@ -309,4 +309,9 @@ TcpSackBlockList TcpReceiveBuffer::SackBlocks(
     return result;
 }
 
+void TcpReceiveBuffer::ConsumeFin() noexcept {
+    rcv_nxt_ += 1;
+    fin_received_ = true;
+}
+
 } // namespace tcpip2

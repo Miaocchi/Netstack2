@@ -95,6 +95,7 @@ bool TcpHandshakeConfig::Validate() const noexcept {
         max_retransmissions == 0 || max_persist_probes == 0) {
         return false;
     }
+    if (max_timewait_entries == 0 || timewait_ms == 0) return false;
     return true;
 }
 
@@ -301,7 +302,9 @@ void TcpHandshakeEngine::OnDelayedAck(const FlowKey& incoming_flow,
     const std::size_t index = FindIndex(incoming_flow);
     if (index == kNotFound) return;
     Pcb& pcb = pcbs_[index];
-    if (pcb.generation != generation || pcb.state != TcpState::Established ||
+    if (pcb.generation != generation ||
+        (pcb.state == TcpState::SynReceived ||
+         pcb.state == TcpState::TimeWait) ||
         !pcb.receive) {
         return;
     }
@@ -334,6 +337,10 @@ TcpDeliveryResult TcpHandshakeEngine::DrainSession(Pcb& pcb) noexcept {
 TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
     Pcb& pcb, const TcpSegmentView& segment, std::uint64_t now_ms) noexcept {
     TcpHandshakeResult result;
+    if (pcb.state == TcpState::TimeWait) {
+        result.response = BuildAck(pcb, now_ms);
+        return result;
+    }
     if (!pcb.receive) {
         result.error = TcpHandshakeError::ReceiveBudget;
         return result;
@@ -390,6 +397,22 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
         }
     }
 
+    // After ACK processing, check if our FIN was acknowledged.
+    if (pcb.send && pcb.send->FinAcked()) {
+        const std::size_t index = &pcb - pcbs_.data();
+        if (pcb.state == TcpState::FinWait1) {
+            pcb.state = TcpState::FinWait2;
+        } else if (pcb.state == TcpState::Closing) {
+            if (!ScheduleTimeWait(index, now_ms)) {
+                RemoveAt(index);
+                return result;
+            }
+        } else if (pcb.state == TcpState::LastAck) {
+            RemoveAt(index);
+            return result;
+        }
+    }
+
     if (segment.payload_length == 0) {
         const std::size_t sequence_length = segment.HasFlag(TcpFlag::Fin) ? 1 : 0;
         if (!pcb.receive->IsSequenceAcceptable(segment.sequence, sequence_length)) {
@@ -400,6 +423,25 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
             pcb.options.peer_timestamp = incoming_timestamp;
         }
         if (segment.HasFlag(TcpFlag::Fin)) {
+            const std::size_t index = &pcb - pcbs_.data();
+            pcb.receive->ConsumeFin();
+            pcb.fin_received = true;
+            pcb.close_notified = true;
+            if (pcb.state == TcpState::Established) {
+                pcb.state = TcpState::CloseWait;
+            } else if (pcb.state == TcpState::FinWait1) {
+                pcb.state = TcpState::Closing;
+            } else if (pcb.state == TcpState::FinWait2) {
+                if (!ScheduleTimeWait(index, now_ms)) {
+                    RemoveAt(index);
+                    return result;
+                }
+            } else if (pcb.state == TcpState::Closing) {
+                if (!ScheduleTimeWait(index, now_ms)) {
+                    RemoveAt(index);
+                    return result;
+                }
+            }
             result.response = BuildAck(pcb, now_ms);
         }
         return result;
@@ -409,7 +451,7 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
     const std::uint32_t old_rcv_nxt = pcb.receive->RcvNxt();
     const TcpReceiveResult received = pcb.receive->OnSegment(
         segment.sequence, segment.payload, segment.payload_length,
-        segment.HasFlag(TcpFlag::Psh) || segment.HasFlag(TcpFlag::Fin));
+        segment.HasFlag(TcpFlag::Psh));
     if (received.disposition == ReceiveDisposition::Invalid) {
         result.error = TcpHandshakeError::InvalidFlags;
         return result;
@@ -437,6 +479,32 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
             result.response = BuildAck(pcb, now_ms);
         }
     }
+    if (segment.HasFlag(TcpFlag::Fin)) {
+        const std::size_t index = &pcb - pcbs_.data();
+        pcb.receive->ConsumeFin();
+        pcb.fin_received = true;
+        pcb.close_notified = true;
+        if (pcb.state == TcpState::Established) {
+            pcb.state = TcpState::CloseWait;
+        } else if (pcb.state == TcpState::FinWait1) {
+            pcb.state = TcpState::Closing;
+        } else if (pcb.state == TcpState::FinWait2) {
+            if (!ScheduleTimeWait(index, now_ms)) {
+                RemoveAt(index);
+                return result;
+            }
+        } else if (pcb.state == TcpState::Closing) {
+            if (!ScheduleTimeWait(index, now_ms)) {
+                RemoveAt(index);
+                return result;
+            }
+        }
+        if (pcb.delayed_ack_timer.value != 0) {
+            timers_.Cancel(pcb.delayed_ack_timer);
+            pcb.delayed_ack_timer = TimerId{};
+        }
+        result.response = BuildAck(pcb, now_ms);
+    }
     return result;
 }
 
@@ -448,6 +516,9 @@ void TcpHandshakeEngine::RemoveAt(std::size_t index) noexcept {
     }
     if (pcb.delayed_ack_timer.value != 0) {
         timers_.Cancel(pcb.delayed_ack_timer);
+    }
+    if (pcb.timewait_timer.value != 0) {
+        timers_.Cancel(pcb.timewait_timer);
     }
     if (pcb.receive) {
         const std::size_t memory = pcb.receive->MemoryBytes();
@@ -740,8 +811,9 @@ TcpHandshakeResult TcpHandshakeEngine::OnSessionWritable(
     TcpHandshakeResult result;
     for (Pcb& pcb : pcbs_) {
         if (pcb.flow_id != flow_id || pcb.generation != generation ||
-            pcb.state != TcpState::Established || !pcb.receive ||
-            pcb.session == nullptr) {
+            pcb.state == TcpState::SynReceived ||
+            pcb.state == TcpState::TimeWait ||
+            !pcb.receive || pcb.session == nullptr) {
             continue;
         }
         pcb.receive->SetBlocked(false);
@@ -776,7 +848,9 @@ void TcpHandshakeEngine::PumpSessionDeliveries(
     std::size_t visited = 0;
     for (Pcb& pcb : pcbs_) {
         if (visited >= pcb_budget) break;
-        if (!pcb.delivery_pending || pcb.state != TcpState::Established ||
+        if (!pcb.delivery_pending ||
+            pcb.state == TcpState::SynReceived ||
+            pcb.state == TcpState::TimeWait ||
             pcb.session == nullptr || !pcb.receive || pcb.receive->Blocked()) {
             continue;
         }
@@ -835,7 +909,9 @@ std::size_t TcpHandshakeEngine::EnqueueSendData(FlowId flow_id,
     const std::uint8_t* data, std::size_t length) noexcept {
     if (data == nullptr || length == 0) return 0;
     for (Pcb& pcb : pcbs_) {
-        if (pcb.flow_id == flow_id && pcb.state == TcpState::Established && pcb.send) {
+        if (pcb.flow_id == flow_id &&
+            (pcb.state == TcpState::Established ||
+             pcb.state == TcpState::CloseWait) && pcb.send) {
             return pcb.send->Enqueue(data, length);
         }
     }
@@ -848,7 +924,9 @@ void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
     std::size_t visited = 0, built = 0;
     for (Pcb& pcb : pcbs_) {
         if (visited >= pcb_budget || built >= max_segments) break;
-        if (pcb.state != TcpState::Established || !pcb.send || pcb.send->IsClosed())
+        if (pcb.state == TcpState::SynReceived ||
+            pcb.state == TcpState::TimeWait || !pcb.send ||
+            pcb.send->IsClosed())
             continue;
         ++visited;
         const std::uint32_t spw = pcb.options.window_scale
@@ -898,6 +976,96 @@ void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
         try { tx_leases.push_back(std::move(tx)); ++built; }
         catch (...) { break; }
     }
+}
+
+void TcpHandshakeEngine::CloseFlow(FlowId flow_id,
+                                    std::uint64_t generation) noexcept {
+    for (std::size_t i = 0; i < pcbs_.size(); ++i) {
+        Pcb& pcb = pcbs_[i];
+        if (pcb.flow_id != flow_id || pcb.generation != generation) continue;
+        if (pcb.state == TcpState::Established) {
+            pcb.state = TcpState::FinWait1;
+            if (pcb.send) pcb.send->RequestFin();
+        } else if (pcb.state == TcpState::CloseWait) {
+            pcb.state = TcpState::LastAck;
+            if (pcb.send) pcb.send->RequestFin();
+        }
+        return;
+    }
+}
+
+void TcpHandshakeEngine::AbortFlow(FlowId flow_id,
+                                    std::uint64_t generation) noexcept {
+    for (std::size_t i = 0; i < pcbs_.size(); ++i) {
+        Pcb& pcb = pcbs_[i];
+        if (pcb.flow_id != flow_id || pcb.generation != generation) continue;
+        TcpResponse rst;
+        rst.valid = true;
+        rst.flow = ReverseFlow(pcb.incoming_flow);
+        rst.sequence = pcb.send ? pcb.send->SndNxt() : pcb.snd_nxt;
+        rst.acknowledgment = pcb.receive ? pcb.receive->RcvNxt() : pcb.rcv_nxt;
+        rst.flags = static_cast<std::uint8_t>(TcpFlag::Rst | TcpFlag::Ack);
+        rst.window = 0;
+        QueueResponse(rst);
+        RemoveAt(i);
+        return;
+    }
+}
+
+bool TcpHandshakeEngine::ScheduleTimeWait(std::size_t index,
+                                           std::uint64_t now_ms) noexcept {
+    if (index >= pcbs_.size()) return false;
+    // Enforce TIME-WAIT capacity via oldest-deadline eviction.
+    std::size_t tw_count = 0;
+    for (const Pcb& p : pcbs_) {
+        if (p.state == TcpState::TimeWait) ++tw_count;
+    }
+    if (tw_count >= config_.max_timewait_entries) {
+        // Find the oldest TIME-WAIT entry.
+        std::size_t oldest = kNotFound;
+        std::uint64_t oldest_deadline = std::numeric_limits<std::uint64_t>::max();
+        for (std::size_t i = 0; i < pcbs_.size(); ++i) {
+            if (pcbs_[i].state == TcpState::TimeWait &&
+                pcbs_[i].timewait_deadline_ms < oldest_deadline) {
+                oldest_deadline = pcbs_[i].timewait_deadline_ms;
+                oldest = i;
+            }
+        }
+        if (oldest != kNotFound) {
+            RemoveAt(oldest);
+            if (oldest < index) --index;
+        }
+    }
+    if (index >= pcbs_.size()) return false;
+    Pcb& pcb = pcbs_[index];
+    pcb.state = TcpState::TimeWait;
+    pcb.timewait_deadline_ms =
+        SaturatingAdd(now_ms, static_cast<std::uint64_t>(config_.timewait_ms));
+    const FlowKey flow = pcb.incoming_flow;
+    const std::uint64_t generation = pcb.generation;
+    const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
+    try {
+        pcb.timewait_timer = timers_.Schedule(
+            pcb.timewait_deadline_ms,
+            [weak_gate, flow, generation] {
+                const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
+                if (gate && gate->owner != nullptr)
+                    gate->owner->OnTimeWaitExpired(flow, generation);
+            });
+        return true;
+    } catch (...) {
+        pcb.timewait_timer = TimerId{};
+        return false;
+    }
+}
+
+void TcpHandshakeEngine::OnTimeWaitExpired(
+    const FlowKey& incoming_flow, std::uint64_t generation) noexcept {
+    const std::size_t index = FindIndex(incoming_flow);
+    if (index == kNotFound) return;
+    Pcb& pcb = pcbs_[index];
+    if (pcb.generation != generation || pcb.state != TcpState::TimeWait) return;
+    RemoveAt(index);
 }
 
 } // namespace tcpip2
