@@ -2,7 +2,7 @@
 
 /**
  * @file output.h
- * @brief Bounded IPv4/IPv6 TCP control-packet serialization.
+ * @brief Bounded IPv4/IPv6 TCP control and data-packet serialization.
  * @license GPL-3.0
  */
 

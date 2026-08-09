@@ -82,6 +82,10 @@ struct TcpResponse {
     std::uint32_t timestamp_value = 0;
     std::uint32_t timestamp_echo = 0;
     TcpSackBlockList sack_blocks;
+    /// Optional payload for data segments (non-SYN packets).
+    /// Must outlive the call to BuildTcpControlPacket.
+    const std::uint8_t* payload = nullptr;
+    std::size_t payload_length = 0;
 };
 
 struct TcpHandshakeResult {

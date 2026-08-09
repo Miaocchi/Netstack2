@@ -156,14 +156,15 @@ TcpOutputResult BuildTcpControlPacket(const TcpResponse& response,
     }
 
     const std::size_t ip_header_length = response.flow.source.IsIpv4() ? 20 : 40;
-    const std::size_t tcp_length = 20 + options_length;
-    const std::size_t packet_length = ip_header_length + tcp_length;
+    const std::size_t tcp_total = 20 + options_length + response.payload_length;
+    const std::size_t packet_length = ip_header_length + tcp_total;
     if (capacity < packet_length) {
         result.error = TcpOutputError::BufferTooSmall;
         return result;
     }
 
-    std::memset(output, 0, packet_length);
+    // Clear header region only — payload area will be memcpy'd below.
+    std::memset(output, 0, ip_header_length + 20 + options_length);
     std::uint8_t* tcp = output + ip_header_length;
     Write16(tcp, response.flow.source_port);
     Write16(tcp + 2, response.flow.destination_port);
@@ -174,6 +175,10 @@ TcpOutputResult BuildTcpControlPacket(const TcpResponse& response,
     Write16(tcp + 14, response.window);
     if (options_length > 0) {
         std::memcpy(tcp + 20, options.data(), options_length);
+    }
+    if (response.payload_length > 0 && response.payload != nullptr) {
+        std::memcpy(tcp + 20 + options_length, response.payload,
+                    response.payload_length);
     }
 
     std::uint32_t pseudo_seed = 0;
@@ -188,19 +193,19 @@ TcpOutputResult BuildTcpControlPacket(const TcpResponse& response,
         Write16(output + 10, InternetChecksum(output, 20));
         pseudo_seed = Ipv4PseudoHeaderSeed(
             response.flow.source.Bytes(), response.flow.destination.Bytes(), 6,
-            static_cast<std::uint16_t>(tcp_length));
+            static_cast<std::uint16_t>(tcp_total));
     } else {
         output[0] = 0x60;
-        Write16(output + 4, static_cast<std::uint16_t>(tcp_length));
+        Write16(output + 4, static_cast<std::uint16_t>(tcp_total));
         output[6] = 6;
         output[7] = hop_limit;
         std::memcpy(output + 8, response.flow.source.Bytes(), 16);
         std::memcpy(output + 24, response.flow.destination.Bytes(), 16);
         pseudo_seed = Ipv6PseudoHeaderSeed(
             response.flow.source.Bytes(), response.flow.destination.Bytes(), 6,
-            static_cast<std::uint32_t>(tcp_length));
+            static_cast<std::uint32_t>(tcp_total));
     }
-    Write16(tcp + 16, InternetChecksum(tcp, tcp_length, pseudo_seed));
+    Write16(tcp + 16, InternetChecksum(tcp, tcp_total, pseudo_seed));
 
     result.packet_length = packet_length;
     return result;

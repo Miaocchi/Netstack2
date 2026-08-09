@@ -1067,4 +1067,205 @@ TCPIP2_TEST(EngineEpochSeparatesCallbackGenerations) {
     TCPIP2_EXPECT_NE(first_flow.generation, second_flow.generation);
 }
 
+// ---------------------------------------------------------------------------
+// Data segment serialization tests (BuildTcpControlPacket with payload)
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(OutputIpv4DataSegment) {
+    const FlowKey flow = MakeFlow();
+    std::uint8_t output[200];
+
+    TcpResponse resp;
+    resp.valid = true;
+    resp.flow = flow;
+    resp.sequence = 1000;
+    resp.acknowledgment = 2000;
+    resp.flags = TcpFlag::Ack;
+    resp.window = 32768;
+    const std::uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF};
+    resp.payload = payload;
+    resp.payload_length = sizeof(payload);
+
+    TcpOutputResult result = BuildTcpControlPacket(resp, output, sizeof(output));
+    TCPIP2_EXPECT_EQ(result.error, TcpOutputError::None);
+    // IPv4 header 20 + TCP header 20 + payload 4 = 44
+    TCPIP2_EXPECT_EQ(result.packet_length, std::size_t{44});
+
+    // Verify IP total length
+    TCPIP2_EXPECT_EQ(static_cast<std::uint16_t>(output[2] << 8 | output[3]),
+                     std::uint16_t{44});
+    // Verify IP protocol = 6
+    TCPIP2_EXPECT_EQ(output[9], std::uint8_t{6});
+    // TCP data offset = 5 (20 bytes / 4)
+    TCPIP2_EXPECT_EQ(output[32] >> 4, std::uint8_t{5});
+    // Verify payload bytes are at offset 40 (20 IP + 20 TCP)
+    TCPIP2_EXPECT_EQ(output[40], std::uint8_t{0xDE});
+    TCPIP2_EXPECT_EQ(output[41], std::uint8_t{0xAD});
+    TCPIP2_EXPECT_EQ(output[42], std::uint8_t{0xBE});
+    TCPIP2_EXPECT_EQ(output[43], std::uint8_t{0xEF});
+
+    // Verify TCP checksum is valid: recompute over the segment (including
+    // the checksum field) with the same pseudo-header seed — must be 0.
+    std::uint32_t seed = Ipv4PseudoHeaderSeed(
+        flow.source.Bytes(), flow.destination.Bytes(), 6,
+        static_cast<std::uint16_t>(24));
+    TCPIP2_EXPECT_EQ(InternetChecksum(output + 20, 24, seed),
+                     std::uint16_t{0});
+}
+
+TCPIP2_TEST(OutputIpv6DataSegment) {
+    FlowKey flow;
+    const std::uint8_t src6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+                                    0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t dst6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+                                    0, 0, 0, 0, 0, 0, 0, 2};
+    flow.source = IpAddress::Ipv6(src6);
+    flow.destination = IpAddress::Ipv6(dst6);
+    flow.source_port = 40000;
+    flow.destination_port = 443;
+    flow.protocol = 6;
+
+    std::uint8_t output[200];
+
+    TcpResponse resp;
+    resp.valid = true;
+    resp.flow = flow;
+    resp.sequence = 1000;
+    resp.acknowledgment = 2000;
+    resp.flags = TcpFlag::Ack;
+    resp.window = 32768;
+    const std::uint8_t payload[] = {0xCA, 0xFE};
+    resp.payload = payload;
+    resp.payload_length = sizeof(payload);
+
+    TcpOutputResult result = BuildTcpControlPacket(resp, output, sizeof(output));
+    TCPIP2_EXPECT_EQ(result.error, TcpOutputError::None);
+    // IPv6 header 40 + TCP header 20 + payload 2 = 62
+    TCPIP2_EXPECT_EQ(result.packet_length, std::size_t{62});
+
+    // IPv6 payload length = 22 (TCP header 20 + payload 2)
+    TCPIP2_EXPECT_EQ(static_cast<std::uint16_t>(output[4] << 8 | output[5]),
+                     std::uint16_t{22});
+    // Next header = 6 (TCP)
+    TCPIP2_EXPECT_EQ(output[6], std::uint8_t{6});
+
+    // Verify payload at offset 60 (40 IPv6 + 20 TCP)
+    TCPIP2_EXPECT_EQ(output[60], std::uint8_t{0xCA});
+    TCPIP2_EXPECT_EQ(output[61], std::uint8_t{0xFE});
+
+    // Verify TCP checksum is valid: recompute over the segment (including
+    // the checksum field) with the same pseudo-header seed — must be 0.
+    std::uint32_t seed = Ipv6PseudoHeaderSeed(
+        flow.source.Bytes(), flow.destination.Bytes(), 6,
+        static_cast<std::uint32_t>(22));
+    TCPIP2_EXPECT_EQ(InternetChecksum(output + 40, 22, seed),
+                     std::uint16_t{0});
+}
+
+TCPIP2_TEST(OutputDataSegmentWithTimestampOption) {
+    const FlowKey flow = MakeFlow();
+    std::uint8_t output[200];
+
+    TcpResponse resp;
+    resp.valid = true;
+    resp.flow = flow;
+    resp.sequence = 1000;
+    resp.acknowledgment = 2000;
+    resp.flags = TcpFlag::Ack;
+    resp.window = 32768;
+    resp.timestamp_present = true;
+    resp.timestamp_value = 12345;
+    resp.timestamp_echo = 67890;
+    const std::uint8_t payload[] = {0x01, 0x02, 0x03};
+    resp.payload = payload;
+    resp.payload_length = sizeof(payload);
+
+    TcpOutputResult result = BuildTcpControlPacket(resp, output, sizeof(output));
+    TCPIP2_EXPECT_EQ(result.error, TcpOutputError::None);
+    // IPv4 20 + TCP 20 + Timestamp option 10 (padded to 12) + payload 3 = 55
+    TCPIP2_EXPECT_EQ(result.packet_length, std::size_t{55});
+
+    // TCP data offset = (20 + 12) / 4 = 8
+    TCPIP2_EXPECT_EQ(output[32] >> 4, std::uint8_t{8});
+
+    // Payload starts at offset 20 + 20 + 12 = 52
+    TCPIP2_EXPECT_EQ(output[52], std::uint8_t{0x01});
+    TCPIP2_EXPECT_EQ(output[53], std::uint8_t{0x02});
+    TCPIP2_EXPECT_EQ(output[54], std::uint8_t{0x03});
+}
+
+TCPIP2_TEST(OutputDataSegmentCapacityOverflow) {
+    const FlowKey flow = MakeFlow();
+    // Buffer too small for IP header + TCP header + payload
+    std::uint8_t output[40];
+
+    TcpResponse resp;
+    resp.valid = true;
+    resp.flow = flow;
+    resp.sequence = 1000;
+    resp.acknowledgment = 2000;
+    resp.flags = TcpFlag::Ack;
+    resp.window = 32768;
+    const std::uint8_t payload[] = {0x01, 0x02, 0x03, 0x04, 0x05};
+    resp.payload = payload;
+    resp.payload_length = sizeof(payload);
+
+    // 20 + 20 + 5 = 45 > 40
+    TcpOutputResult result = BuildTcpControlPacket(resp, output, sizeof(output));
+    TCPIP2_EXPECT_EQ(result.error, TcpOutputError::BufferTooSmall);
+}
+
+TCPIP2_TEST(OutputZeroPayloadBackwardCompatible) {
+    const FlowKey flow = MakeFlow();
+    std::uint8_t output[200];
+
+    TcpResponse resp;
+    resp.valid = true;
+    resp.flow = flow;
+    resp.sequence = 1000;
+    resp.acknowledgment = 2000;
+    resp.flags = TcpFlag::Ack;
+    resp.window = 32768;
+    // No payload — should behave exactly like a control packet
+    resp.payload = nullptr;
+    resp.payload_length = 0;
+
+    TcpOutputResult result = BuildTcpControlPacket(resp, output, sizeof(output));
+    TCPIP2_EXPECT_EQ(result.error, TcpOutputError::None);
+    // IPv4 20 + TCP 20 = 40
+    TCPIP2_EXPECT_EQ(result.packet_length, std::size_t{40});
+}
+
+TCPIP2_TEST(OutputDataSegmentWithSackOption) {
+    const FlowKey flow = MakeFlow();
+    std::uint8_t output[200];
+
+    TcpResponse resp;
+    resp.valid = true;
+    resp.flow = flow;
+    resp.sequence = 1000;
+    resp.acknowledgment = 2000;
+    resp.flags = TcpFlag::Ack;
+    resp.window = 32768;
+    resp.sack_blocks.blocks[0] = {3000, 3100};
+    resp.sack_blocks.blocks[1] = {3200, 3300};
+    resp.sack_blocks.count = 2;
+    const std::uint8_t payload[] = {0xAA, 0xBB};
+    resp.payload = payload;
+    resp.payload_length = sizeof(payload);
+
+    TcpOutputResult result = BuildTcpControlPacket(resp, output, sizeof(output));
+    TCPIP2_EXPECT_EQ(result.error, TcpOutputError::None);
+    // SACK option: kind(1) + len(1) + 2 blocks * 8 = 18, padded to 20
+    // IPv4 20 + TCP 20 + SACK 20 + payload 2 = 62
+    TCPIP2_EXPECT_EQ(result.packet_length, std::size_t{62});
+
+    // TCP data offset = (20 + 20) / 4 = 10
+    TCPIP2_EXPECT_EQ(output[32] >> 4, std::uint8_t{10});
+
+    // Payload at offset 20 + 20 + 20 = 60
+    TCPIP2_EXPECT_EQ(output[60], std::uint8_t{0xAA});
+    TCPIP2_EXPECT_EQ(output[61], std::uint8_t{0xBB});
+}
+
 TCPIP2_TEST_MAIN()
