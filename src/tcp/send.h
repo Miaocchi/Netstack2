@@ -25,6 +25,7 @@
 #include <vector>
 
 #include <tcpip2/buffer.h>
+#include <tcp/receive.h>
 
 namespace tcpip2 {
 
@@ -143,6 +144,16 @@ public:
                            std::uint64_t now_ms,
                            bool ack_only = true) noexcept;
 
+    /**
+     * Process incoming SACK blocks from a duplicate ACK.
+     * Marks in-flight records covered by SACK blocks, tracks the SACKed
+     * pipe for congestion-window accounting, and triggers fast retransmit
+     * when 3+ consecutive records are SACKed.
+     * Returns the number of bytes newly SACKed by this call.
+     */
+    std::size_t OnSack(const TcpSackBlockList& sack_blocks,
+                       std::uint64_t now_ms) noexcept;
+
     // ---- Timer-driven actions ----
 
     /// Returns true if the retransmission timer has expired and a retransmit is due.
@@ -181,6 +192,9 @@ public:
     bool PersistActive() const noexcept { return persist_deadline_ms_ != 0; }
     std::size_t PersistProbeCount() const noexcept { return persist_probe_count_; }
     std::uint64_t CurrentRto() const noexcept { return rto_ms_; }
+    std::size_t SackedBytes() const noexcept { return sacked_bytes_; }
+    std::uint32_t SackedSequence() const noexcept { return sacked_sequence_; }
+    bool InFastRecovery() const noexcept { return fast_recovery_; }
 
     /// True if all sent data (including FIN) has been ACKed and no unsent data remains.
     bool AllAcked() const noexcept;
@@ -197,6 +211,7 @@ private:
         std::uint64_t sent_time_ms = 0;
         std::size_t rto_attempts = 0;
         bool retransmitted = false;
+        bool sacked = false;
     };
 
     enum class PendingKind {
@@ -232,6 +247,10 @@ private:
     std::size_t in_flight_bytes_ = 0;
     std::size_t in_flight_sequence_ = 0;
     std::optional<SendRecord> persist_probe_;
+
+    // SACK scoreboard
+    std::size_t sacked_bytes_ = 0;
+    std::uint32_t sacked_sequence_ = 0;
 
     // Sequence numbers
     std::uint32_t snd_una_;    ///< Lowest unacknowledged sequence.

@@ -1223,4 +1223,259 @@ TCPIP2_TEST(SendSequenceWrapAckAndFin) {
     send.reset();
 }
 
+// ---------------------------------------------------------------------------
+// SACK scoreboard tests
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(SackSingleBlockMarksRecord) {
+    SendHelper sh;
+    auto send = MakeSendBuffer(40000, 4, 64 * 1024, 64 * 1024);
+
+    // Enqueue 8 bytes, send two segments of 4 bytes each.
+    std::uint8_t data[8] = {};
+    send->Enqueue(data, 8);
+    auto seg1 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg1);
+    auto seg2 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg2);
+
+    // SACK the second segment [40004, 40008).
+    TcpSackBlockList sacks;
+    sacks.blocks[0] = {40004, 40008};
+    sacks.count = 1;
+    std::size_t newly = send->OnSack(sacks, sh.now_ms + 10);
+    TCPIP2_EXPECT_EQ(newly, std::size_t{4});
+    TCPIP2_EXPECT_EQ(send->SackedBytes(), std::size_t{4});
+    TCPIP2_EXPECT_EQ(send->SackedSequence(), std::uint32_t{4});
+    TCPIP2_EXPECT_FALSE(send->InFastRecovery());
+
+    send.reset();
+}
+
+TCPIP2_TEST(SackMultipleBlocksMarkMultipleRecords) {
+    SendHelper sh;
+    auto send = MakeSendBuffer(41000, 4, 64 * 1024, 64 * 1024);
+
+    std::uint8_t data[8] = {};
+    send->Enqueue(data, 8);
+    // Send 2 segments: [41000,41004), [41004,41008)  (cwnd = 2*MSS = 8)
+    auto seg1 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg1);
+    auto seg2 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg2);
+
+    // SACK both segments.
+    TcpSackBlockList sacks;
+    sacks.blocks[0] = {41000, 41004};
+    sacks.blocks[1] = {41004, 41008};
+    sacks.count = 2;
+    std::size_t newly = send->OnSack(sacks, sh.now_ms + 10);
+    TCPIP2_EXPECT_EQ(newly, std::size_t{8});
+    TCPIP2_EXPECT_EQ(send->SackedBytes(), std::size_t{8});
+    TCPIP2_EXPECT_EQ(send->SackedSequence(), std::uint32_t{8});
+
+    send.reset();
+}
+
+TCPIP2_TEST(SackAlreadySackedIsIdempotent) {
+    SendHelper sh;
+    auto send = MakeSendBuffer(42000, 4, 64 * 1024, 64 * 1024);
+
+    std::uint8_t data[8] = {};
+    send->Enqueue(data, 8);
+    auto seg1 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg1);
+    auto seg2 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg2);
+
+    TcpSackBlockList sacks;
+    sacks.blocks[0] = {42004, 42008};
+    sacks.count = 1;
+    send->OnSack(sacks, sh.now_ms + 10);
+    TCPIP2_EXPECT_EQ(send->SackedBytes(), std::size_t{4});
+
+    // Second SACK with same block should not add bytes.
+    std::size_t newly = send->OnSack(sacks, sh.now_ms + 20);
+    TCPIP2_EXPECT_EQ(newly, std::size_t{0});
+    TCPIP2_EXPECT_EQ(send->SackedBytes(), std::size_t{4});
+
+    send.reset();
+}
+
+TCPIP2_TEST(SackTriggersFastRetransmit) {
+    SendHelper sh;
+    auto send = MakeSendBuffer(43000, 4, 64 * 1024, 64 * 1024);
+
+    // cwnd starts at 2*MSS = 8, allowing 2 segments in flight.
+    std::uint8_t data[16] = {};
+    send->Enqueue(data, 16);
+    auto seg1 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg1);
+    auto seg2 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg2);
+
+    // ACK seg1 to open the window.  cwnd grows, allowing more sends.
+    send->OnAck(43004, 65535, sh.now_ms + 5);
+
+    // Now send seg3 and seg4.
+    auto seg3 = send->NextSegment(65535, sh.now_ms + 5);
+    sh.SendSegment(*send, seg3);
+    auto seg4 = send->NextSegment(65535, sh.now_ms + 5);
+    sh.SendSegment(*send, seg4);
+
+    // SACK segments 2, 3, 4 (sequences 43004, 43008, 43012).
+    // seg2 [43004,43008), seg3 [43008,43012), seg4 [43012,43016)
+    TcpSackBlockList sacks;
+    sacks.blocks[0] = {43004, 43008};
+    sacks.blocks[1] = {43008, 43012};
+    sacks.blocks[2] = {43012, 43016};
+    sacks.count = 3;
+    send->OnSack(sacks, sh.now_ms + 10);
+
+    TCPIP2_EXPECT_TRUE(send->InFastRecovery());
+    // Fast retransmit should be pending for the front segment.
+    // After ACKing seg1, the front is seg2 [43004,43008).
+    auto rseg = send->NextSegment(65535, sh.now_ms + 20);
+    TCPIP2_EXPECT_TRUE(rseg.is_retransmission);
+    TCPIP2_EXPECT_EQ(rseg.sequence, std::uint32_t{43004});
+
+    send.reset();
+}
+
+TCPIP2_TEST(SackDoesNotAffectUnsackedRecords) {
+    SendHelper sh;
+    auto send = MakeSendBuffer(44000, 4, 64 * 1024, 64 * 1024);
+
+    std::uint8_t data[8] = {};
+    send->Enqueue(data, 8);
+    auto seg1 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg1);
+    auto seg2 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg2);
+
+    // SACK only the second segment [44004, 44008).
+    TcpSackBlockList sacks;
+    sacks.blocks[0] = {44004, 44008};
+    sacks.count = 1;
+    send->OnSack(sacks, sh.now_ms + 10);
+
+    TCPIP2_EXPECT_EQ(send->SackedBytes(), std::size_t{4});
+    TCPIP2_EXPECT_EQ(send->SackedSequence(), std::uint32_t{4});
+    TCPIP2_EXPECT_FALSE(send->InFastRecovery());
+
+    send.reset();
+}
+
+TCPIP2_TEST(SackPartialOverlapDoesNotMarkRecord) {
+    SendHelper sh;
+    auto send = MakeSendBuffer(45000, 4, 64 * 1024, 64 * 1024);
+
+    std::uint8_t data[8] = {};
+    send->Enqueue(data, 8);
+    auto seg1 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg1);
+    auto seg2 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg2);
+
+    // SACK block partially overlaps segment 2: [45002, 45006).
+    // Segment 2 is [45004, 45008) — this does NOT fully cover it.
+    TcpSackBlockList sacks;
+    sacks.blocks[0] = {45002, 45006};
+    sacks.count = 1;
+    std::size_t newly = send->OnSack(sacks, sh.now_ms + 10);
+    TCPIP2_EXPECT_EQ(newly, std::size_t{0});
+    TCPIP2_EXPECT_EQ(send->SackedBytes(), std::size_t{0});
+
+    send.reset();
+}
+
+TCPIP2_TEST(SackClearedOnFullAck) {
+    SendHelper sh;
+    auto send = MakeSendBuffer(46000, 4, 64 * 1024, 64 * 1024);
+
+    std::uint8_t data[8] = {};
+    send->Enqueue(data, 8);
+    auto seg1 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg1);
+    auto seg2 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg2);
+
+    // SACK segment 2.
+    TcpSackBlockList sacks;
+    sacks.blocks[0] = {46004, 46008};
+    sacks.count = 1;
+    send->OnSack(sacks, sh.now_ms + 10);
+    TCPIP2_EXPECT_EQ(send->SackedBytes(), std::size_t{4});
+
+    // Cumulative ACK of everything.
+    auto ack = send->OnAck(46008, 65535, sh.now_ms + 20);
+    TCPIP2_EXPECT_TRUE(ack.fully_acked);
+    TCPIP2_EXPECT_EQ(send->SackedBytes(), std::size_t{0});
+    TCPIP2_EXPECT_EQ(send->SackedSequence(), std::uint32_t{0});
+
+    send.reset();
+}
+
+TCPIP2_TEST(SackUpdatesUsableWindow) {
+    SendHelper sh;
+    auto send = MakeSendBuffer(47000, 4, 64 * 1024, 64 * 1024);
+
+    // cwnd = 2*MSS = 8. Send 2 segments (8 bytes in-flight).
+    std::uint8_t data[12] = {};
+    send->Enqueue(data, 12);
+    auto seg1 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg1);
+    auto seg2 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg2);
+
+    // cwnd exhausted — no new segment.
+    auto none = send->NextSegment(65535, sh.now_ms);
+    TCPIP2_EXPECT_FALSE(none.has_segment);
+
+    // SACK segment 2 → pipe shrinks by 4 bytes → usable window = 4.
+    TcpSackBlockList sacks;
+    sacks.blocks[0] = {47004, 47008};
+    sacks.count = 1;
+    send->OnSack(sacks, sh.now_ms + 10);
+
+    // Now we should be able to send a new segment of up to 4 bytes.
+    auto seg3 = send->NextSegment(65535, sh.now_ms + 10);
+    TCPIP2_EXPECT_TRUE(seg3.has_segment);
+    TCPIP2_EXPECT_EQ(seg3.payload_length, std::size_t{4});
+    TCPIP2_EXPECT_EQ(seg3.sequence, std::uint32_t{47008});
+
+    send.reset();
+}
+
+TCPIP2_TEST(SackClearedOnPartialAck) {
+    SendHelper sh;
+    auto send = MakeSendBuffer(48000, 4, 64 * 1024, 64 * 1024);
+
+    std::uint8_t data[8] = {};
+    send->Enqueue(data, 8);
+    auto seg1 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg1);
+    auto seg2 = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg2);
+
+    // SACK segment 2 [48004, 48008).
+    TcpSackBlockList sacks;
+    sacks.blocks[0] = {48004, 48008};
+    sacks.count = 1;
+    send->OnSack(sacks, sh.now_ms + 10);
+    TCPIP2_EXPECT_EQ(send->SackedBytes(), std::size_t{4});
+
+    // Partial ACK covering segment 1 — doesn't touch the SACKed segment 2.
+    send->OnAck(48004, 65535, sh.now_ms + 20);
+    // SACKed segment 2 is still in queue and still SACKed.
+    TCPIP2_EXPECT_EQ(send->SackedBytes(), std::size_t{4});
+    TCPIP2_EXPECT_EQ(send->RetransmitQueueSize(), std::size_t{1});
+
+    // Full ACK of segment 2 should clear SACK state.
+    send->OnAck(48008, 65535, sh.now_ms + 30);
+    TCPIP2_EXPECT_EQ(send->SackedBytes(), std::size_t{0});
+
+    send.reset();
+}
+
 TCPIP2_TEST_MAIN()

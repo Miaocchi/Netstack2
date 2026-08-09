@@ -96,7 +96,12 @@ bool TcpSendBuffer::RequestFin() noexcept {
 
 std::size_t TcpSendBuffer::UsableWindow(std::uint32_t peer_window) const noexcept {
     const std::size_t allowed = std::min<std::size_t>(peer_window, cwnd_);
-    return allowed > in_flight_sequence_ ? allowed - in_flight_sequence_ : 0;
+    // RFC 6675 pipe: in-flight minus SACKed bytes.
+    const std::size_t pipe =
+        in_flight_sequence_ > sacked_sequence_
+            ? in_flight_sequence_ - sacked_sequence_
+            : 0;
+    return allowed > pipe ? allowed - pipe : 0;
 }
 
 bool TcpSendBuffer::CanSendNew(std::uint32_t peer_window) const noexcept {
@@ -477,13 +482,15 @@ TcpSendAckResult TcpSendBuffer::OnAck(std::uint32_t acknowledgment,
         if (qualifying_duplicate) {
             ++dup_ack_count_;
             if (fast_recovery_) {
+                // Inflate cwnd by 1 MSS per dup ACK during recovery (RFC 5681).
                 const std::uint64_t inflated =
                     static_cast<std::uint64_t>(cwnd_) + mss_;
                 cwnd_ = inflated > std::numeric_limits<std::uint32_t>::max()
                             ? std::numeric_limits<std::uint32_t>::max()
                             : static_cast<std::uint32_t>(inflated);
             }
-            if (dup_ack_count_ == 3 && !retransmit_queue_.empty()) {
+            if (dup_ack_count_ == 3 && !retransmit_queue_.empty() &&
+                !fast_recovery_) {
                 const std::uint32_t flight = SaturatingUint32(in_flight_sequence_);
                 ssthresh_ = std::max<std::uint32_t>(
                     flight / 2U, static_cast<std::uint32_t>(mss_) * 2U);
@@ -556,6 +563,18 @@ TcpSendAckResult TcpSendBuffer::OnAck(std::uint32_t acknowledgment,
             if (carries_fin) {
                 fin_acked_ = true;
             }
+            if (record.sacked) {
+                if (sacked_bytes_ >= record.data.Size()) {
+                    sacked_bytes_ -= record.data.Size();
+                } else {
+                    sacked_bytes_ = 0;
+                }
+                if (sacked_sequence_ >= logical_length) {
+                    sacked_sequence_ -= static_cast<std::uint32_t>(logical_length);
+                } else {
+                    sacked_sequence_ = 0;
+                }
+            }
             retransmit_queue_.pop_front();
             continue;
         }
@@ -567,6 +586,19 @@ TcpSendAckResult TcpSendBuffer::OnAck(std::uint32_t acknowledgment,
         if (record.data.Empty()) {
             record.data = {};
             record.owner.Reset();
+        }
+        if (record.sacked) {
+            record.sacked = false;
+            if (sacked_bytes_ >= payload_take) {
+                sacked_bytes_ -= payload_take;
+            } else {
+                sacked_bytes_ = 0;
+            }
+            if (sacked_sequence_ >= static_cast<std::uint32_t>(take)) {
+                sacked_sequence_ -= static_cast<std::uint32_t>(take);
+            } else {
+                sacked_sequence_ = 0;
+            }
         }
         partial_rto_recovery = record.rto_attempts != 0;
         break;
@@ -746,6 +778,8 @@ void TcpSendBuffer::Close() noexcept {
     retransmit_bytes_ = 0;
     in_flight_bytes_ = 0;
     in_flight_sequence_ = 0;
+    sacked_bytes_ = 0;
+    sacked_sequence_ = 0;
     fast_retransmit_pending_ = false;
     pending_kind_ = PendingKind::None;
 }
@@ -778,6 +812,69 @@ void TcpSendBuffer::CancelTimers() noexcept {
     rto_running_ = false;
     rto_deadline_ms_ = 0;
     persist_deadline_ms_ = 0;
+}
+
+std::size_t TcpSendBuffer::OnSack(const TcpSackBlockList& sack_blocks,
+                                   std::uint64_t now_ms) noexcept {
+    (void)now_ms;
+    if (sack_blocks.count == 0 || retransmit_queue_.empty() || closed_) {
+        return 0;
+    }
+
+    std::size_t newly_sacked = 0;
+    std::size_t sacked_count = 0;
+
+    for (SendRecord& record : retransmit_queue_) {
+        if (record.sacked) {
+            ++sacked_count;
+            continue;
+        }
+        // A record is SACKed only when a SACK block fully covers its
+        // [seq, seq + logical_length) range.
+        const std::uint32_t record_end =
+            record.seq + static_cast<std::uint32_t>(record.logical_length);
+        bool covered = false;
+        for (std::size_t i = 0; i < sack_blocks.count; ++i) {
+            const auto& block = sack_blocks.blocks[i];
+            if (block.left_edge == block.right_edge) {
+                continue;
+            }
+            // Check block covers [record.seq, record_end).
+            const bool left_ok =
+                !SequenceBefore(record.seq, block.left_edge);
+            const bool right_ok =
+                !SequenceAfter(record_end, block.right_edge);
+            if (left_ok && right_ok) {
+                covered = true;
+                break;
+            }
+        }
+        if (covered) {
+            record.sacked = true;
+            sacked_bytes_ += record.data.Size();
+            sacked_sequence_ += static_cast<std::uint32_t>(record.logical_length);
+            newly_sacked += record.data.Size();
+            ++sacked_count;
+        }
+    }
+
+    // Trigger fast retransmit if 3+ distinct records are SACKed and
+    // we are not already in fast recovery.
+    if (sacked_count >= 3 && !fast_recovery_ && !retransmit_queue_.empty()) {
+        const std::uint32_t flight = SaturatingUint32(in_flight_sequence_);
+        ssthresh_ = std::max<std::uint32_t>(
+            flight / 2U, static_cast<std::uint32_t>(mss_) * 2U);
+        const std::uint64_t recovery_window =
+            static_cast<std::uint64_t>(ssthresh_) +
+            static_cast<std::uint64_t>(mss_) * 3U;
+        cwnd_ = recovery_window > std::numeric_limits<std::uint32_t>::max()
+                    ? std::numeric_limits<std::uint32_t>::max()
+                    : static_cast<std::uint32_t>(recovery_window);
+        fast_retransmit_pending_ = true;
+        fast_recovery_ = true;
+    }
+
+    return newly_sacked;
 }
 
 } // namespace tcpip2
