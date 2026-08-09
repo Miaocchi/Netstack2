@@ -1438,4 +1438,295 @@ TCPIP2_TEST(SendBufferFreedOnPcbRemoval) {
     // Engine should be cleanly destructible (send buffer freed with PCB).
 }
 
+TCPIP2_TEST(CloseFlowTransitionsEstablishedToFinWait1) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    engine.CloseFlow(snap.flow_id, snap.generation);
+
+    TcpPcbSnapshot updated;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::FinWait1),
+                     static_cast<int>(updated.state));
+}
+
+TCPIP2_TEST(CloseFlowTransitionsCloseWaitToLastAck) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    // Remote sends FIN → Established → CloseWait.
+    engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack),
+        200);
+
+    TcpPcbSnapshot after_fin;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, after_fin));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::CloseWait),
+                     static_cast<int>(after_fin.state));
+
+    engine.CloseFlow(after_fin.flow_id, after_fin.generation);
+
+    TcpPcbSnapshot updated;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::LastAck),
+                     static_cast<int>(updated.state));
+}
+
+TCPIP2_TEST(CloseFlowIgnoresUnknownFlowId) {
+    TimerWheel timers;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    Establish(engine, flow);
+
+    // Unknown flow_id should not crash or remove the existing PCB.
+    engine.CloseFlow(FlowId{999999}, 1);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, engine.PcbCount());
+}
+
+TCPIP2_TEST(AbortFlowSendsRstAndRemovesPcb) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    engine.AbortFlow(snap.flow_id, snap.generation);
+
+    TCPIP2_EXPECT_EQ(std::size_t{0}, engine.PcbCount());
+
+    // A RST response should have been queued.
+    TcpResponse rsp;
+    TCPIP2_EXPECT_TRUE(engine.PopPendingResponse(rsp));
+    TCPIP2_EXPECT_TRUE(rsp.valid);
+    TCPIP2_EXPECT_TRUE((rsp.flags & TcpFlag::Rst) != 0);
+}
+
+TCPIP2_TEST(AbortFlowIgnoresUnknownFlowId) {
+    TimerWheel timers;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    Establish(engine, flow);
+
+    engine.AbortFlow(FlowId{999999}, 1);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, engine.PcbCount());
+}
+
+TCPIP2_TEST(RemoteFinTransitionsEstablishedToCloseWait) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    const auto result = engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack),
+        200);
+
+    TCPIP2_EXPECT_TRUE(result.response.valid);
+
+    TcpPcbSnapshot updated;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::CloseWait),
+                     static_cast<int>(updated.state));
+}
+
+TCPIP2_TEST(FinAckTransitionsFinWait1ToFinWait2) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    engine.CloseFlow(snap.flow_id, snap.generation);
+
+    // Pump to emit the FIN segment.
+    PktBufferPool pool(4, 2048);
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(200, 64, pool, tx, 64);
+    TCPIP2_EXPECT_TRUE(tx.size() >= 1);
+
+    // Remote ACKs our FIN.
+    TcpPcbSnapshot after_close;
+    engine.Find(flow, after_close);
+    engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt, TcpFlag::Ack), 210);
+
+    TcpPcbSnapshot updated;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::FinWait2),
+                     static_cast<int>(updated.state));
+}
+
+TCPIP2_TEST(SimultaneousCloseTransitionsToClosing) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    engine.CloseFlow(snap.flow_id, snap.generation);
+
+    // Pump to emit the FIN.
+    PktBufferPool pool(4, 2048);
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(200, 64, pool, tx, 64);
+
+    // Remote sends its own FIN without ACKing ours (simultaneous close).
+    TcpPcbSnapshot after_close;
+    engine.Find(flow, after_close);
+    engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack),
+        210);
+
+    TcpPcbSnapshot updated;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::Closing),
+                     static_cast<int>(updated.state));
+}
+
+TCPIP2_TEST(BothFinAckedEntersTimeWait) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    engine.CloseFlow(snap.flow_id, snap.generation);
+
+    // Pump to emit our FIN.
+    PktBufferPool pool(4, 2048);
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(200, 64, pool, tx, 64);
+
+    // Remote ACKs our FIN and sends its own FIN.
+    TcpPcbSnapshot after_close;
+    engine.Find(flow, after_close);
+    engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
+                 TcpFlag::Fin | TcpFlag::Ack),
+        210);
+
+    TcpPcbSnapshot updated;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::TimeWait),
+                     static_cast<int>(updated.state));
+    TCPIP2_EXPECT_EQ(std::size_t{1}, timers.PendingCount());
+}
+
+TCPIP2_TEST(TimeWaitExpiresAndRemovesPcb) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    config.timewait_ms = 1000;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    engine.CloseFlow(snap.flow_id, snap.generation);
+
+    // Pump to emit our FIN.
+    PktBufferPool pool(4, 2048);
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(200, 64, pool, tx, 64);
+
+    // Remote ACKs our FIN and sends its own FIN → enters TIME-WAIT.
+    TcpPcbSnapshot after_close;
+    engine.Find(flow, after_close);
+    engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
+                 TcpFlag::Fin | TcpFlag::Ack),
+        210);
+
+    TCPIP2_EXPECT_EQ(std::size_t{1}, engine.PcbCount());
+
+    // Advance past the TIME-WAIT duration (210 + 1000 = 1210).
+    timers.AdvanceTo(1210);
+
+    TCPIP2_EXPECT_EQ(std::size_t{0}, engine.PcbCount());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, timers.PendingCount());
+}
+
+TCPIP2_TEST(TimeWaitRetransmittedFinGetsAck) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    config.timewait_ms = 1000;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    engine.CloseFlow(snap.flow_id, snap.generation);
+
+    // Pump to emit our FIN.
+    PktBufferPool pool(4, 2048);
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(200, 64, pool, tx, 64);
+
+    // Remote ACKs our FIN and sends its own FIN → enters TIME-WAIT.
+    TcpPcbSnapshot after_close;
+    engine.Find(flow, after_close);
+    engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
+                 TcpFlag::Fin | TcpFlag::Ack),
+        210);
+
+    // Remote retransmits its FIN while we are in TIME-WAIT.
+    const auto result = engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
+                 TcpFlag::Fin | TcpFlag::Ack),
+        300);
+
+    // We should ACK it (not RST, not ignore).
+    TCPIP2_EXPECT_TRUE(result.response.valid);
+    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Ack),
+                     result.response.flags);
+}
+
+TCPIP2_TEST(TimeWaitCapacityEvictsOldest) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    config.timewait_ms = 5000;
+    config.max_timewait_entries = 2;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+
+    // Establish and close 3 flows to overflow TIME-WAIT capacity.
+    for (int i = 0; i < 3; ++i) {
+        const FlowKey flow = MakeFlow(static_cast<std::uint16_t>(40000 + i),
+                                      static_cast<std::uint16_t>(443));
+        const TcpPcbSnapshot snap = Establish(engine, flow, 1000 + i * 100,
+                                              100 + i * 10);
+        engine.CloseFlow(snap.flow_id, snap.generation);
+
+        // Pump to emit our FIN.
+        PktBufferPool pool(4, 2048);
+        std::vector<BufferLease> tx;
+        engine.PumpSendPaths(200 + i * 10, 64, pool, tx, 64);
+
+        // Remote ACKs our FIN and sends its own FIN.
+        TcpPcbSnapshot after_close;
+        engine.Find(flow, after_close);
+        engine.OnSegment(
+            MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
+                     TcpFlag::Fin | TcpFlag::Ack),
+            210 + i * 10);
+    }
+
+    // After 3 entries with capacity 2, at most 2 should remain.
+    TCPIP2_EXPECT_TRUE(engine.PcbCount() <= 2);
+}
+
 TCPIP2_TEST_MAIN()

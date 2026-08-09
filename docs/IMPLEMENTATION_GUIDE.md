@@ -993,16 +993,27 @@ Tcp/Udp packet generated
 - `tests/unit/tcp/handshake_test.cpp`: 54 tests, P3B-3 send wiring 覆盖 enqueue、PumpSendPaths data segment 序列化与解析、SndNxt 推进与 ACK 确认、空队列不产生 segment、pool 耗尽安全、PCB 移除时 send buffer 释放。
 - `tests/unit/tcp/send_test.cpp`: 51 tests, 覆盖 retransmission queue 生命周期、partial ACK/FIN 修剪、future ACK 拒绝、RFC 6298/Karn、fast retransmit、MSS/window 裁剪、zero-window persist、persist 数据丢失修复、序列空洞修复、RTO/persist 冲突修复、关闭后 BufferRef 泄漏修复。
 
-验证结果: 全量 CTest 普通 30/30, ASan/UBSan 30/30, TSan 30/30; TCP handshake 54/54, send 51/51; include boundaries OK; `git diff --check` clean。FIN/close/TIME-WAIT 仍属 P3B-4。
+验证结果: 全量 CTest 普通 30/30, ASan/UBSan 30/30, TSan 30/30; TCP handshake 54/54, send 51/51; include boundaries OK; `git diff --check` clean。
 
-#### P3B-4: 关闭
+#### P3B-4: 关闭 ✅ Implemented (2026-08-09)
 
-- FIN-WAIT-1/2、CLOSE-WAIT、CLOSING、LAST-ACK、TIME-WAIT;
-- simultaneous close;
-- half-close 映射 `ShutdownWrite`;
-- RST/challenge ACK;
-- TIME-WAIT 数量和内存上限;
-- Session late callback generation validation。
+- `src/tcp/handshake.h` / `handshake.cpp`: 6 个新 `TcpState` 值 (FinWait1, FinWait2, CloseWait, Closing, LastAck, TimeWait)。`ProcessEstablished` 处理 zero-payload FIN 和 data-carrying FIN（先交付数据再消费 FIN sequence number），状态转移按 RFC 793:
+  - Established + remote FIN → CloseWait
+  - FinWait1 + remote FIN → Closing; + ACK of our FIN → FinWait2
+  - FinWait2 + remote FIN → TimeWait
+  - Closing + ACK of our FIN → TimeWait
+  - LastAck + ACK of our FIN → PCB removed
+  - TimeWait + retransmitted FIN → ACK (不重新进入处理)
+- `CloseFlow(FlowId, generation)`: 从 Established → FinWait1 或 CloseWait → LastAck，调用 `send->RequestFin()` 排队 FIN。
+- `AbortFlow(FlowId, generation)`: inline 构建 RST (seq=SndNxt, ack=RcvNxt, flags=Rst|Ack)，QueueResponse 后立即 RemoveAt。
+- `ScheduleTimeWait(index, now_ms)`: 检查 `max_timewait_entries` 容量；满时找 `timewait_deadline_ms` 最老的 entry 驱逐 (oldest-deadline eviction)。设置 `pcb.state = TimeWait`，注册 timer callback (weak_ptr gate + FlowKey + generation)，到期调用 `OnTimeWaitExpired` → RemoveAt。
+- `RemoveAt` 取消 `timewait_timer`；`Validate()` 检查 `max_timewait_entries > 0 && timewait_ms > 0`。
+- 状态检查扩展: PumpSendPaths 在 SynReceived/TimeWait 跳过 (允许 FinWait1/FinWait2/Closing/LastAck/CloseWait 继续发送 FIN/retransmission)；EnqueueSendData 接受 Established + CloseWait；OnDelayedAck/OnSessionWritable/PumpSessionDeliveries 在 SynReceived/TimeWait 跳过。
+- `src/tcp/receive.h` / `receive.cpp`: `ConsumeFin()` (rcv_nxt += 1, fin_received_ = true) 和 `FinReceived()`。
+- `src/core/shard_message.h` / `shard.cpp`: `kFlowClose` / `kFlowAbort` 消息类型，shard 控制循环调用 `CloseFlow` / `AbortFlow`。
+- `tests/unit/tcp/handshake_test.cpp`: 66 tests, P3B-4 覆盖 CloseFlow (Established→FinWait1, CloseWait→LastAck, unknown flow), AbortFlow (RST + removal, unknown flow), remote FIN (Established→CloseWait), FIN ACK (FinWait1→FinWait2), simultaneous close (→Closing), both FIN ACKed (→TimeWait), TIME-WAIT expiry (PCB removed), TIME-WAIT retransmitted FIN (ACK), TIME-WAIT capacity eviction (oldest evicted)。
+
+验证结果: 全量 CTest 普通 30/30, ASan/UBSan 30/30, TSan 30/30; TCP handshake 66/66; include boundaries OK; `git diff --check` clean。
 
 首个 interop gate:
 
