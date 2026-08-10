@@ -1055,6 +1055,28 @@ Tcp/Udp packet generated
 
 验证结果: 全量 CTest 普通 31/31, ASan/UBSan 31/31, TSan 31/31; TCP congestion 43/43; include boundaries OK; `git diff --check` clean。
 
+#### P3C-03: Per-flow Pacer ✅ Implemented (2026-08-10)
+
+在 `src/tcp/send.h` / `send.cpp` 中为 `TcpSendBuffer` 增加 per-flow pacing gate：
+
+- **新字段**: `next_send_time_ms_`（absolute deadline，0 = 无 gate）。通过 public accessor `PacingDeadline()` 暴露。
+- **Pacing gate 位置**: `NextSegment()` 中，retransmit / fast-retransmit / persist probe 路径之后、`CanSendNew()` 之后。这些路径自然绕过 pacing。
+- **Deadline 计算**: `StoreNewRecord()` 末尾，当 `PacingRate() > 0 && pending_len_ > 0` 时，`interval_ms = (pending_len_ * 1000) / pacing_rate`，`next_send_time_ms_ = SaturatingAdd(now_ms, interval_ms)`。
+- **AIMD**: `PacingRate()` 恒返回 0，不 pace。
+- **BBR**: `PacingRate()` 返回 `BtlBw * gain`；BtlBw=0 时不 pace。
+- **重置**: `CancelTimers()` 和 `Close()` 中 `next_send_time_ms_ = 0`。
+- **Shard 集成**: `PumpSendPaths` 和 `shard.cpp` 无需修改。pacing 透明地在 `NextSegment` 内部处理，返回 `has_segment=false` 时 PumpSendPaths 已正确 `++i; continue`。Shard 事件循环每轮调用 PumpSendPaths，pacing 延迟最多一个迭代。
+
+测试 (`tests/unit/tcp/send_test.cpp` 追加 6 个 pacing 测试，总计 57/57):
+- AIMD 无 pacing gate
+- BBR 延迟第二个 segment
+- Pacing 不阻塞重传
+- Pacing 不阻塞零窗口探测
+- Pacing gate 到期后允许新 segment
+- Close() 重置 pacing deadline
+
+验证结果: 全量 CTest 普通 31/31, ASan/UBSan 31/31, TSan 31/31; TCP send 57/57; include boundaries OK; `git diff --check` clean。
+
 #### 通用采样器
 
 KCC 和 BBR 不能直接消费“本 ACK 确认多少字节”作为带宽。实现

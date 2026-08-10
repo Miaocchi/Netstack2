@@ -1478,4 +1478,198 @@ TCPIP2_TEST(SackClearedOnPartialAck) {
     send.reset();
 }
 
+// ---------------------------------------------------------------------------
+// P3C-03: Per-flow pacing tests
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(PacingAimdHasNoPacingGate) {
+    SendScope s;
+    auto& send = *s.send;
+    auto& sh = s.sh;
+
+    // AIMD pacing_rate is always 0 → no pacing gate.
+    std::vector<std::uint8_t> data(5000, 0xAB);
+    send.Enqueue(data.data(), data.size());
+    auto seg = send.NextSegment(65535, sh.now_ms);
+    TCPIP2_EXPECT_TRUE(seg.has_segment);
+    sh.SendSegment(send, seg);
+    TCPIP2_EXPECT_EQ(send.PacingDeadline(), std::uint64_t{0});
+}
+
+TCPIP2_TEST(PacingBbrDelaysSecondSegment) {
+    SendScope s(1000, 1000, 64 * 1024, 64 * 1024);
+    // Override with BBR controller.
+    s.send = std::make_unique<TcpSendBuffer>(
+        1000, 1000, 0, 64 * 1024, 64 * 1024,
+        1000, 200, 60000, 500, 60000, 3, 3,
+        CongestionAlgorithm::Bbr);
+    auto& send = *s.send;
+    auto& sh = s.sh;
+
+    // Manually inject BtlBw and RTprop into the BBR controller by simulating
+    // ACKs.  First, send data and ACK it to give BBR measurements.
+    std::vector<std::uint8_t> data(2000, 0xAB);
+    send.Enqueue(data.data(), data.size());
+
+    // Send first segment.
+    auto seg1 = send.NextSegment(65535, sh.now_ms);
+    TCPIP2_EXPECT_TRUE(seg1.has_segment);
+    sh.SendSegment(send, seg1);
+    // First segment is not paced (gate was 0).
+    TCPIP2_EXPECT_EQ(send.PacingDeadline(), std::uint64_t{0});
+
+    // ACK the first segment to give BBR a rate sample.
+    sh.now_ms += 10; // 10 ms RTT
+    send.OnAck(seg1.sequence + static_cast<std::uint32_t>(seg1.payload_length), 65535, sh.now_ms, true);
+
+    // BBR should now have BtlBw and RTprop.  Pacing rate should be nonzero.
+    TCPIP2_EXPECT_TRUE(send.PacingRate() > 0);
+
+    // Send second segment — should be paced.
+    send.Enqueue(data.data(), 1000);
+    auto seg2 = send.NextSegment(65535, sh.now_ms);
+    TCPIP2_EXPECT_TRUE(seg2.has_segment);
+    sh.SendSegment(send, seg2);
+
+    // Pacing deadline should be in the future.
+    TCPIP2_EXPECT_TRUE(send.PacingDeadline() > sh.now_ms);
+}
+
+TCPIP2_TEST(PacingDoesNotBlockRetransmission) {
+    SendScope s(1000, 1000, 64 * 1024, 64 * 1024);
+    s.send = std::make_unique<TcpSendBuffer>(
+        1000, 1000, 0, 64 * 1024, 64 * 1024,
+        1000, 200, 60000, 500, 60000, 3, 3,
+        CongestionAlgorithm::Bbr);
+    auto& send = *s.send;
+    auto& sh = s.sh;
+
+    // Establish BtlBw by sending and ACKing one segment.
+    std::vector<std::uint8_t> data(1000, 0xAB);
+    send.Enqueue(data.data(), data.size());
+    auto seg1 = send.NextSegment(65535, sh.now_ms);
+    sh.SendSegment(send, seg1);
+    sh.now_ms += 10;
+    send.OnAck(seg1.sequence + static_cast<std::uint32_t>(seg1.payload_length), 65535, sh.now_ms, true);
+    TCPIP2_EXPECT_TRUE(send.PacingRate() > 0);
+
+    // Send second segment to arm pacing gate.
+    send.Enqueue(data.data(), 1000);
+    auto seg2 = send.NextSegment(65535, sh.now_ms);
+    sh.SendSegment(send, seg2);
+    const std::uint64_t pacing_deadline = send.PacingDeadline();
+    TCPIP2_EXPECT_TRUE(pacing_deadline > sh.now_ms);
+
+    // Advance time past RTO.  Retransmit should fire even though pacing
+    // gate hasn't expired.
+    sh.now_ms += 2000; // well past RTO
+    // Advance to exactly the RTO deadline.
+    sh.now_ms = send.RetransmitDeadline() + 1;
+
+    auto seg3 = send.NextSegment(65535, sh.now_ms);
+    TCPIP2_EXPECT_TRUE(seg3.has_segment);
+    TCPIP2_EXPECT_TRUE(seg3.is_retransmission);
+}
+
+TCPIP2_TEST(PacingDoesNotBlockZeroWindowProbe) {
+    SendScope s(1000, 1000, 64 * 1024, 64 * 1024);
+    s.send = std::make_unique<TcpSendBuffer>(
+        1000, 1000, 0, 64 * 1024, 64 * 1024,
+        1000, 200, 60000, 500, 60000, 3, 3,
+        CongestionAlgorithm::Bbr);
+    auto& send = *s.send;
+    auto& sh = s.sh;
+
+    // Establish BtlBw.
+    std::vector<std::uint8_t> data(1000, 0xAB);
+    send.Enqueue(data.data(), data.size());
+    auto seg1 = send.NextSegment(65535, sh.now_ms);
+    sh.SendSegment(send, seg1);
+    sh.now_ms += 10;
+    send.OnAck(seg1.sequence + static_cast<std::uint32_t>(seg1.payload_length), 65535, sh.now_ms, true);
+    TCPIP2_EXPECT_TRUE(send.PacingRate() > 0);
+
+    // Queue more data, then peer closes window to 0.
+    send.Enqueue(data.data(), 1000);
+    send.OnAck(seg1.sequence + static_cast<std::uint32_t>(seg1.payload_length), 0, sh.now_ms, true);
+    TCPIP2_EXPECT_TRUE(send.PersistActive());
+
+    // Advance past persist timer.  Probe should fire despite pacing gate.
+    sh.now_ms = send.PersistDeadline() + 1;
+    auto seg2 = send.NextSegment(0, sh.now_ms);
+    TCPIP2_EXPECT_TRUE(seg2.has_segment);
+    TCPIP2_EXPECT_TRUE(seg2.is_zero_window_probe);
+}
+
+TCPIP2_TEST(PacingGateExpiresAfterDeadline) {
+    SendScope s(1000, 1000, 64 * 1024, 64 * 1024);
+    s.send = std::make_unique<TcpSendBuffer>(
+        1000, 1000, 0, 64 * 1024, 64 * 1024,
+        1000, 200, 60000, 500, 60000, 3, 3,
+        CongestionAlgorithm::Bbr);
+    auto& send = *s.send;
+    auto& sh = s.sh;
+
+    // Establish BtlBw.
+    std::vector<std::uint8_t> data(1000, 0xAB);
+    send.Enqueue(data.data(), data.size());
+    auto seg1 = send.NextSegment(65535, sh.now_ms);
+    sh.SendSegment(send, seg1);
+    sh.now_ms += 10;
+    send.OnAck(seg1.sequence + static_cast<std::uint32_t>(seg1.payload_length), 65535, sh.now_ms, true);
+    TCPIP2_EXPECT_TRUE(send.PacingRate() > 0);
+
+    // Queue enough data for two more segments.
+    std::vector<std::uint8_t> more(2000, 0xCD);
+    send.Enqueue(more.data(), more.size());
+
+    // Send second segment — arms pacing gate.
+    auto seg2 = send.NextSegment(65535, sh.now_ms);
+    sh.SendSegment(send, seg2);
+    const std::uint64_t deadline = send.PacingDeadline();
+    TCPIP2_EXPECT_TRUE(deadline > sh.now_ms);
+
+    // Before deadline: no new segment.
+    auto seg3 = send.NextSegment(65535, sh.now_ms);
+    TCPIP2_EXPECT_TRUE(!seg3.has_segment);
+
+    // After deadline: new segment available.
+    sh.now_ms = deadline + 1;
+    auto seg4 = send.NextSegment(65535, sh.now_ms);
+    TCPIP2_EXPECT_TRUE(seg4.has_segment);
+    TCPIP2_EXPECT_TRUE(!seg4.is_retransmission);
+}
+
+TCPIP2_TEST(PacingResetOnClose) {
+    SendScope s(1000, 1000, 64 * 1024, 64 * 1024);
+    s.send = std::make_unique<TcpSendBuffer>(
+        1000, 1000, 0, 64 * 1024, 64 * 1024,
+        1000, 200, 60000, 500, 60000, 3, 3,
+        CongestionAlgorithm::Bbr);
+    auto& send = *s.send;
+    auto& sh = s.sh;
+
+    // Establish BtlBw and arm pacing gate.
+    std::vector<std::uint8_t> data(1000, 0xAB);
+    send.Enqueue(data.data(), data.size());
+    auto seg1 = send.NextSegment(65535, sh.now_ms);
+    sh.SendSegment(send, seg1);
+    sh.now_ms += 10;
+    send.OnAck(seg1.sequence + static_cast<std::uint32_t>(seg1.payload_length), 65535, sh.now_ms, true);
+
+    send.Enqueue(data.data(), 1000);
+    auto seg2 = send.NextSegment(65535, sh.now_ms);
+    sh.SendSegment(send, seg2);
+    TCPIP2_EXPECT_TRUE(send.PacingDeadline() > sh.now_ms);
+
+    // Exhaust retransmissions to trigger Close().
+    for (int i = 0; i < 3 && !send.IsClosed(); ++i) {
+        sh.now_ms = send.RetransmitDeadline() + 1;
+        auto rt = send.NextSegment(65535, sh.now_ms);
+        if (rt.has_segment) sh.SendSegment(send, rt);
+    }
+    TCPIP2_EXPECT_TRUE(send.IsClosed());
+    TCPIP2_EXPECT_EQ(send.PacingDeadline(), std::uint64_t{0});
+}
+
 TCPIP2_TEST_MAIN()

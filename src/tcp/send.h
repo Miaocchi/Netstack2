@@ -167,6 +167,11 @@ public:
     /// Returns the next retransmit deadline (0 if none pending).
     std::uint64_t RetransmitDeadline() const noexcept { return rto_deadline_ms_; }
 
+    /// Returns the absolute time before which new (non-retransmit) data
+    /// must not be sent due to pacing.  Returns 0 when no pacing gate is
+    /// active (i.e. pacing_rate == 0 or deadline already passed).
+    std::uint64_t PacingDeadline() const noexcept { return next_send_time_ms_; }
+
     /// Returns true if persist timer has expired (zero-window probe needed).
     bool PersistExpired(std::uint64_t now_ms) const noexcept;
 
@@ -316,6 +321,12 @@ private:
 
     // Closed (too many retransmissions)
     bool closed_ = false;
+
+    // Pacing gate (P3C-03): new data is delayed until next_send_time_ms_.
+    // Retransmissions and persist probes bypass pacing.  A value of 0 means
+    // "no gate active" (send immediately).  When pacing_rate_ == 0 (AIMD or
+    // BBR before BtlBw is known), pacing is disabled entirely.
+    std::uint64_t next_send_time_ms_ = 0;
 
     // Pending send state (between NextSegment and OnSent)
     PendingKind pending_kind_ = PendingKind::None;

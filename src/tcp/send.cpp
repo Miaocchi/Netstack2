@@ -273,6 +273,12 @@ TcpSendNextResult TcpSendBuffer::NextSegment(std::uint32_t peer_window,
         return result;
     }
 
+    // Pacing gate: delay new data segments until next_send_time_ms_.
+    // Retransmissions (handled above) and persist probes bypass pacing.
+    if (next_send_time_ms_ != 0 && now_ms < next_send_time_ms_) {
+        return result;
+    }
+
     const std::size_t usable = UsableWindow(peer_window);
     const std::size_t available = retransmit_limit_ - retransmit_bytes_;
     std::size_t payload_length =
@@ -345,6 +351,19 @@ bool TcpSendBuffer::StoreNewRecord(BufferRef owner,
     if (!rto_running_) {
         ArmRto(now_ms);
     }
+
+    // P3C-03: Update pacing deadline after sending new data.
+    // pacing_rate is bytes/sec.  Interval = payload / rate * 1000 (ms).
+    // Always pace when a valid pacing rate is available; the initial
+    // segment (in_flight == 0) naturally gets deadline = now + interval,
+    // which lets it pass on the next PumpSendPaths iteration.
+    const std::uint32_t pr = PacingRate();
+    if (pr > 0 && pending_len_ > 0) {
+        const std::uint64_t interval_ms =
+            (static_cast<std::uint64_t>(pending_len_) * 1000ULL) / pr;
+        next_send_time_ms_ = SaturatingAdd(now_ms, interval_ms);
+    }
+
     return true;
 }
 
@@ -812,6 +831,7 @@ void TcpSendBuffer::Close() noexcept {
     sacked_sequence_ = 0;
     fast_retransmit_pending_ = false;
     pending_kind_ = PendingKind::None;
+    next_send_time_ms_ = 0;
     sampler_.Reset();
     std::visit([](auto& c) noexcept { c.Reset(); }, controller_);
 }
@@ -838,6 +858,7 @@ void TcpSendBuffer::CancelTimers() noexcept {
     rto_running_ = false;
     rto_deadline_ms_ = 0;
     persist_deadline_ms_ = 0;
+    next_send_time_ms_ = 0;
 }
 
 void TcpSendBuffer::ResetPending() noexcept {
