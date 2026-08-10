@@ -29,6 +29,7 @@
 #include <tcpip2/packet_io.h>
 #include <tcpip2/runtime_deps.h>
 #include <tcpip2/session_factory.h>
+#include <tcpip2/tap_io.h>
 #include <tcpip2/transport_session.h>
 
 #include "Test.h"
@@ -96,6 +97,12 @@ static_assert(std::is_standard_layout_v<PacketIoCapabilities>,
 // Config
 static_assert(std::is_copy_constructible_v<NetstackConfig>,
               "NetstackConfig must be copyable (frozen)");
+
+// TapPacketIo (concrete backend)
+static_assert(std::is_final_v<TapPacketIo>,
+              "TapPacketIo must be final (frozen)");
+static_assert(!std::is_copy_constructible_v<TapPacketIo>,
+              "TapPacketIo must be non-copyable (frozen)");
 
 // Clock / Events (P4-1)
 static_assert(std::is_abstract_v<IClock>,
@@ -237,6 +244,56 @@ TCPIP2_TEST(PublicHeadersConsumeCleanly) {
     MetricSnapshot ms;
     TCPIP2_EXPECT_EQ(std::size_t{0}, ms.shard_id);
     TCPIP2_EXPECT_EQ(std::uint64_t{0}, ms.rx_packets);
+
+    // FlowEventType enum values
+    TCPIP2_EXPECT_TRUE(FlowEventType::Established != FlowEventType::Closed);
+    TCPIP2_EXPECT_TRUE(FlowEventType::Reset != FlowEventType::Closed);
+
+    // MetricSnapshot all fields default-constructible
+    MetricSnapshot ms2;
+    TCPIP2_EXPECT_EQ(std::uint64_t{0}, ms2.rx_bytes);
+    TCPIP2_EXPECT_EQ(std::uint64_t{0}, ms2.tx_packets);
+    TCPIP2_EXPECT_EQ(std::uint64_t{0}, ms2.tx_bytes);
+    TCPIP2_EXPECT_EQ(std::uint64_t{0}, ms2.tcp_pcb_count);
+    TCPIP2_EXPECT_EQ(std::uint64_t{0}, ms2.tcp_half_open_count);
+    TCPIP2_EXPECT_EQ(std::uint64_t{0}, ms2.udp_datagrams);
+
+    // RuntimeDependencies with all deps set (including optional clock/event_sink)
+    RuntimeDependencies full_deps;
+    full_deps.packet_io = &io;
+    // session_factory remains null — can't construct a real one here,
+    // but Validate() requires both packet_io and session_factory
+    TCPIP2_EXPECT_FALSE(full_deps.Validate());  // no session_factory
+    full_deps.clock = &sys_clock;
+    full_deps.event_sink = nullptr;  // optional, null is OK
+    TCPIP2_EXPECT_FALSE(full_deps.Validate());  // still no session_factory
+
+    // FlowKey canonicalization
+    FlowKey fk;
+    fk.source = IpAddress::Ipv4(10, 0, 0, 1);
+    fk.destination = IpAddress::Ipv4(10, 0, 0, 2);
+    fk.source_port = 1234;
+    fk.destination_port = 80;
+    fk.protocol = 6;
+    FlowKey canon = fk.Canonical();
+    // Canonical should swap so source <= destination
+    TCPIP2_EXPECT_TRUE(canon.source == IpAddress::Ipv4(10, 0, 0, 1));
+
+    // TapPacketIo default-constructible and non-open
+    TapPacketIo tap;
+    TCPIP2_EXPECT_FALSE(tap.IsOpen());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, tap.QueueCount());
+    tap.Close();  // idempotent on unopened
+
+    // Start(const RuntimeDependencies&) with invalid deps returns false
+    Netstack2 stack2(config);
+    TCPIP2_EXPECT_FALSE(stack2.Start(full_deps));  // Validate() fails
+    TCPIP2_EXPECT_FALSE(stack2.IsRunning());
+
+    // Start(const RuntimeDependencies&) with null packet_io returns false
+    RuntimeDependencies null_deps;
+    TCPIP2_EXPECT_FALSE(stack2.Start(null_deps));
+    TCPIP2_EXPECT_FALSE(stack2.IsRunning());
 }
 
 TCPIP2_TEST_MAIN();

@@ -202,7 +202,7 @@ OpenPPP2 需要：
 | P4-2 | 接入 `ISessionFactory` 被动监听 | `src/tcp/handshake.cpp`, `src/core/shard.cpp` | ✅ 完成 (commit `0269184`) |
 | P4-4 | 接入 `ITransportSession` 回调 | `src/tcp/handshake.cpp`, `src/core/shard.cpp`, `tests/unit/tcp/handshake_test.cpp` | ✅ 完成 |
 | P4-5 | 接入 `IEventSink` | `src/core/shard.cpp`, `src/tcp/handshake.cpp` | ✅ 完成 |
-| P4-6 | 更新 consumer contract test | `tests/unit/compile_contract_test.cpp` | 未开始 |
+| P4-6 | 更新 consumer contract test | `tests/unit/compile_contract_test.cpp` | ✅ 完成 |
 | P4-7 | OpenPPP2 侧 adapter | `ppp/ethernet/VNetstack.cpp` 等 | 未开始 |
 
 ### 7.1 已知限制
