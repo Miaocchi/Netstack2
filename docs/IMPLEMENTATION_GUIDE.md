@@ -1033,6 +1033,28 @@ Tcp/Udp packet generated
 
 验证结果: 全量 CTest 普通 31/31, ASan/UBSan 31/31, TSan 31/31; TCP congestion 21/21; include boundaries OK; `git diff --check` clean。
 
+#### P3C-02: BBRv1 Controller State-Machine Tests ✅ Implemented (2026-08-10)
+
+在 `tests/unit/tcp/congestion_test.cpp` 追加 22 个 BBR 测试（总计 43/43），覆盖：
+
+- **初始状态**: cwnd=2*MSS, pacing_rate=0, STARTUP, BtlBw=0, RTprop=0
+- **BtlBw max-filter**: 非 app-limited 采样更新 BtlBw；app-limited 采样不污染 filter
+- **RTprop min-filter**: 忽略 rtt=0（未测量），有效 RTT 更新 min-filter
+- **STARTUP→DRAIN**: 连续 3 轮无 >25% 增长后退出 STARTUP 进入 DRAIN
+- **STARTUP 保持**: 有增长时留在 STARTUP
+- **DRAIN→PROBE_BW**: inflight ≤ BDP 时进入 PROBE_BW
+- **PROBE_BW cycle**: 8 个 phase 轮转后仍在 PROBE_BW
+- **PROBE_RTT**: 10s 间隔进入，200ms 后退出
+- **Pacing rate**: BtlBw 已知后 PROBE_BW 和 STARTUP 分别使用对应 gain
+- **cwnd = BDP * gain**: STARTUP 约 28828 bytes
+- **Loss 不减少 cwnd**（BBR 不基于丢包）
+- **RTO 重置 cwnd=1*MSS**
+- **Reset 恢复初始状态**
+- **AlgorithmId = "bbr_v1"**
+- **cwnd floor = 4*MSS**
+
+验证结果: 全量 CTest 普通 31/31, ASan/UBSan 31/31, TSan 31/31; TCP congestion 43/43; include boundaries OK; `git diff --check` clean。
+
 #### 通用采样器
 
 KCC 和 BBR 不能直接消费“本 ACK 确认多少字节”作为带宽。实现

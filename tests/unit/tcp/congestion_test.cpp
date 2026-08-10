@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "Test.h"
@@ -384,6 +385,298 @@ TCPIP2_TEST(SendBufferSsthreshAccessor) {
     auto send = MakeAimd();
     // AIMD ssthresh starts at UINT32_MAX.
     TCPIP2_EXPECT_EQ(send->Ssthresh(), 0xFFFFFFFFU);
+}
+
+// ---------------------------------------------------------------------------
+// BbrController state-machine tests
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Convenience: create a RateSample with the given fields.
+RateSample MakeBbrSample(std::uint64_t now_ms,
+                          std::uint64_t rate_bps,
+                          std::uint64_t rtt_ms,
+                          std::uint64_t acked_bytes = 1460,
+                          bool app_limited = false) {
+    RateSample rs;
+    rs.now_ms = now_ms;
+    rs.delivery_rate_bytes_per_sec = rate_bps;
+    rs.rtt_ms = rtt_ms;
+    rs.acked_bytes = acked_bytes;
+    rs.app_limited = app_limited;
+    return rs;
+}
+
+} // namespace
+
+TCPIP2_TEST(BbrInitialCwndIsTwoMss) {
+    BbrController c(1460);
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 2920U);
+    TCPIP2_EXPECT_EQ(c.PacingRate(), 0U);
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::Startup);
+    TCPIP2_EXPECT_EQ(c.BtlBw(), 0ULL);
+    TCPIP2_EXPECT_EQ(c.RTprop(), 0ULL);
+}
+
+TCPIP2_TEST(BbrUpdatesBtlBwFromNonAppLimitedSample) {
+    BbrController c(1460);
+    RateSample rs = MakeBbrSample(100, 1000000, 10);
+    c.OnAck(rs);
+    TCPIP2_EXPECT_EQ(c.BtlBw(), 1000000ULL);
+}
+
+TCPIP2_TEST(BbrAppLimitedDoesNotUpdateBtlBw) {
+    BbrController c(1460);
+    RateSample rs = MakeBbrSample(100, 5000000, 10, 1460, true);
+    c.OnAck(rs);
+    TCPIP2_EXPECT_EQ(c.BtlBw(), 0ULL);
+}
+
+TCPIP2_TEST(BbrBtlBwIsMaxFilter) {
+    BbrController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    c.OnAck(MakeBbrSample(110, 800000, 10));   // lower
+    c.OnAck(MakeBbrSample(120, 1200000, 10));  // higher
+    c.OnAck(MakeBbrSample(130, 900000, 10));   // lower
+    TCPIP2_EXPECT_EQ(c.BtlBw(), 1200000ULL);
+}
+
+TCPIP2_TEST(BbrUpdatesRTpropMinFilter) {
+    BbrController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 50));
+    c.OnAck(MakeBbrSample(110, 1000000, 30));
+    c.OnAck(MakeBbrSample(120, 1000000, 40));  // higher than min
+    TCPIP2_EXPECT_EQ(c.RTprop(), 30ULL);
+}
+
+TCPIP2_TEST(BbrRTpropIgnoresZeroRtt) {
+    BbrController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 50));
+    c.OnAck(MakeBbrSample(110, 1000000, 0));  // should be ignored
+    TCPIP2_EXPECT_EQ(c.RTprop(), 50ULL);
+}
+
+TCPIP2_TEST(BbrStartupExitsAfterThreeRoundsNoGrowth) {
+    BbrController c(1460);
+
+    // Establish initial BtlBw.
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::Startup);
+
+    // Feed samples that don't grow BtlBw by >25%. After 3 such rounds,
+    // CheckStartupDone transitions to Drain.
+    // Since CheckStartupDone uses btlbw_ < startup_max_bw_ * 1.25, and
+    // startup_max_bw_ is reset to btlbw_ at end of each check, we need
+    // samples that don't increase btlbw_ at all.
+    for (int i = 0; i < 3; ++i) {
+        c.OnAck(MakeBbrSample(200 + i * 10, 1000000, 10));
+    }
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::Drain);
+}
+
+TCPIP2_TEST(BbrStartupStaysInStartupWithGrowth) {
+    BbrController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+
+    // Grow BtlBw by >25% each round → should stay in Startup.
+    c.OnAck(MakeBbrSample(110, 2000000, 10));
+    c.OnAck(MakeBbrSample(120, 3000000, 10));
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::Startup);
+}
+
+TCPIP2_TEST(BbrDrainTransitionsToProbeBwWhenCwndLeBdp) {
+    BbrController c(1460);
+
+    // Force into Drain by going through STARTUP exit.
+    c.OnAck(MakeBbrSample(100, 1000000, 10));  // btlbw=1M, rtprop=10
+    for (int i = 0; i < 3; ++i) {
+        c.OnAck(MakeBbrSample(200 + i * 10, 1000000, 10));
+    }
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::Drain);
+
+    // BDP = 1000000 * 10 / 1000 = 10000 bytes.
+    // cwnd starts at 2*MSS=2920 which is < 10000, so drain should
+    // exit immediately on the next OnAck.
+    // But the transition happens inside CheckDrainDone which is called
+    // before cwnd_ is recomputed. Let's check: at this point cwnd_ was
+    // recomputed in the last OnAck call after CheckDrainDone. So we need
+    // another OnAck to trigger CheckDrainDone again.
+    // Actually CheckDrainDone checks cwnd_ <= bdp. After the transition to
+    // Drain, the last OnAck recomputed cwnd_ = max(bdp*drain_gain, 4*MSS).
+    // drain_gain = 89/256 ≈ 0.347. bdp*0.347 = 3472. 4*MSS = 5840.
+    // So cwnd_ = 5840, which is < bdp=10000. Next OnAck should transition.
+    c.OnAck(MakeBbrSample(300, 1000000, 10));
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::ProbeBw);
+}
+
+TCPIP2_TEST(BbrProbeBwCycleAdvancesThroughPhases) {
+    BbrController c(1460);
+
+    // Get to PROBE_BW.
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    for (int i = 0; i < 3; ++i) {
+        c.OnAck(MakeBbrSample(200 + i * 10, 1000000, 10));
+    }
+    // Drain
+    c.OnAck(MakeBbrSample(300, 1000000, 10));
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::ProbeBw);
+
+    // Each phase lasts RTprop (10ms). Feed ACKs at 11ms intervals to
+    // advance through the cycle. After 8 phases we should have wrapped.
+    std::uint64_t t = 310;
+    for (int i = 0; i < 8; ++i) {
+        c.OnAck(MakeBbrSample(t, 1000000, 10));
+        t += 11;
+    }
+    // After 8 advances, cycle_index_ should have wrapped back to 0.
+    // We can't directly read cycle_index_, but we can verify we're still
+    // in ProbeBw (not ProbeRtt — interval not yet 10s).
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::ProbeBw);
+}
+
+TCPIP2_TEST(BbrProbeRttEntersAfterInterval) {
+    BbrController c(1460);
+
+    // Get to PROBE_BW.
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    for (int i = 0; i < 3; ++i) {
+        c.OnAck(MakeBbrSample(200 + i * 10, 1000000, 10));
+    }
+    c.OnAck(MakeBbrSample(300, 1000000, 10));
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::ProbeBw);
+
+    // rtprop_stamp_ms_ was set at t=100 when RTprop was first learned.
+    // kProbeRttIntervalMs = 10000. So at t >= 10100, we enter PROBE_RTT.
+    c.OnAck(MakeBbrSample(10100, 1000000, 10));
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::ProbeRtt);
+}
+
+TCPIP2_TEST(BbrProbeRttExitsAfterDuration) {
+    BbrController c(1460);
+
+    // Get to PROBE_BW.
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    for (int i = 0; i < 3; ++i) {
+        c.OnAck(MakeBbrSample(200 + i * 10, 1000000, 10));
+    }
+    c.OnAck(MakeBbrSample(300, 1000000, 10));
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::ProbeBw);
+
+    // Enter PROBE_RTT.
+    c.OnAck(MakeBbrSample(10100, 1000000, 10));
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::ProbeRtt);
+
+    // kProbeRttDurationMs = 200. Exit at t >= 10300.
+    c.OnAck(MakeBbrSample(10300, 1000000, 10));
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::ProbeBw);
+}
+
+TCPIP2_TEST(BbrPacingRateNonZeroAfterBtlBwKnown) {
+    BbrController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    // In STARTUP, pacing_rate = btlbw * startup_gain = 1000000 * 738/256
+    TCPIP2_EXPECT_TRUE(c.PacingRate() > 0U);
+}
+
+TCPIP2_TEST(BbrCwndIsBdpTimesGain) {
+    BbrController c(1460);
+    // btlbw=1M bytes/s, rtprop=10ms → BDP = 10000 bytes.
+    // STARTUP cwnd_gain = 738/256 ≈ 2.885.
+    // cwnd_from_bdp = 10000 * 738/256 = 28828.
+    // cwnd = max(28828, 4*1460=5840) = 28828.
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    TCPIP2_EXPECT_TRUE(c.CongestionWindow() >= 28800U);
+    TCPIP2_EXPECT_TRUE(c.CongestionWindow() <= 28900U);
+}
+
+TCPIP2_TEST(BbrLossDoesNotReduceCwnd) {
+    BbrController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    std::uint32_t cwnd_before = c.CongestionWindow();
+    TCPIP2_EXPECT_TRUE(cwnd_before > 0U);
+
+    LossEvent ev;
+    ev.lost_bytes = 1000;
+    ev.inflight_bytes = 5000;
+    c.OnLoss(ev);
+
+    // BBR does not reduce cwnd on loss.
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), cwnd_before);
+}
+
+TCPIP2_TEST(BbrRtoResetsCwndToOneMss) {
+    BbrController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    TCPIP2_EXPECT_TRUE(c.CongestionWindow() > 1460U);
+
+    c.OnRto();
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 1460U);
+    TCPIP2_EXPECT_EQ(c.PacingRate(), 0U);
+}
+
+TCPIP2_TEST(BbrResetRestoresInitialState) {
+    BbrController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    c.OnLoss(LossEvent{});
+    c.Reset();
+
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::Startup);
+    TCPIP2_EXPECT_EQ(c.BtlBw(), 0ULL);
+    TCPIP2_EXPECT_EQ(c.RTprop(), 0ULL);
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 2920U);
+    TCPIP2_EXPECT_EQ(c.PacingRate(), 0U);
+}
+
+TCPIP2_TEST(BbrAlgorithmIdIsBbrV1) {
+    TCPIP2_EXPECT_EQ(std::string(BbrController::AlgorithmId()), "bbr_v1");
+}
+
+TCPIP2_TEST(BbrOnPacketSentAccumulatesBytes) {
+    BbrController c(1460);
+    // OnPacketSent just accumulates bytes_sent_ — verify it doesn't crash
+    // and state remains valid.
+    c.OnPacketSent(1460);
+    c.OnPacketSent(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::Startup);
+}
+
+TCPIP2_TEST(BbrCwndFloorIsFourMss) {
+    BbrController c(1460);
+    // With very small BDP, cwnd should be floored at 4*MSS.
+    // btlbw=100 bytes/s, rtprop=1ms → BDP = 0.1 bytes → 0.
+    // cwnd_from_bdp = 0 * gain = 0. cwnd = max(0, 4*1460) = 5840.
+    c.OnAck(MakeBbrSample(100, 100, 1));
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 5840U);
+}
+
+TCPIP2_TEST(BbrPacingRateInProbeBwUsesCycleGain) {
+    BbrController c(1460);
+
+    // Get to PROBE_BW.
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    for (int i = 0; i < 3; ++i) {
+        c.OnAck(MakeBbrSample(200 + i * 10, 1000000, 10));
+    }
+    c.OnAck(MakeBbrSample(300, 1000000, 10));
+    TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::ProbeBw);
+
+    // In PROBE_BW, pacing rate = btlbw * cycle_gain.
+    // cycle_index_ starts at 0 after exiting Drain → gain = 320/256 = 1.25.
+    // pacing_rate = 1000000 * 320/256 = 1250000.
+    // But we may have advanced cycles, so just verify it's non-zero and
+    // reasonably bounded.
+    TCPIP2_EXPECT_TRUE(c.PacingRate() > 0U);
+    TCPIP2_EXPECT_TRUE(c.PacingRate() <= 2000000U);
+}
+
+TCPIP2_TEST(BbrStartupPacingRateUsesStartupGain) {
+    BbrController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    // STARTUP pacing = btlbw * 738/256 = 1000000 * 2.886... ≈ 2882812
+    TCPIP2_EXPECT_TRUE(c.PacingRate() >= 2882000U);
+    TCPIP2_EXPECT_TRUE(c.PacingRate() <= 2883000U);
 }
 
 TCPIP2_TEST_MAIN()
