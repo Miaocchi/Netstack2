@@ -172,8 +172,25 @@ public:
     /** Number of leases awaiting TX completion for @p queue_id (for assertions). */
     std::size_t PendingTxCompletions(std::size_t queue_id) const;
 
-    /** Egress records captured by SendBatch() for @p queue_id. */
+    /**
+     * Egress records captured by SendBatch() for @p queue_id.
+     *
+     * @warning This returns a const reference to internal state. It is only
+     * safe to call when no shard thread is writing to the same queue (e.g.,
+     * after `Stop()`). For concurrent access while the runtime is running,
+     * use `EgressSnapshot()` instead.
+     */
     const std::vector<std::vector<std::uint8_t>>& Egress(std::size_t queue_id) const;
+
+    /**
+     * Thread-safe snapshot of egress records for @p queue_id.
+     *
+     * Copies the egress vector under the internal lock. Safe to call from any
+     * thread, including while the runtime is running.
+     *
+     * Added post-freeze per ADR-007.
+     */
+    std::vector<std::vector<std::uint8_t>> EgressSnapshot(std::size_t queue_id) const;
 
     /** Backend state; definition lives in src/packetio/null_io.cpp. */
     struct Impl;

@@ -61,12 +61,12 @@ Netstack2 按以下原则推进:
 
 尚未实现:
 
-- UDP flow 和 datagram session（P3U）;
-- KCC 拥塞控制（当前为 stub）;
+- KCC 拥塞控制（当前为 stub, ADR-006 已就绪）;
 - FQ-CoDel / AQM 出口调度（P3Q）;
-- OpenPPP2、UCP、Onload、AF_XDP、DPDK 的运行时接线;
+- UCP、Onload、AF_XDP、DPDK 的运行时接线;
 - IPv6 扩展头完整遍历（当前仅 Fragment header）;
-- Session 实现类（ITransportSession 接口已冻结，无实现类）。
+- Session 实现类（ITransportSession 接口已冻结，无实现类）;
+- OpenPPP2 真实 adapter（P4-7 smoke test 已通过, 真实 OpenPPP2 仓库 adapter 待 P4-04）。
 
 冻结 API 前必须先修复的契约问题:
 
@@ -1423,12 +1423,13 @@ git diff --check
 3. ✅ **IEventSink 接入**: `TcpHandshakeEngine::EmitFlowEvent()` 在以下转换点调用 `OnFlowEvent()`：ESTABLISHED（handshake 完成）、Reset（RST in SYN-RECEIVED / ESTABLISHED、AbortFlow）、Closed（LastAck 完成、FIN 重传耗尽、TIME-WAIT 超时/驱逐）。`StackShard::EventLoopIteration()` 每 1000ms 发布 `MetricSnapshot`（rx_packets/dropped_packets/tcp_pcb_count/half_open_count/udp_datagrams；rx_bytes/tx_bytes 暂为 0，待后续添加字节计数器）。TCP handshake 89/89、全量 34/34 三套构建全绿。
 4. ✅ **ISessionFactory 被动监听**: 接口已通过 `RuntimeDependencies` 注入 shard，`TcpHandshakeEngine` 构造函数接收 `ISessionFactory*`。SYN → ESTABLISHED 转换时调用 `OpenTcp()`：accept 则绑定 `ITransportSession` 并 `DrainSession` 交付后续数据；reject 则发送 RST 并移除 PCB。`session_factory_` 为 null 时走 legacy 兼容路径，不 crash。三套构建 34/34 全绿。
 5. ✅ **ITransportSession 回调接线**: `BindSessionCallbacks()` 在 ESTABLISHED 和 `AttachSession` 时注册 `SetDataCallback`/`SetWritableCallback`/`SetClosedCallback`。回调通过 `weak_ptr<CallbackGate>` 捕获引擎引用，构造 `ShardMessage`（`kSessionData`/`kSessionWritable`/`kSessionClosed`）投递回 owner shard。shard event loop 在 `kSessionData` 路径调用 `EnqueueSendData` 将数据转入 TCP 发送缓冲。`Shutdown()` 后 `CallbackGate::owner` 置空，回调变为 no-op。三套构建 34/34 全绿。
+6. ✅ **P4-7 OpenPPP2 adapter smoke test**: 完整 TCP 生命周期集成测试 (`tests/integration/openppp2_smoke_test.cpp`)，覆盖 SYN→SYN-ACK→ACK→ESTABLISHED→data→FIN→Closed 全流程。`FakeSession`/`FakeSessionFactory`/`RecordingEventSink` 全部 mutex 保护，TSan 安全。`NullPacketIo::EgressSnapshot()` (ADR-007) 解决 `Egress()` 引用的 TSan 数据竞争。`handshake.cpp::Shutdown()` 对非 TimeWait PCB emit Closed event。35/35 三套构建全绿。
 
 ### 10.3 已知限制
 
 1. **初始 SYN+data 未处理**: 当前握手引擎在 SYN-RECEIVED → ESTABLISHED 转换时忽略 SYN 段的 payload。RFC 793 允许 SYN 段携带数据（数据在 ESTABLISHED 后交付），若需要支持应在后续实现中处理，或在文档中明确说明不支持。
 
-### 10.2 后端接口先行定义
+### 10.4 后端接口先行定义
 
 AF_XDP / Onload / DPDK 的通用扩展接口已定义在 `docs/plans/HIGH_PERF_BACKEND_EXTENSIONS.md`，P4 阶段只做接口设计，不实现具体后端，避免并行修改公共 API。
 
@@ -1482,7 +1483,7 @@ P0 和测试框架全程并行, 但每个性能结论都依赖 P0。
 16. ✅ `P3I`: ICMP shard RX wiring + PMTU。
 17. ✅ `P4-01`: ADR-005 落地, 新增 `RuntimeDependencies`, `IClock`, `IEventSink`。IClock 替换 shard 热路径 steady_clock。
 18. ✅ `P4-02`: `ISessionFactory` 被动监听接入 TCP handshake。
-19. `P4-03`: OpenPPP2 smoke test (fake backend)。
+19. ✅ `P4-03`: OpenPPP2 smoke test (fake backend) — 完整 TCP 生命周期集成测试, 线程安全 `EgressSnapshot()` (ADR-007), 35/35 三套构建全绿。
 20. `P4-04`: OpenPPP2 Linux adapter (repository `/home/openppp2`).
 21. P5A/P5B: Onload / AF_XDP / DPDK 按 `docs/plans/HIGH_PERF_BACKEND_EXTENSIONS.md` 实现。
 

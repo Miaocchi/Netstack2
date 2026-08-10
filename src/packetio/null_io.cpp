@@ -206,4 +206,10 @@ const std::vector<std::vector<std::uint8_t>>& NullPacketIo::Egress(std::size_t q
     return impl_->egress[queue_id];
 }
 
+std::vector<std::vector<std::uint8_t>> NullPacketIo::EgressSnapshot(std::size_t queue_id) const {
+    if (queue_id >= impl_->queue_count) return {};
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->egress[queue_id];
+}
+
 } // namespace tcpip2

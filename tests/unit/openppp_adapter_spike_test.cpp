@@ -256,12 +256,16 @@ TCPIP2_TEST(OpenPppAdapterCompiles) {
     TCPIP2_EXPECT_TRUE(udp_result.handle == nullptr);
     TCPIP2_EXPECT_TRUE(udp_result.error == SessionError::None);
 
-    // Wire the packet I/O into Netstack2 and start.
+    // Wire the packet I/O and session factory into Netstack2 via
+    // RuntimeDependencies (ADR-005) — the structured injection path.
     NetstackConfig ns_config;
     ns_config.shard_count = 1;
     ns_config.rx_queue_count = 1;
     Netstack2 stack(ns_config);
-    TCPIP2_EXPECT_TRUE(stack.Start(&io));
+    RuntimeDependencies deps;
+    deps.packet_io = &io;
+    deps.session_factory = &factory;
+    TCPIP2_EXPECT_TRUE(stack.Start(deps));
     TCPIP2_EXPECT_TRUE(stack.IsRunning());
     stack.Stop();
     TCPIP2_EXPECT_FALSE(stack.IsRunning());

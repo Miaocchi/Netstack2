@@ -1,6 +1,6 @@
 # P4 OpenPPP2 集成实施计划
 
-> **状态**: 计划中
+> **状态**: 已完成
 > **目标**: 让 Netstack2 成为 OpenPPP2 的可选 TCP/IP 引擎，同时保持 Netstack2 独立可编译测试。
 > **前置**: ADR-005 `RuntimeDependencies` 注入落地；`ISessionFactory` 公共接口已冻结。
 > **主要文件**: `include/tcpip2/netstack.h`, `src/core/runtime.cpp`, `src/core/netstack.cpp`, `src/core/shard.cpp`。
@@ -203,9 +203,28 @@ OpenPPP2 需要：
 | P4-4 | 接入 `ITransportSession` 回调 | `src/tcp/handshake.cpp`, `src/core/shard.cpp`, `tests/unit/tcp/handshake_test.cpp` | ✅ 完成 |
 | P4-5 | 接入 `IEventSink` | `src/core/shard.cpp`, `src/tcp/handshake.cpp` | ✅ 完成 |
 | P4-6 | 更新 consumer contract test | `tests/unit/compile_contract_test.cpp` | ✅ 完成 |
-| P4-7 | OpenPPP2 侧 adapter | `ppp/ethernet/VNetstack.cpp` 等 | 未开始 |
+| P4-7 | OpenPPP2 adapter smoke test | `tests/integration/openppp2_smoke_test.cpp`, `src/tcp/handshake.cpp`, `include/tcpip2/packet_io.h`, `src/packetio/null_io.cpp`, `docs/adr/007-egress-snapshot.md` | ✅ 完成 |
 
-### 7.1 已知限制
+### 7.1 P4-7 完成总结
+
+P4-7 实现了完整 TCP 生命周期集成测试，验证 Netstack2 作为 OpenPPP2 TCP/IP 引擎的端到端数据路径。
+
+**测试覆盖** (`tests/integration/openppp2_smoke_test.cpp`, 404 行):
+
+- SYN → SYN-ACK → ACK 三次握手 → ESTABLISHED event
+- 数据传输: client 发送 "hello" → FakeSession 收到并验证内容
+- FIN → FIN-ACK 关闭序列
+- `stack.Stop()` 后验证 Closed event
+- `FakeSession`/`FakeSessionFactory`/`RecordingEventSink` 全部使用 mutex 保护，TSan 安全
+- `WaitForEgress()` 使用 `EgressSnapshot()` 轮询，避免锁外读取引用
+
+**线程安全修复** (ADR-007):
+
+`NullPacketIo::Egress()` 返回内部 vector 的 const 引用，调用方在锁外读取 `.size()` 时 shard 线程可能同时通过 `SendBatch()` 写入同一 vector，导致 TSan 数据竞争。新增 `EgressSnapshot(std::size_t queue_id) const` 方法，在持锁期间 copy 返回 by value。这是 additive 变更，不修改任何 frozen 签名。
+
+**验证结果**: 普通 35/35, ASan/UBSan 35/35, TSan 35/35; include boundaries OK; `git diff --check` clean。
+
+### 7.2 已知限制
 
 1. **初始 SYN+data 未处理**: 握手引擎在 SYN-RECEIVED → ESTABLISHED 转换时忽略 SYN 段的 payload。RFC 793 允许 SYN 段携带数据（数据在 ESTABLISHED 后交付），当前不支持。
 

@@ -1083,6 +1083,14 @@ void TcpHandshakeEngine::Shutdown() noexcept {
     if (shutdown_) return;
     shutdown_ = true;
     if (callback_gate_) callback_gate_->owner = nullptr;
+    // Emit Closed for any connection that is still alive (ESTABLISHED,
+    // CLOSE-WAIT, etc.) so consumers are notified before the PCB is
+    // destroyed.  TIME-WAIT entries are evicted silently.
+    for (const Pcb& pcb : pcbs_) {
+        if (pcb.state != TcpState::TimeWait) {
+            EmitFlowEvent(pcb.flow_id, FlowEventType::Closed);
+        }
+    }
     while (!pcbs_.empty()) RemoveAt(pcbs_.size() - 1);
     pending_responses_.clear();
 }
