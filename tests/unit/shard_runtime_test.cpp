@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -271,6 +272,168 @@ TCPIP2_TEST(ShardProcessesSynAndRetainsWouldBlockTx) {
             static_cast<std::uint8_t>(test::TcpFlags::Syn | test::TcpFlags::Ack),
             response.flags);
     }
+    pool.DrainReturnQueue();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+TCPIP2_TEST(ShardProcessesIpv4FragmentsAndReassembles) {
+    NullPacketIo io(1);
+    PktBufferPool pool(16, 256);
+    std::unique_ptr<IPacketQueue> queue = io.OpenQueue(0);
+    queue->SetBufferPool(&pool);
+    StackShard shard(0, pool, queue.get(), 128);
+    TCPIP2_EXPECT_TRUE(shard.Start());
+
+    // Build a complete IPv4+SYN packet, then extract just the TCP segment
+    // (skip 20-byte IPv4 header) and fragment it into two pieces.
+    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
+        0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0,
+        test::TcpFlags::Syn, {});
+    std::vector<std::uint8_t> tcp_segment(syn.begin() + 20, syn.end());
+
+    // Fragment the TCP segment into non-overlapping 8-byte chunks.
+    // frag1: offset 0, MF=1, payload = first 8 bytes
+    // frag2: offset 1, MF=0, payload = remaining bytes
+    const std::size_t split = std::min(tcp_segment.size(), std::size_t{8});
+    std::vector<std::uint8_t> frag1_payload(tcp_segment.begin(),
+                                             tcp_segment.begin() + split);
+    std::vector<std::uint8_t> frag2_payload(tcp_segment.begin() + split,
+                                             tcp_segment.end());
+    const std::vector<std::uint8_t> frag1 = test::PacketBuilder::BuildIpv4TcpFragment(
+        0x0a000001u, 0x0a000002u, 0x1234, 0, true, frag1_payload);
+    const std::vector<std::uint8_t> frag2 = test::PacketBuilder::BuildIpv4TcpFragment(
+        0x0a000001u, 0x0a000002u, 0x1234, 1, false, frag2_payload);
+
+    BufferLease lease1 = pool.Allocate();
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(lease1));
+    std::memcpy(lease1.Data(), frag1.data(), frag1.size());
+    lease1.Resize(frag1.size());
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(lease1)));
+
+    BufferLease lease2 = pool.Allocate();
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(lease2));
+    std::memcpy(lease2.Data(), frag2.data(), frag2.size());
+    lease2.Resize(frag2.size());
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(lease2)));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    TCPIP2_EXPECT_EQ(std::size_t{1}, shard.TcpHalfOpenCount());
+    shard.Stop();
+
+    const auto& egress = io.Egress(0);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, egress.size());
+    if (!egress.empty()) {
+        const test::ParsedPacket response = test::PacketParser::ParseIpv4Tcp(egress[0]);
+        TCPIP2_EXPECT_TRUE(response.valid);
+        TCPIP2_EXPECT_EQ(std::uint32_t{0x0a000002u}, response.src_ip);
+        TCPIP2_EXPECT_EQ(std::uint32_t{0x0a000001u}, response.dst_ip);
+        TCPIP2_EXPECT_EQ(std::uint16_t{443}, response.src_port);
+        TCPIP2_EXPECT_EQ(std::uint16_t{40000}, response.dst_port);
+        TCPIP2_EXPECT_EQ(std::uint32_t{1001}, response.ack);
+        TCPIP2_EXPECT_EQ(
+            static_cast<std::uint8_t>(test::TcpFlags::Syn | test::TcpFlags::Ack),
+            response.flags);
+    }
+    pool.DrainReturnQueue();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+TCPIP2_TEST(ShardProcessesIpv6FragmentsAndReassembles) {
+    const std::uint8_t src_ip6[16] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t dst_ip6[16] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+
+    NullPacketIo io(1);
+    PktBufferPool pool(16, 256);
+    std::unique_ptr<IPacketQueue> queue = io.OpenQueue(0);
+    queue->SetBufferPool(&pool);
+    StackShard shard(0, pool, queue.get(), 128);
+    TCPIP2_EXPECT_TRUE(shard.Start());
+
+    // Build a complete IPv6+SYN, extract the TCP segment (skip 40-byte IPv6
+    // header), and fragment it at byte offset 8.
+    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv6Tcp(
+        src_ip6, dst_ip6, 40000, 443, 1000, 0,
+        test::TcpFlags::Syn, {});
+    std::vector<std::uint8_t> tcp_segment(syn.begin() + 40, syn.end());
+
+    // Fragment the TCP segment into non-overlapping 8-byte chunks.
+    const std::size_t split = std::min(tcp_segment.size(), std::size_t{8});
+    std::vector<std::uint8_t> frag1_payload(tcp_segment.begin(),
+                                             tcp_segment.begin() + split);
+    std::vector<std::uint8_t> frag2_payload(tcp_segment.begin() + split,
+                                             tcp_segment.end());
+    const std::vector<std::uint8_t> frag1 = test::PacketBuilder::BuildIpv6TcpFragment(
+        src_ip6, dst_ip6, 0xABCD, 0, true, frag1_payload);
+    const std::vector<std::uint8_t> frag2 = test::PacketBuilder::BuildIpv6TcpFragment(
+        src_ip6, dst_ip6, 0xABCD, 1, false, frag2_payload);
+
+    BufferLease lease1 = pool.Allocate();
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(lease1));
+    std::memcpy(lease1.Data(), frag1.data(), frag1.size());
+    lease1.Resize(frag1.size());
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(lease1)));
+
+    BufferLease lease2 = pool.Allocate();
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(lease2));
+    std::memcpy(lease2.Data(), frag2.data(), frag2.size());
+    lease2.Resize(frag2.size());
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(lease2)));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    TCPIP2_EXPECT_EQ(std::size_t{1}, shard.TcpHalfOpenCount());
+    shard.Stop();
+
+    const auto& egress = io.Egress(0);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, egress.size());
+    if (!egress.empty()) {
+        const test::ParsedPacket response = test::PacketParser::ParseIpv6Tcp(egress[0]);
+        TCPIP2_EXPECT_TRUE(response.valid);
+        TCPIP2_EXPECT_EQ(std::uint16_t{40000}, response.dst_port);
+        TCPIP2_EXPECT_EQ(std::uint16_t{443}, response.src_port);
+        TCPIP2_EXPECT_EQ(std::uint32_t{1001}, response.ack);
+        TCPIP2_EXPECT_EQ(
+            static_cast<std::uint8_t>(test::TcpFlags::Syn | test::TcpFlags::Ack),
+            response.flags);
+    }
+    pool.DrainReturnQueue();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+TCPIP2_TEST(ShardIncompleteFragmentsNoResponse) {
+    NullPacketIo io(1);
+    PktBufferPool pool(16, 256);
+    std::unique_ptr<IPacketQueue> queue = io.OpenQueue(0);
+    queue->SetBufferPool(&pool);
+    StackShard shard(0, pool, queue.get(), 128);
+    TCPIP2_EXPECT_TRUE(shard.Start());
+
+    // Build a SYN and fragment it, but only inject the first fragment (MF=1).
+    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
+        0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0,
+        test::TcpFlags::Syn, {});
+    std::vector<std::uint8_t> tcp_segment(syn.begin() + 20, syn.end());
+
+    // Only send the first 8-byte fragment (MF=1); reassembly never completes.
+    const std::size_t split = std::min(tcp_segment.size(), std::size_t{8});
+    std::vector<std::uint8_t> frag1_payload(tcp_segment.begin(),
+                                             tcp_segment.begin() + split);
+    const std::vector<std::uint8_t> frag1 = test::PacketBuilder::BuildIpv4TcpFragment(
+        0x0a000001u, 0x0a000002u, 0x5678, 0, true, frag1_payload);
+
+    BufferLease lease1 = pool.Allocate();
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(lease1));
+    std::memcpy(lease1.Data(), frag1.data(), frag1.size());
+    lease1.Resize(frag1.size());
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(lease1)));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    TCPIP2_EXPECT_EQ(std::size_t{0}, shard.TcpHalfOpenCount());
+    shard.Stop();
+
+    const auto& egress = io.Egress(0);
+    TCPIP2_EXPECT_EQ(std::size_t{0}, egress.size());
     pool.DrainReturnQueue();
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
 }

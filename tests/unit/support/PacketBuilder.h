@@ -45,6 +45,43 @@ public:
         const std::vector<std::uint8_t>& payload,
         std::uint16_t ip_id = 0,
         std::uint8_t ttl = 64);
+
+    /// Build a single IPv4 fragment containing a slice of a TCP segment.
+    /// @param fragment_offset offset in 8-byte units
+    /// @param mf more-fragments flag
+    /// @param tcp_segment the full TCP segment (header + payload); this function
+    ///                    takes the slice [fragment_offset*8, end) as the
+    ///                    fragment payload.
+    static std::vector<std::uint8_t> BuildIpv4TcpFragment(
+        std::uint32_t src_ip,
+        std::uint32_t dst_ip,
+        std::uint16_t ip_id,
+        std::uint16_t fragment_offset,
+        bool mf,
+        const std::vector<std::uint8_t>& tcp_segment);
+
+    /// Build a single IPv6 fragment containing a slice of a TCP segment.
+    /// @param fragment_offset offset in 8-byte units
+    /// @param mf more-fragments flag
+    /// @param tcp_segment the full TCP segment (header + payload)
+    static std::vector<std::uint8_t> BuildIpv6TcpFragment(
+        const std::uint8_t src_ip[16],
+        const std::uint8_t dst_ip[16],
+        std::uint32_t identification,
+        std::uint16_t fragment_offset,
+        bool mf,
+        const std::vector<std::uint8_t>& tcp_segment);
+
+    /// Build a complete IPv6+TCP packet (no fragmentation).
+    static std::vector<std::uint8_t> BuildIpv6Tcp(
+        const std::uint8_t src_ip[16],
+        const std::uint8_t dst_ip[16],
+        std::uint16_t src_port,
+        std::uint16_t dst_port,
+        std::uint32_t seq,
+        std::uint32_t ack,
+        std::uint8_t flags,
+        const std::vector<std::uint8_t>& payload);
 };
 
 struct ParsedPacket {
@@ -62,12 +99,18 @@ struct ParsedPacket {
     std::uint16_t window = 0;
     std::uint16_t ip_id = 0;
 
+    // IPv6 support
+    std::uint8_t src_ip6[16] = {};
+    std::uint8_t dst_ip6[16] = {};
+    bool is_ipv6 = false;
+
     std::vector<std::uint8_t> payload;
 };
 
 class PacketParser final {
 public:
     static ParsedPacket ParseIpv4Tcp(const std::vector<std::uint8_t>& bytes);
+    static ParsedPacket ParseIpv6Tcp(const std::vector<std::uint8_t>& bytes);
 };
 
 } // namespace test

@@ -662,7 +662,8 @@ TCPIP2_TEST(IpTcpInputValidatesChecksumsAndFragments) {
         ParseIpTcpPacket(packet.data(), built.packet_length).error);
     packet[10] ^= 1;
 
-    packet[6] = 0x20;
+    packet[6] = 0x80;
+    packet[7] = 0;
     packet[10] = 0;
     packet[11] = 0;
     Write16(packet.data() + 10, InternetChecksum(packet.data(), 20));

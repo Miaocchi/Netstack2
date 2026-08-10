@@ -32,6 +32,7 @@
 #include <core/shard_message.h>
 #include <core/thread_ownership.h>
 #include <core/timer_wheel.h>
+#include <ip/fragment.h>
 
 namespace tcpip2 {
 
@@ -93,6 +94,8 @@ private:
     void Run() noexcept;
     void EventLoopIteration() noexcept;
     void ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexcept;
+    void HandleFragment(const std::uint8_t* packet, std::size_t length,
+                        std::uint64_t now_ms) noexcept;
     bool EnqueueTcpResponse(const TcpResponse& response) noexcept;
     void FlushTcpTx() noexcept;
     void PumpTcpSendPaths(std::uint64_t now_ms) noexcept;
@@ -105,6 +108,7 @@ private:
     ThreadOwnershipGuard ownership_;
     TimerWheel timer_;
     std::unique_ptr<TcpHandshakeEngine> tcp_;
+    FragmentReassembler reassembler_;
     std::vector<BufferLease> tcp_tx_;
 
     std::thread thread_;

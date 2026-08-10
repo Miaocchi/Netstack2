@@ -58,6 +58,13 @@ struct Ipv6ParseResult {
     std::size_t payload_offset = 0;      // offset to upper-layer payload
     std::size_t payload_length = 0;      // bytes of upper-layer payload
     const std::uint8_t* payload = nullptr; // points into input buffer
+
+    // Fragment header details (valid when fragment_header_present == true).
+    std::uint16_t fragment_offset = 0;        // 8-byte units (13-bit value from wire)
+    bool fragment_more = false;                // MF bit
+    std::uint32_t fragment_identification = 0; // 32-bit identification
+    const std::uint8_t* fragment_payload = nullptr;   // data after the Fragment header
+    std::size_t fragment_payload_length = 0;
 };
 
 /// Maximum number of extension headers to walk before declaring a loop.

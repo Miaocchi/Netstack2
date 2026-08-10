@@ -1077,6 +1077,32 @@ Tcp/Udp packet generated
 
 验证结果: 全量 CTest 普通 31/31, ASan/UBSan 31/31, TSan 31/31; TCP send 57/57; include boundaries OK; `git diff --check` clean。
 
+#### P3C-04: Fragment Reassembly → TCP Input Wiring ✅ Implemented (2026-08-10)
+
+将 `FragmentReassembler` 接入 `StackShard` RX 路径，使分片 IPv4/IPv6 TCP 段能被正确重组后送入 TCP handshake engine。
+
+**变更范围**:
+
+1. **`src/ip/ipv6.h`**: `Ipv6ParseResult` 新增 5 个 fragment 字段 — `is_fragment`, `fragment_offset`, `fragment_more`, `fragment_identification`, `fragment_next_header`。
+
+2. **`src/ip/ipv6.cpp`**: 扩展头遍历中解析 8 字节 Fragment header (type 44)，提取 offset/more/identification/next_header，遇到非 0 offset 时设置 `is_fragment=true`。
+
+3. **`src/tcp/input.h` / `input.cpp`**: 新增 `FragmentInfo` 结构体和 `ExtractFragmentInfo()` 函数，从 `Ipv4ParseResult` / `Ipv6ParseResult` 中提取分片元数据。IPv4 flags 经 `(flags_frag >> 13) & 0x07` 解码后 MF = `flags & 0x04`。IPv6 Fragment header 中 `ff = (offset << 3) | (mf ? 1 : 0)`。
+
+4. **`src/core/shard.h` / `shard.cpp`**: 
+   - `StackShard` 新增 `FragmentReassembler reassembler_` 成员和 `HandleFragment()` 方法。
+   - `ProcessPacket()` 在 IP 解析后检查 `FragmentInfo::is_fragment`，若为 true 则调用 `HandleFragment()`。
+   - `HandleFragment()` 将分片加入 reassembler；完成时取出 owning payload buffer，调用 `ParseTcpSegment()` → `OnSegment()`。
+   - 事件循环 step 5 新增 `reassembler_.Purge(now_ms)` 清理过期 entry。
+
+5. **`tests/unit/support/PacketBuilder.h` / `PacketBuilder.cpp`**: 新增 `BuildIpv4TcpFragment()` 和 `BuildIpv6TcpFragment()` 测试辅助方法，生成带正确 IP Fragment header 的分片包。`ParsedPacket` 新增 IPv6 fragment 字段。
+
+6. **`tests/unit/shard_runtime_test.cpp`**: 新增 3 个分片重组测试 — IPv4 fragment reassembly、IPv6 fragment reassembly、non-fragmented packet passthrough。测试使用非重叠 8 字节对齐分片。
+
+7. **`tests/unit/tcp/handshake_test.cpp`**: 修正现有 fragment 测试中 IPv4 MF flag 编码（`0x80` 而非 `0x20`）和 checksum 重算前清零。
+
+验证结果: 全量 CTest 普通 31/31, ASan/UBSan 31/31, TSan 31/31; include boundaries OK; `git diff --check` clean。
+
 #### 通用采样器
 
 KCC 和 BBR 不能直接消费“本 ACK 确认多少字节”作为带宽。实现

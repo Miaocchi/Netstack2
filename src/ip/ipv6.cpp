@@ -93,6 +93,36 @@ Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
     while (IsExtensionHeader(current_nh)) {
         if (current_nh == Ipv6ExtHeaderType::Fragment) {
             result.fragment_header_present = true;
+            // Parse the 8-byte Fragment header.
+            // data[offset]     = next header
+            // data[offset+1]   = reserved
+            // data[offset+2..3] = fragment_offset(13) | res(2) | MF(1)
+            // data[offset+4..7] = identification (32-bit)
+            if (offset + 8 > len) {
+                result.error = Ipv6ParseResult::Error::TruncatedExtHeader;
+                return result;
+            }
+            const std::uint16_t ff =
+                static_cast<std::uint16_t>((data[offset + 2] << 8) | data[offset + 3]);
+            result.fragment_offset = static_cast<std::uint16_t>(ff >> 3);
+            result.fragment_more = (ff & 0x01u) != 0;
+            result.fragment_identification =
+                (static_cast<std::uint32_t>(data[offset + 4]) << 24) |
+                (static_cast<std::uint32_t>(data[offset + 5]) << 16) |
+                (static_cast<std::uint32_t>(data[offset + 6]) << 8) |
+                static_cast<std::uint32_t>(data[offset + 7]);
+            // The fragmentable payload is everything after the Fragment header
+            // (i.e. from ext_end to the end of the packet's declared payload).
+            const std::size_t frag_payload_end = 40 + total_after_fixed;
+            std::size_t frag_start;
+            if (!CheckedAdd<std::size_t>(offset, std::size_t{8}, frag_start)) {
+                result.error = Ipv6ParseResult::Error::TruncatedExtHeader;
+                return result;
+            }
+            if (frag_start <= frag_payload_end) {
+                result.fragment_payload = data + frag_start;
+                result.fragment_payload_length = frag_payload_end - frag_start;
+            }
         }
         // Loop detection: check if we've seen this next-header value before.
         bool loop = false;

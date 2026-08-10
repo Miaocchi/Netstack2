@@ -33,6 +33,7 @@
 #include <tcp/input.h>
 #include <tcp/isn.h>
 #include <tcp/output.h>
+#include <tcp/segment.h>
 
 namespace tcpip2 {
 
@@ -203,6 +204,7 @@ void StackShard::EventLoopIteration() noexcept {
 
     // Step 5: advance timers, then drain bounded retry/control output.
     timer_.AdvanceTo(now_ms);
+    reassembler_.Purge(now_ms);
     if (tcp_) {
         tcp_->PumpSessionDeliveries(now_ms, kControlInboxBudget);
         TcpResponse response;
@@ -236,6 +238,10 @@ void StackShard::EventLoopIteration() noexcept {
 void StackShard::ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexcept {
     if (!lease || !tcp_) return;
     const TcpInputResult input = ParseIpTcpPacket(lease.Data(), lease.Size());
+    if (input.error == TcpInputError::FragmentRequiresReassembly) {
+        HandleFragment(lease.Data(), lease.Size(), now_ms);
+        return;
+    }
     if (input.error != TcpInputError::None) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return;
@@ -246,6 +252,56 @@ void StackShard::ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexce
     }
     if (result.response.valid && !EnqueueTcpResponse(result.response)) {
         tcp_->DeferResponse(result.response);
+    }
+}
+
+void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
+                                std::uint64_t now_ms) noexcept {
+    const FragmentInfo fi = ExtractFragmentInfo(packet, length);
+    if (!fi.valid) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    FragmentAddResult result;
+    if (fi.ip_version == 4) {
+        result = reassembler_.AddIpv4Fragment(
+            fi.src_ip, fi.dst_ip, fi.protocol,
+            static_cast<std::uint16_t>(fi.identification),
+            fi.fragment_offset, fi.more_fragments,
+            fi.payload, fi.payload_length, now_ms);
+    } else {
+        result = reassembler_.AddIpv6Fragment(
+            fi.src_ip, fi.dst_ip, fi.identification,
+            fi.fragment_offset, fi.more_fragments,
+            fi.payload, fi.payload_length, now_ms);
+    }
+    if (result.error != FragmentError::None) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (!result.complete) return;
+
+    // Reassembly complete — re-parse as TCP segment and deliver.
+    IpAddress src, dst;
+    if (fi.ip_version == 4) {
+        src = IpAddress::Ipv4(fi.src_ip[0], fi.src_ip[1], fi.src_ip[2], fi.src_ip[3]);
+        dst = IpAddress::Ipv4(fi.dst_ip[0], fi.dst_ip[1], fi.dst_ip[2], fi.dst_ip[3]);
+    } else {
+        src = IpAddress::Ipv6(fi.src_ip);
+        dst = IpAddress::Ipv6(fi.dst_ip);
+    }
+    const TcpParseResult tcp = ParseTcpSegment(
+        src, dst, result.payload.data(), result.total_length);
+    if (tcp.error != TcpParseError::None) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const TcpHandshakeResult hr = tcp_->OnSegment(tcp.segment, now_ms);
+    if (hr.error != TcpHandshakeError::None) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (hr.response.valid && !EnqueueTcpResponse(hr.response)) {
+        tcp_->DeferResponse(hr.response);
     }
 }
 

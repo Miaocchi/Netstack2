@@ -1,5 +1,7 @@
 #include <tcp/input.h>
 
+#include <cstring>
+
 #include <ip/ipv4.h>
 #include <ip/ipv6.h>
 
@@ -33,7 +35,7 @@ TcpInputResult ParseIpTcpPacket(const std::uint8_t* packet,
             result.error = TcpInputError::NotTcp;
             return result;
         }
-        if (ip.header.fragment_offset != 0 || (ip.header.flags & 0x01u) != 0) {
+        if (ip.header.fragment_offset != 0 || (ip.header.flags & 0x04u) != 0) {
             result.error = TcpInputError::FragmentRequiresReassembly;
             return result;
         }
@@ -72,6 +74,43 @@ TcpInputResult ParseIpTcpPacket(const std::uint8_t* packet,
     }
     result.segment = tcp.segment;
     return result;
+}
+
+FragmentInfo ExtractFragmentInfo(const std::uint8_t* packet,
+                                 std::size_t length) noexcept {
+    FragmentInfo info;
+    if (packet == nullptr || length == 0) return info;
+
+    const std::uint8_t version = static_cast<std::uint8_t>(packet[0] >> 4);
+    if (version == 4) {
+        const Ipv4ParseResult ip = ParseIpv4(packet, length);
+        if (ip.error != Ipv4ParseError::None) return info;
+        info.ip_version = 4;
+        std::memcpy(info.src_ip, ip.header.src_ip, 4);
+        std::memcpy(info.dst_ip, ip.header.dst_ip, 4);
+        info.protocol = ip.header.protocol;
+        info.identification = ip.header.identification;
+        info.fragment_offset = ip.header.fragment_offset;
+        info.more_fragments = (ip.header.flags & 0x04u) != 0;
+        info.payload = ip.payload;
+        info.payload_length = ip.header.payload_length;
+        info.valid = true;
+    } else if (version == 6) {
+        const Ipv6ParseResult ip = ParseIpv6(packet, length);
+        if (ip.error != Ipv6ParseResult::Error::None) return info;
+        if (!ip.fragment_header_present) return info;
+        info.ip_version = 6;
+        std::memcpy(info.src_ip, ip.header.src_ip, 16);
+        std::memcpy(info.dst_ip, ip.header.dst_ip, 16);
+        info.protocol = ip.final_next_header;
+        info.identification = ip.fragment_identification;
+        info.fragment_offset = ip.fragment_offset;
+        info.more_fragments = ip.fragment_more;
+        info.payload = ip.fragment_payload;
+        info.payload_length = ip.fragment_payload_length;
+        info.valid = true;
+    }
+    return info;
 }
 
 } // namespace tcpip2
