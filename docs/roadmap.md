@@ -3,7 +3,7 @@
 > 本文记录里程碑状态、工作包范围、前置依赖、验收门禁、当前 commit/tag 和已知阻塞项。
 > 架构设计与边界见 `docs/architecture/NETSTACK2_ARCHITECTURE.md`; 详细实施顺序、
 > 文件级任务和验收方法见 `docs/IMPLEMENTATION_GUIDE.md`; 本文只记录任务进度,
-> 不混入架构决策。OpenPPP2 集成细节见 `docs/integration/OPENPPP2_INTEGRATION_PLAN.md`。
+> 不混入架构决策。OpenPPP2 集成细节见 `docs/plans/P4_OPENPPP2_INTEGRATION_PLAN.md`。
 
 ## 1. 里程碑状态
 
@@ -25,7 +25,7 @@
 | P3B-3 | **Completed** | retransmission queue + RTO、SACK scoreboard、data segment serialization、send buffer 接入 handshake engine 和 shard event loop，TCP 54+51、全量 30/30 三套构建全绿 |
 | P3B-4 | **Completed** | FIN/close/TIME-WAIT 状态机、CloseFlow/AbortFlow API、TIME-WAIT 容量驱逐，FIN 处理/half-close/TIME-WAIT 驱逐 bugfix，TCP handshake 74/74、全量 30/30 三套构建全绿。SACK scoreboard wire 接线仍属 P3C |
 | P3C | **In progress** | P3C-01 DeliveryRateSampler + CongestionController 接口 + AIMD 适配完成，commit `aa9332e`。P3C-02 BBRv1 状态机测试完成，commit `78332bc`，TCP congestion 43/43、全量 31/31 三套构建全绿。P3C-03 per-flow pacer 完成，commit `957682f`，TCP send 57/57、全量 31/31 三套构建全绿。P3C-04 fragment reassembly → TCP input wiring 完成，commit `b6d79a8`，全量 31/31 三套构建全绿。下一步: 完成 P3C 收尾（KCC 算法移植 / RuntimeDependencies 注入设计落地） |
-| P4 | **In progress** | OpenPPP2 集成。P4-1 RuntimeDependencies 注入 + P4-3 IClock 替换已完成（commit `97ab0c9`，34/34 三套构建全绿）。P4-2 ISessionFactory 被动监听接入 TCP handshake 已完成（commit `0269184`，34/34 三套构建全绿）：SYN→ESTABLISHED 时调 `OpenTcp()`，accept 则绑定 session 并 DrainSession，reject 则 RST+移除 PCB。详见 `docs/plans/P4_OPENPPP2_INTEGRATION_PLAN.md`。 |
+| P4 | **In progress** | OpenPPP2 集成。P4-1 RuntimeDependencies 注入 + P4-3 IClock 替换已完成（commit `97ab0c9`，34/34 三套构建全绿）。P4-2 ISessionFactory 被动监听接入 TCP handshake 已完成（commit `0269184`，34/34 三套构建全绿）：SYN→ESTABLISHED 时调 `OpenTcp()`，accept 则绑定 session 并 DrainSession，reject 则 RST+移除 PCB。已知限制（详见 IMPLEMENTATION_GUIDE §10.3）：(1) IEventSink 已注入但未触发，留给 P4-5；(2) ITransportSession 的 SetDataCallback/SetWritableCallback/SetClosedCallback 尚未由引擎注册，双向数据路径暂不可用；(3) SYN 段 payload 被忽略。详见 `docs/plans/P4_OPENPPP2_INTEGRATION_PLAN.md`。 |
 | P5A | Planned | Onload socket session 和通用 kernel-bypass session 接口。AF_XDP/DPDK 扩展接口设计已完成，见 `docs/plans/HIGH_PERF_BACKEND_EXTENSIONS.md`。 |
 | P5B | Planned | AF_XDP/DPDK 纯用户态 Packet I/O。 |
 | P6–P7 | Planned | 平台铺开（Android/iOS/Windows）、调优。 |
@@ -294,6 +294,6 @@ P7 性能和功耗调优
 
 ## 6. 并行工作
 
-OpenPPP2 只读对照和集成规划(`docs/integration/OPENPPP2_INTEGRATION_PLAN.md`)
+OpenPPP2 只读对照和集成规划(`docs/plans/P4_OPENPPP2_INTEGRATION_PLAN.md`)
 与 NETSTACK2-002 并行进行, 不接 submodule、不改构建、不替换 lwIP。
 真实 OpenPPP2 构建与运行时接线在 API-FREEZE-001 之后(P4)。
