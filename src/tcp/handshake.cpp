@@ -1,5 +1,6 @@
 #include <tcp/handshake.h>
 
+#include <core/shard_message.h>
 #include <tcp/output.h>
 
 #include <algorithm>
@@ -103,11 +104,13 @@ TcpHandshakeEngine::TcpHandshakeEngine(const TcpHandshakeConfig& config,
                                        const TcpIsnGenerator& isn,
                                        TimerWheel& timers,
                                        std::uint64_t generation_epoch,
-                                       ISessionFactory* session_factory)
+                                       ISessionFactory* session_factory,
+                                       PostMessageFn post_message)
     : config_(config), isn_(isn), timers_(timers),
       callback_gate_(std::make_shared<CallbackGate>()),
       generation_epoch_(generation_epoch == 0 ? 1 : generation_epoch),
-      session_factory_(session_factory) {
+      session_factory_(session_factory),
+      post_message_fn_(std::move(post_message)) {
     if (!config_.Validate()) {
         throw std::invalid_argument("invalid TCP handshake configuration");
     }
@@ -331,6 +334,7 @@ TcpDeliveryResult TcpHandshakeEngine::DrainSession(Pcb& pcb) noexcept {
         result.status == TcpDeliveryStatus::InvalidResult ||
         result.status == TcpDeliveryStatus::NoProgress) {
         pcb.session = nullptr;
+        pcb.session_bound = false;
         pcb.delivery_pending = false;
     }
     return result;
@@ -716,14 +720,25 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
                         req.original_destination = IpEndpoint{
                             pcb.incoming_flow.destination,
                             pcb.incoming_flow.destination_port};
-                        const SessionOpenResult open_result =
-                            session_factory_->OpenTcp(req);
-                        if (open_result.session != nullptr) {
+                        // The factory is implemented by the consumer and is not
+                        // required to be noexcept; OnSegment is noexcept, so a
+                        // throwing factory would terminate. Treat any exception
+                        // as a rejection.
+                        SessionOpenResult open_result;
+                        try {
+                            open_result = session_factory_->OpenTcp(req);
+                        } catch (...) {
+                            open_result = SessionOpenResult{};
+                        }
+                        if (open_result.session != nullptr &&
+                            open_result.error == SessionError::None) {
                             pcb.session = open_result.session;
                             pcb.session_bound = true;
                             pcb.receive->SetBlocked(false);
+                            BindSessionCallbacks(pcb);
                             DrainSession(pcb);
                         } else {
+                            result.state_changed = false;
                             result.response = BuildReset(segment);
                             RemoveAt(existing_index);
                             return result;
@@ -870,6 +885,48 @@ bool TcpHandshakeEngine::Find(const FlowKey& incoming_flow,
     return true;
 }
 
+void TcpHandshakeEngine::BindSessionCallbacks(Pcb& pcb) noexcept {
+    if (pcb.session == nullptr || !post_message_fn_) return;
+
+    const FlowId flow_id = pcb.flow_id;
+    const std::uint64_t generation = pcb.generation;
+    const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
+
+    // WritableCallback — posted back to the shard as kSessionWritable.
+    pcb.session->SetWritableCallback([weak_gate, flow_id, generation] {
+        const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
+        if (!gate || gate->owner == nullptr) return;
+        ShardMessage msg;
+        msg.type = ShardMessageType::kSessionWritable;
+        msg.flow_id = flow_id;
+        msg.generation = generation;
+        gate->owner->post_message_fn_(std::move(msg));
+    });
+
+    // ClosedCallback — posted back as kSessionClosed.
+    pcb.session->SetClosedCallback([weak_gate, flow_id, generation](SessionError) {
+        const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
+        if (!gate || gate->owner == nullptr) return;
+        ShardMessage msg;
+        msg.type = ShardMessageType::kSessionClosed;
+        msg.flow_id = flow_id;
+        msg.generation = generation;
+        gate->owner->post_message_fn_(std::move(msg));
+    });
+
+    // DataCallback — session → TCP send path, posted as kSessionData.
+    pcb.session->SetDataCallback([weak_gate, flow_id, generation](BufferLease lease) {
+        const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
+        if (!gate || gate->owner == nullptr) return;
+        ShardMessage msg;
+        msg.type = ShardMessageType::kSessionData;
+        msg.flow_id = flow_id;
+        msg.generation = generation;
+        msg.data = std::move(lease);
+        gate->owner->post_message_fn_(std::move(msg));
+    });
+}
+
 TcpHandshakeResult TcpHandshakeEngine::AttachSession(
     const FlowKey& incoming_flow, ITransportSession* session,
     std::uint64_t now_ms) noexcept {
@@ -888,6 +945,7 @@ TcpHandshakeResult TcpHandshakeEngine::AttachSession(
     pcb.session = session;
     pcb.session_bound = true;
     pcb.receive->SetBlocked(false);
+    BindSessionCallbacks(pcb);
     const TcpDeliveryResult delivered = DrainSession(pcb);
     if (delivered.status == TcpDeliveryStatus::InvalidResult ||
         delivered.status == TcpDeliveryStatus::Closed ||
@@ -1022,6 +1080,13 @@ std::size_t TcpHandshakeEngine::EnqueueSendData(FlowId flow_id,
         }
     }
     return 0;
+}
+
+std::size_t TcpHandshakeEngine::EnqueueSendData(FlowId flow_id,
+    const BufferLease& lease) noexcept {
+    if (!lease) return 0;
+    const std::size_t sent = EnqueueSendData(flow_id, lease.Data(), lease.Size());
+    return sent;
 }
 
 void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,

@@ -1,4 +1,5 @@
 #include <array>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -6,6 +7,7 @@
 #include <vector>
 
 #include "Test.h"
+#include <core/shard_message.h>
 #include <core/timer_wheel.h>
 #include <ip/checksum.h>
 #include <ip/ipv4.h>
@@ -2014,7 +2016,8 @@ TCPIP2_TEST(TimeWaitEvictionPreservesSurvivingFlows) {
 
 namespace {
 
-/// Minimal ITransportSession that records TrySend/ShutdownWrite/Abort.
+/// Minimal ITransportSession that records TrySend/ShutdownWrite/Abort
+/// and stores all three callbacks for later triggering.
 class RecordingSession final : public ITransportSession {
 public:
     SendResult TrySend(BufferView data) override {
@@ -2025,8 +2028,16 @@ public:
     void ShutdownWrite() override { shutdown_write_called_ = true; }
     void Abort(SessionError) override { abort_called_ = true; }
     void SetWritableCallback(WritableCallback cb) override { writable_ = std::move(cb); }
-    void SetDataCallback(DataCallback) override {}
-    void SetClosedCallback(ClosedCallback) override {}
+    void SetDataCallback(DataCallback cb) override { data_ = std::move(cb); }
+    void SetClosedCallback(ClosedCallback cb) override { closed_ = std::move(cb); }
+
+    void TriggerWritable() { if (writable_) writable_(); }
+    void TriggerClosed(SessionError err) { if (closed_) closed_(err); }
+    void TriggerData(BufferLease lease) { if (data_) data_(std::move(lease)); }
+
+    bool HasWritableCallback() const noexcept { return static_cast<bool>(writable_); }
+    bool HasDataCallback() const noexcept { return static_cast<bool>(data_); }
+    bool HasClosedCallback() const noexcept { return static_cast<bool>(closed_); }
 
     const std::vector<std::uint8_t>& Delivered() const noexcept { return delivered_; }
     bool ShutdownWriteCalled() const noexcept { return shutdown_write_called_; }
@@ -2037,6 +2048,8 @@ private:
     bool shutdown_write_called_ = false;
     bool abort_called_ = false;
     WritableCallback writable_;
+    DataCallback data_;
+    ClosedCallback closed_;
 };
 
 /// ISessionFactory that can accept or reject, and records calls.
@@ -2067,6 +2080,9 @@ public:
 
     int OpenTcpCount() const noexcept { return open_tcp_count_; }
     const TcpOpenRequest& LastRequest() const noexcept { return last_request_; }
+    ITransportSession* LastSession() const noexcept {
+        return created_.empty() ? nullptr : created_.back();
+    }
 
 private:
     bool accept_all_;
@@ -2182,6 +2198,189 @@ TCPIP2_TEST(SessionFactoryBoundSessionReceivesInlineData) {
     TcpPcbSnapshot snap;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, snap));
     TCPIP2_EXPECT_EQ(std::size_t{0}, snap.ready_bytes);
+}
+
+// ---------------------------------------------------------------------------
+// P4-4: Session callback wiring tests
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Captures ShardMessages posted via PostMessageFn.
+class MessageCapturer final {
+public:
+    PostMessageFn Capture() {
+        return [this](ShardMessage&& msg) {
+            messages_.push_back(std::move(msg));
+            return true;
+        };
+    }
+    std::vector<ShardMessage>& Messages() noexcept { return messages_; }
+    ~MessageCapturer() {
+        // Release any BufferLease payloads before the vector destructor runs,
+        // so they return to their pool while the pool may still be alive.
+        for (auto& msg : messages_) {
+            msg.data.Reset();
+        }
+    }
+private:
+    std::vector<ShardMessage> messages_;
+};
+
+} // namespace
+
+TCPIP2_TEST(SessionCallbacksRegisteredOnEstablishment) {
+    TimerWheel timers;
+    FakeSessionFactory factory(/*accept_all=*/true);
+    MessageCapturer capturer;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
+                               timers, 1, &factory, capturer.Capture());
+    const FlowKey flow = MakeFlow();
+
+    // Complete 3-way handshake
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    engine.OnSegment(
+        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+
+    TCPIP2_EXPECT_EQ(1, factory.OpenTcpCount());
+
+    // The factory created a RecordingSession; callbacks should be registered.
+    auto* session = static_cast<RecordingSession*>(
+        const_cast<ITransportSession*>(factory.LastSession()));
+    TCPIP2_EXPECT_TRUE(session->HasWritableCallback());
+    TCPIP2_EXPECT_TRUE(session->HasDataCallback());
+    TCPIP2_EXPECT_TRUE(session->HasClosedCallback());
+}
+
+TCPIP2_TEST(WritableCallbackPostsSessionWritableMessage) {
+    TimerWheel timers;
+    FakeSessionFactory factory(/*accept_all=*/true);
+    MessageCapturer capturer;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
+                               timers, 1, &factory, capturer.Capture());
+    const FlowKey flow = MakeFlow();
+
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    engine.OnSegment(
+        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+
+    auto* session = static_cast<RecordingSession*>(
+        const_cast<ITransportSession*>(factory.LastSession()));
+
+    // Snapshot the flow_id/generation from the PCB.
+    TcpPcbSnapshot snap;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, snap));
+
+    // Trigger the writable callback.
+    session->TriggerWritable();
+
+    // A kSessionWritable message should have been posted.
+    TCPIP2_EXPECT_EQ(std::size_t{1}, capturer.Messages().size());
+    TCPIP2_EXPECT_EQ(ShardMessageType::kSessionWritable,
+                     capturer.Messages()[0].type);
+    TCPIP2_EXPECT_EQ(snap.flow_id, capturer.Messages()[0].flow_id);
+    TCPIP2_EXPECT_EQ(snap.generation, capturer.Messages()[0].generation);
+}
+
+TCPIP2_TEST(ClosedCallbackPostsSessionClosedMessage) {
+    TimerWheel timers;
+    FakeSessionFactory factory(/*accept_all=*/true);
+    MessageCapturer capturer;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
+                               timers, 1, &factory, capturer.Capture());
+    const FlowKey flow = MakeFlow();
+
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    engine.OnSegment(
+        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+
+    auto* session = static_cast<RecordingSession*>(
+        const_cast<ITransportSession*>(factory.LastSession()));
+
+    TcpPcbSnapshot snap;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, snap));
+
+    session->TriggerClosed(SessionError::Reset);
+
+    TCPIP2_EXPECT_EQ(std::size_t{1}, capturer.Messages().size());
+    TCPIP2_EXPECT_EQ(ShardMessageType::kSessionClosed,
+                     capturer.Messages()[0].type);
+    TCPIP2_EXPECT_EQ(snap.flow_id, capturer.Messages()[0].flow_id);
+}
+
+TCPIP2_TEST(DataCallbackPostsSessionDataMessage) {
+    TimerWheel timers;
+    FakeSessionFactory factory(/*accept_all=*/true);
+    MessageCapturer capturer;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
+                               timers, 1, &factory, capturer.Capture());
+    const FlowKey flow = MakeFlow();
+
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    engine.OnSegment(
+        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+
+    auto* session = static_cast<RecordingSession*>(
+        const_cast<ITransportSession*>(factory.LastSession()));
+
+    TcpPcbSnapshot snap;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, snap));
+
+    // Create a buffer lease to pass through the data callback.
+    // The pool must outlive the MessageCapturer so the lease can be returned.
+    PktBufferPool pool(4, 2048);
+    BufferLease lease = pool.Allocate();
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
+    const std::uint8_t data[] = {'A', 'B', 'C', 'D'};
+    std::memcpy(lease.Data(), data, sizeof(data));
+    lease.Resize(sizeof(data));
+
+    session->TriggerData(std::move(lease));
+
+    TCPIP2_EXPECT_EQ(std::size_t{1}, capturer.Messages().size());
+    TCPIP2_EXPECT_EQ(ShardMessageType::kSessionData,
+                     capturer.Messages()[0].type);
+    TCPIP2_EXPECT_EQ(snap.flow_id, capturer.Messages()[0].flow_id);
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(capturer.Messages()[0].data));
+    TCPIP2_EXPECT_EQ(sizeof(data), capturer.Messages()[0].data.Size());
+    TCPIP2_EXPECT_EQ(0, std::memcmp(capturer.Messages()[0].data.Data(),
+                                     data, sizeof(data)));
+
+    // Release the captured lease before the pool is destroyed.
+    capturer.Messages()[0].data.Reset();
+}
+
+TCPIP2_TEST(CallbacksAreNoopAfterShutdown) {
+    TimerWheel timers;
+    FakeSessionFactory factory(/*accept_all=*/true);
+    MessageCapturer capturer;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
+                               timers, 1, &factory, capturer.Capture());
+    const FlowKey flow = MakeFlow();
+
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    engine.OnSegment(
+        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+
+    auto* session = static_cast<RecordingSession*>(
+        const_cast<ITransportSession*>(factory.LastSession()));
+
+    engine.Shutdown();
+
+    // Triggering all callbacks after shutdown should not post any messages.
+    session->TriggerWritable();
+    session->TriggerClosed(SessionError::Reset);
+
+    PktBufferPool pool(4, 2048);
+    BufferLease lease = pool.Allocate();
+    session->TriggerData(std::move(lease));
+
+    TCPIP2_EXPECT_EQ(std::size_t{0}, capturer.Messages().size());
 }
 
 TCPIP2_TEST_MAIN()

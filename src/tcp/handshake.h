@@ -14,6 +14,9 @@
 
 #include <tcpip2/session_factory.h>
 
+#include <functional>
+
+#include <core/shard_message.h>
 #include <core/timer_wheel.h>
 #include <tcp/delivery.h>
 #include <tcp/isn.h>
@@ -136,6 +139,14 @@ struct TcpPcbSnapshot {
 };
 
 /**
+ * Function type used to post a ShardMessage back to the owning shard.
+ * Session callbacks capture this to route writable/closed/data notifications
+ * through the shard's MPSC control inbox rather than touching the engine
+ * directly from a foreign thread.
+ */
+using PostMessageFn = std::function<bool(ShardMessage&&)>;
+
+/**
  * One engine represents the transparent wildcard TCP listener on one shard.
  * It is single-threaded and must only be called by its owner shard.
  */
@@ -145,7 +156,8 @@ public:
                        const TcpIsnGenerator& isn,
                        TimerWheel& timers,
                        std::uint64_t generation_epoch = 1,
-                       ISessionFactory* session_factory = nullptr);
+                       ISessionFactory* session_factory = nullptr,
+                       PostMessageFn post_message = nullptr);
     ~TcpHandshakeEngine();
 
     TcpHandshakeEngine(const TcpHandshakeEngine&) = delete;
@@ -169,6 +181,10 @@ public:
     /// Returns bytes accepted (0 if PCB not found or send buffer full).
     std::size_t EnqueueSendData(FlowId flow_id, const std::uint8_t* data,
                                  std::size_t length) noexcept;
+
+    /// Enqueue application data from a session DataCallback (owning lease).
+    /// Returns bytes accepted (0 if PCB not found or send buffer full).
+    std::size_t EnqueueSendData(FlowId flow_id, const BufferLease& lease) noexcept;
 
     /// Pump send paths for established PCBs: emit new data, retransmissions,
     /// and persist probes as serialized TX leases.
@@ -245,6 +261,7 @@ private:
     void OnDelayedAck(const FlowKey& incoming_flow, std::uint64_t generation) noexcept;
     void OnTimeWaitExpired(const FlowKey& incoming_flow, std::uint64_t generation) noexcept;
     bool ScheduleTimeWait(std::size_t index, std::uint64_t now_ms) noexcept;
+    void BindSessionCallbacks(Pcb& pcb) noexcept;
     TcpHandshakeResult ProcessEstablished(Pcb& pcb,
                                           const TcpSegmentView& segment,
                                           std::uint64_t now_ms) noexcept;
@@ -264,6 +281,7 @@ private:
     std::uint64_t next_flow_id_ = 1;
     std::uint64_t generation_epoch_ = 1;
     ISessionFactory* session_factory_ = nullptr;
+    PostMessageFn post_message_fn_;
     bool shutdown_ = false;
 };
 

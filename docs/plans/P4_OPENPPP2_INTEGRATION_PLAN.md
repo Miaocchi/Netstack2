@@ -200,16 +200,15 @@ OpenPPP2 需要：
 | P4-1 | 新增 `clock.h` / `events.h` 公共头 + `RuntimeDependencies` + `Start` 重载 | `include/tcpip2/clock.h`, `events.h`, `runtime_deps.h`, `netstack.h` | ✅ 完成 (commit `97ab0c9`) |
 | P4-3 | 用 `IClock` 替换所有 `steady_clock` 调用 | `src/core/shard.cpp` | ✅ 完成 (commit `97ab0c9`) |
 | P4-2 | 接入 `ISessionFactory` 被动监听 | `src/tcp/handshake.cpp`, `src/core/shard.cpp` | ✅ 完成 (commit `0269184`) |
-| P4-4 | 接入 `ITransportSession` 回调 + OpenPPP2 smoke test | `src/tcp/handshake.cpp`, `tests/integration/` | 未开始 |
+| P4-4 | 接入 `ITransportSession` 回调 | `src/tcp/handshake.cpp`, `src/core/shard.cpp`, `tests/unit/tcp/handshake_test.cpp` | ✅ 完成 |
 | P4-5 | 接入 `IEventSink` | `src/core/shard.cpp`, `src/tcp/handshake.cpp` | 未开始 |
 | P4-6 | 更新 consumer contract test | `tests/unit/compile_contract_test.cpp` | 未开始 |
 | P4-7 | OpenPPP2 侧 adapter | `ppp/ethernet/VNetstack.cpp` 等 | 未开始 |
 
-### 7.1 已知限制（P4-4 / P4-5 前不修复）
+### 7.1 已知限制（P4-5 前不修复）
 
 1. **IEventSink 未触发**: `IEventSink*` 已注入 `StackShard`，但没有任何调用点。flow established/closed/reset 事件和 metric snapshot 发布留给 P4-5。
-2. **ITransportSession 回调未注册**: `SetDataCallback()` / `SetWritableCallback()` / `SetClosedCallback()` 尚未由 TCP 引擎接线。当前数据交付仅通过 `TrySend()` 单向推送（TCP receive buffer → session）。`kSessionWritable` / `kSessionClosed` shard message 已在 event loop 中路由到 `OnSessionWritable()` / `OnSessionClosed()`，但引擎从未调用 `SetWritableCallback()` 注册回调，因此 session 无法在 WouldBlock 恢复后通知引擎。实际 OpenPPP2 双向数据路径在回调接线完成前不可用。
-3. **初始 SYN+data 未处理**: 握手引擎在 SYN-RECEIVED → ESTABLISHED 转换时忽略 SYN 段的 payload。RFC 793 允许 SYN 段携带数据（数据在 ESTABLISHED 后交付），当前不支持。
+2. **初始 SYN+data 未处理**: 握手引擎在 SYN-RECEIVED → ESTABLISHED 转换时忽略 SYN 段的 payload。RFC 793 允许 SYN 段携带数据（数据在 ESTABLISHED 后交付），当前不支持。
 
 ## 8. 风险提示
 

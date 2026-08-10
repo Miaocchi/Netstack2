@@ -70,7 +70,10 @@ bool StackShard::Start() noexcept {
     try {
         tcp_ = std::make_unique<TcpHandshakeEngine>(
             TcpHandshakeConfig{}, TcpIsnGenerator(isn_secret), timer_,
-            tcp_engine_epoch_, session_factory_);
+            tcp_engine_epoch_, session_factory_,
+            [this](ShardMessage&& msg) noexcept {
+                return control_inbox_.Push(std::move(msg));
+            });
         tcp_tx_.reserve(kTcpTxBudget);
     } catch (...) {
         tcp_.reset();
@@ -189,6 +192,14 @@ void StackShard::EventLoopIteration() noexcept {
         }
         if (msg.type == ShardMessageType::kSessionClosed && tcp_) {
             tcp_->OnSessionClosed(msg.flow_id, msg.generation);
+        }
+        if (msg.type == ShardMessageType::kSessionData && tcp_) {
+            // EnqueueSendData copies bytes into the TCP send buffer; the lease
+            // is still owned by msg and will be Reset() below.
+            tcp_->EnqueueSendData(msg.flow_id, msg.data);
+            // Prevent double-release: msg.data still holds the lease, and the
+            // unified Reset() at the end of the loop will release it. Do NOT
+            // reset it here.
         }
         if (msg.type == ShardMessageType::kFlowClose && tcp_) {
             tcp_->CloseFlow(msg.flow_id, msg.generation);
