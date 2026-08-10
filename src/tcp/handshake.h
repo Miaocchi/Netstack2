@@ -12,6 +12,7 @@
 #include <memory>
 #include <vector>
 
+#include <tcpip2/events.h>
 #include <tcpip2/session_factory.h>
 
 #include <functional>
@@ -157,7 +158,8 @@ public:
                        TimerWheel& timers,
                        std::uint64_t generation_epoch = 1,
                        ISessionFactory* session_factory = nullptr,
-                       PostMessageFn post_message = nullptr);
+                       PostMessageFn post_message = nullptr,
+                       IEventSink* event_sink = nullptr);
     ~TcpHandshakeEngine();
 
     TcpHandshakeEngine(const TcpHandshakeEngine&) = delete;
@@ -268,6 +270,7 @@ private:
     TcpDeliveryResult DrainSession(Pcb& pcb) noexcept;
     void RemoveAt(std::size_t index) noexcept;
     void QueueResponse(const TcpResponse& response) noexcept;
+    void EmitFlowEvent(FlowId flow_id, FlowEventType type) noexcept;
 
     TcpHandshakeConfig config_;
     TcpIsnGenerator isn_;
@@ -282,6 +285,7 @@ private:
     std::uint64_t generation_epoch_ = 1;
     ISessionFactory* session_factory_ = nullptr;
     PostMessageFn post_message_fn_;
+    IEventSink* event_sink_ = nullptr;
     bool shutdown_ = false;
 };
 

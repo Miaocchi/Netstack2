@@ -105,12 +105,14 @@ TcpHandshakeEngine::TcpHandshakeEngine(const TcpHandshakeConfig& config,
                                        TimerWheel& timers,
                                        std::uint64_t generation_epoch,
                                        ISessionFactory* session_factory,
-                                       PostMessageFn post_message)
+                                       PostMessageFn post_message,
+                                       IEventSink* event_sink)
     : config_(config), isn_(isn), timers_(timers),
       callback_gate_(std::make_shared<CallbackGate>()),
       generation_epoch_(generation_epoch == 0 ? 1 : generation_epoch),
       session_factory_(session_factory),
-      post_message_fn_(std::move(post_message)) {
+      post_message_fn_(std::move(post_message)),
+      event_sink_(event_sink) {
     if (!config_.Validate()) {
         throw std::invalid_argument("invalid TCP handshake configuration");
     }
@@ -226,6 +228,15 @@ bool TcpHandshakeEngine::ScheduleRetry(Pcb& pcb,
     } catch (...) {
         pcb.retry_timer = TimerId{};
         return false;
+    }
+}
+
+void TcpHandshakeEngine::EmitFlowEvent(FlowId flow_id, FlowEventType type) noexcept {
+    if (event_sink_ != nullptr) {
+        FlowEvent event;
+        event.flow_id = flow_id;
+        event.type = type;
+        event_sink_->OnFlowEvent(event);
     }
 }
 
@@ -439,8 +450,10 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
             }
             result.state_changed = true;
         } else if (pcb.state == TcpState::LastAck) {
+            const FlowId fid = pcb.flow_id;
             RemoveAt(index);
             result.state_changed = true;
+            EmitFlowEvent(fid, FlowEventType::Closed);
             return result;
         }
     }
@@ -617,8 +630,10 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
         if (pcb.state == TcpState::SynReceived) {
             if (segment.HasFlag(TcpFlag::Rst)) {
                 if (segment.sequence == pcb.rcv_nxt) {
+                    const FlowId fid = pcb.flow_id;
                     RemoveAt(existing_index);
                     result.state_changed = true;
+                    EmitFlowEvent(fid, FlowEventType::Reset);
                 }
                 return result;
             }
@@ -705,6 +720,7 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
                     }
                     if (half_open_count_ > 0) --half_open_count_;
                     result.state_changed = true;
+                    EmitFlowEvent(pcb.flow_id, FlowEventType::Established);
 
                     // P4-2: Notify the session factory that a TCP flow has
                     // been established.  When a factory is present it may
@@ -763,8 +779,10 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
             ? pcb.receive->RcvNxt() : pcb.rcv_nxt;
         if (segment.HasFlag(TcpFlag::Rst)) {
             if (segment.sequence == current_rcv_nxt) {
+                const FlowId fid = pcb.flow_id;
                 RemoveAt(existing_index);
                 result.state_changed = true;
+                EmitFlowEvent(fid, FlowEventType::Reset);
             } else {
                 result.response = BuildAck(pcb, now_ms);
             }
@@ -1110,7 +1128,9 @@ void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
                 pcb.state == TcpState::FinWait2 ||
                 pcb.state == TcpState::Closing ||
                 pcb.state == TcpState::LastAck) {
+                const FlowId fid = pcb.flow_id;
                 RemoveAt(i);
+                EmitFlowEvent(fid, FlowEventType::Closed);
                 // Don't advance i — swap-pop moved a new PCB here.
                 continue;
             }
@@ -1197,7 +1217,9 @@ void TcpHandshakeEngine::AbortFlow(FlowId flow_id,
         rst.flags = static_cast<std::uint8_t>(TcpFlag::Rst | TcpFlag::Ack);
         rst.window = 0;
         QueueResponse(rst);
+        const FlowId fid = pcb.flow_id;
         RemoveAt(i);
+        EmitFlowEvent(fid, FlowEventType::Reset);
         return;
     }
 }
@@ -1227,7 +1249,9 @@ bool TcpHandshakeEngine::ScheduleTimeWait(std::size_t index,
             }
         }
         if (oldest != kNotFound) {
+            const FlowId evicted_fid = pcbs_[oldest].flow_id;
             RemoveAt(oldest);
+            EmitFlowEvent(evicted_fid, FlowEventType::Closed);
             // Re-find by identity; swap-pop may have moved our target.
             index = FindIndex(target_flow);
             if (index == kNotFound) return false;
@@ -1262,7 +1286,9 @@ void TcpHandshakeEngine::OnTimeWaitExpired(
     if (index == kNotFound) return;
     Pcb& pcb = pcbs_[index];
     if (pcb.generation != generation || pcb.state != TcpState::TimeWait) return;
+    const FlowId fid = pcb.flow_id;
     RemoveAt(index);
+    EmitFlowEvent(fid, FlowEventType::Closed);
 }
 
 } // namespace tcpip2

@@ -201,14 +201,13 @@ OpenPPP2 需要：
 | P4-3 | 用 `IClock` 替换所有 `steady_clock` 调用 | `src/core/shard.cpp` | ✅ 完成 (commit `97ab0c9`) |
 | P4-2 | 接入 `ISessionFactory` 被动监听 | `src/tcp/handshake.cpp`, `src/core/shard.cpp` | ✅ 完成 (commit `0269184`) |
 | P4-4 | 接入 `ITransportSession` 回调 | `src/tcp/handshake.cpp`, `src/core/shard.cpp`, `tests/unit/tcp/handshake_test.cpp` | ✅ 完成 |
-| P4-5 | 接入 `IEventSink` | `src/core/shard.cpp`, `src/tcp/handshake.cpp` | 未开始 |
+| P4-5 | 接入 `IEventSink` | `src/core/shard.cpp`, `src/tcp/handshake.cpp` | ✅ 完成 |
 | P4-6 | 更新 consumer contract test | `tests/unit/compile_contract_test.cpp` | 未开始 |
 | P4-7 | OpenPPP2 侧 adapter | `ppp/ethernet/VNetstack.cpp` 等 | 未开始 |
 
-### 7.1 已知限制（P4-5 前不修复）
+### 7.1 已知限制
 
-1. **IEventSink 未触发**: `IEventSink*` 已注入 `StackShard`，但没有任何调用点。flow established/closed/reset 事件和 metric snapshot 发布留给 P4-5。
-2. **初始 SYN+data 未处理**: 握手引擎在 SYN-RECEIVED → ESTABLISHED 转换时忽略 SYN 段的 payload。RFC 793 允许 SYN 段携带数据（数据在 ESTABLISHED 后交付），当前不支持。
+1. **初始 SYN+data 未处理**: 握手引擎在 SYN-RECEIVED → ESTABLISHED 转换时忽略 SYN 段的 payload。RFC 793 允许 SYN 段携带数据（数据在 ESTABLISHED 后交付），当前不支持。
 
 ## 8. 风险提示
 

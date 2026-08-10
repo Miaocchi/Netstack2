@@ -1420,14 +1420,13 @@ git diff --check
 
 1. ✅ **ADR-005 落地**: `RuntimeDependencies` 注入公共 API，新增 `include/tcpip2/clock.h`、`include/tcpip2/events.h`、`include/tcpip2/runtime_deps.h`；`netstack.h` 新增 `Start(const RuntimeDependencies&)` 重载，旧 `Start(IPacketIo*)` 保留为兼容入口。StackShard 构造函数接收 `IClock*`/`IEventSink*`/`ISessionFactory*`，热路径使用 `clock_->NowMs()` 替代 `steady_clock`。三套构建 34/34 全绿。
 2. ✅ **IClock 全替换**: shard event loop 已使用 `clock_->NowMs()`；TCP/IP 层通过参数接收 `now_ms`，不直接调用 `steady_clock`。`SteadyNowMsFallback()` 仅作为 clock_ 为 null 的安全网（实际不会发生）。
-3. **IEventSink 接入**: 接口已定义并注入 StackShard（`event_sink_` 成员），但当前没有任何调用点触发 `OnFlowEvent` / `OnMetricSnapshot`。这是 P4-5 的工作项。
+3. ✅ **IEventSink 接入**: `TcpHandshakeEngine::EmitFlowEvent()` 在以下转换点调用 `OnFlowEvent()`：ESTABLISHED（handshake 完成）、Reset（RST in SYN-RECEIVED / ESTABLISHED、AbortFlow）、Closed（LastAck 完成、FIN 重传耗尽、TIME-WAIT 超时/驱逐）。`StackShard::EventLoopIteration()` 每 1000ms 发布 `MetricSnapshot`（rx_packets/dropped_packets/tcp_pcb_count/half_open_count/udp_datagrams；rx_bytes/tx_bytes 暂为 0，待后续添加字节计数器）。TCP handshake 89/89、全量 34/34 三套构建全绿。
 4. ✅ **ISessionFactory 被动监听**: 接口已通过 `RuntimeDependencies` 注入 shard，`TcpHandshakeEngine` 构造函数接收 `ISessionFactory*`。SYN → ESTABLISHED 转换时调用 `OpenTcp()`：accept 则绑定 `ITransportSession` 并 `DrainSession` 交付后续数据；reject 则发送 RST 并移除 PCB。`session_factory_` 为 null 时走 legacy 兼容路径，不 crash。三套构建 34/34 全绿。
 5. ✅ **ITransportSession 回调接线**: `BindSessionCallbacks()` 在 ESTABLISHED 和 `AttachSession` 时注册 `SetDataCallback`/`SetWritableCallback`/`SetClosedCallback`。回调通过 `weak_ptr<CallbackGate>` 捕获引擎引用，构造 `ShardMessage`（`kSessionData`/`kSessionWritable`/`kSessionClosed`）投递回 owner shard。shard event loop 在 `kSessionData` 路径调用 `EnqueueSendData` 将数据转入 TCP 发送缓冲。`Shutdown()` 后 `CallbackGate::owner` 置空，回调变为 no-op。三套构建 34/34 全绿。
 
-### 10.3 已知限制（不在当前修复范围）
+### 10.3 已知限制
 
-1. **IEventSink 未触发**: `IEventSink*` 已存储在 `StackShard`，但没有任何代码调用 `OnFlowEvent()` 或 `OnMetricSnapshot()`。flow established/closed/reset 事件和 metric snapshot 发布留给 P4-5。
-2. **初始 SYN+data 未处理**: 当前握手引擎在 SYN-RECEIVED → ESTABLISHED 转换时忽略 SYN 段的 payload。RFC 793 允许 SYN 段携带数据（数据在 ESTABLISHED 后交付），若需要支持应在后续实现中处理，或在文档中明确说明不支持。
+1. **初始 SYN+data 未处理**: 当前握手引擎在 SYN-RECEIVED → ESTABLISHED 转换时忽略 SYN 段的 payload。RFC 793 允许 SYN 段携带数据（数据在 ESTABLISHED 后交付），若需要支持应在后续实现中处理，或在文档中明确说明不支持。
 
 ### 10.2 后端接口先行定义
 

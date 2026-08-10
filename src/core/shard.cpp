@@ -73,7 +73,8 @@ bool StackShard::Start() noexcept {
             tcp_engine_epoch_, session_factory_,
             [this](ShardMessage&& msg) noexcept {
                 return control_inbox_.Push(std::move(msg));
-            });
+            },
+            event_sink_);
         tcp_tx_.reserve(kTcpTxBudget);
     } catch (...) {
         tcp_.reset();
@@ -239,6 +240,27 @@ void StackShard::EventLoopIteration() noexcept {
 
     // Step 8: submit the bounded TCP control batch. Partial-send tails remain owned.
     FlushTcpTx();
+
+    // Step 9: Publish periodic metric snapshot to the event sink (if any).
+    // Throttled to once per second to avoid overhead on the hot path.
+    if (event_sink_ != nullptr) {
+        constexpr std::uint64_t kMetricIntervalMs = 1000;
+        if (now_ms - last_metric_snapshot_ms_ >= kMetricIntervalMs ||
+            last_metric_snapshot_ms_ == 0) {
+            last_metric_snapshot_ms_ = now_ms;
+            MetricSnapshot snapshot;
+            snapshot.shard_id = shard_id_;
+            snapshot.rx_packets = packets_received_.load(std::memory_order_relaxed);
+            snapshot.rx_bytes = 0;  // Byte counter not yet tracked per-shard.
+            snapshot.dropped_packets = packets_dropped_.load(std::memory_order_relaxed);
+            snapshot.tx_packets = 0;  // TX counter not yet tracked per-shard.
+            snapshot.tx_bytes = 0;
+            snapshot.tcp_pcb_count = tcp_pcb_count_.load(std::memory_order_relaxed);
+            snapshot.tcp_half_open_count = tcp_half_open_count_.load(std::memory_order_relaxed);
+            snapshot.udp_datagrams = udp_datagrams_received_.load(std::memory_order_relaxed);
+            event_sink_->OnMetricSnapshot(snapshot);
+        }
+    }
 
     // Step 10: Wait — block on the control inbox with a short timeout.
     // This keeps the shard responsive to control messages while avoiding
