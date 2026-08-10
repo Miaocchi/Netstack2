@@ -8,7 +8,7 @@
  * Public API — frozen at NETSTACK2-API-FREEZE-001. Signature changes
  * require an ADR and a consumer compile-contract test update.
  *
- * Hierarchy (see docs/architecture/transport_session.adr):
+ * Hierarchy (see docs/architecture/transport_session.md):
  *
  *   ITransportSession
  *   |-- SocketSession

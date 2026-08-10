@@ -41,7 +41,7 @@ struct FragmentInfo {
     std::uint8_t ip_version = 0;         // 4 or 6
     std::uint8_t src_ip[16] = {};
     std::uint8_t dst_ip[16] = {};
-    std::uint8_t protocol = 0;            // IPv4 only; 0 for IPv6
+    std::uint8_t protocol = 0;            ///< Upper-layer protocol (IPv4 protocol / IPv6 final next-header).
     std::uint32_t identification = 0;
     std::uint16_t fragment_offset = 0;    // 8-byte units
     bool more_fragments = false;

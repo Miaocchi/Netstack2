@@ -2,12 +2,9 @@
 
 Multithreaded userspace IPv4/IPv6 TCP/IP engine.
 
-> **API status: experimental.** Public signatures in `include/tcpip2/` are
-> intentionally not frozen yet. They are validated by NETSTACK2-002
-> (Buffer / Packet I/O), NETSTACK2-003 (Linux TapPacketIo) and NETSTACK2-004
-> (Dispatcher / StackShard). After all three land and sanitizer/TSan gates
-> pass, `NETSTACK2-API-FREEZE-001` freezes the public API; any signature
-> change from that point on requires an ADR and a compatibility migration.
+> **API status: frozen (v0.2.0).** Public signatures in `include/tcpip2/` are
+> frozen by `NETSTACK2-API-FREEZE-001` (ADR-004, tag `v0.2.0`). Any signature
+> change requires an ADR, compatibility analysis, and a migration path.
 
 ## Design invariants
 
@@ -26,7 +23,7 @@ Multithreaded userspace IPv4/IPv6 TCP/IP engine.
 ## Layout
 
 ```
-include/tcpip2/     public API (experimental)
+include/tcpip2/     public API (frozen)
 src/core/           dispatcher, shard, timer wheel, buffer pool
 src/ip/             IPv4/IPv6/ICMP/checksum
 src/tcp/            TCP state machine, input, output, recovery
@@ -57,11 +54,18 @@ bash scripts/build-tsan.sh
 |-----------|--------|
 | NETSTACK2-000 repository + test base | done |
 | NETSTACK2-002 Buffer / Packet I/O contracts | done |
-| NETSTACK2-002H Buffer / Packet I/O hardening | ready |
-| NETSTACK2-003 Linux TUN/TAP packet I/O backend | ready after 002H |
-| NETSTACK2-004 Dispatcher / StackShard | ready after 002H |
-| NETSTACK2-API-FREEZE-001 | blocked by 002H / 003 / 004 / adapter spike |
-| P3A / P3B / P3C (IP layer, TCP state machine, interop) | planned |
+| NETSTACK2-002H Buffer / Packet I/O hardening | done |
+| NETSTACK2-003 Linux TUN/TAP packet I/O backend | done |
+| NETSTACK2-004 Dispatcher / StackShard | done |
+| NETSTACK2-ADAPTER-SPIKE OpenPPP2 compile-only adapter | done |
+| NETSTACK2-API-FREEZE-001 public API freeze (v0.2.0) | done |
+| P3A IP layer (IPv4/IPv6/ICMP/fragment reassembly) | done |
+| P3B TCP state machine (handshake/send/receive/close) | done |
+| P3C congestion control (AIMD/BBR/pacer/fragment wiring) | in progress |
+| P3U UDP flow and datagram session | planned |
+| P3Q FQ-CoDel / AQM | planned |
+| P4 OpenPPP2 integration | planned |
+| P5–P7 high-perf I/O, platform spread, tuning | planned |
 
 See `docs/IMPLEMENTATION_GUIDE.md` for the file-level implementation plan and
 `bench/README.md` for the P0 baseline measurement protocol.

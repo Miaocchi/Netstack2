@@ -61,9 +61,13 @@ Netstack2 按以下原则推进:
 
 尚未实现:
 
-- IPv4、IPv6、ICMP、UDP 和 TCP;
-- KCC、BBR、pacing、FQ 和 AQM;
-- OpenPPP2、UCP、Onload、AF_XDP、DPDK 的运行时接线。
+- UDP flow 和 datagram session（P3U）;
+- ICMP 接入 shard RX 路径和 PMTU 端到端;
+- KCC 拥塞控制（当前为 stub）;
+- FQ-CoDel / AQM 出口调度（P3Q）;
+- OpenPPP2、UCP、Onload、AF_XDP、DPDK 的运行时接线;
+- IPv6 扩展头完整遍历（当前仅 Fragment header）;
+- Session 实现类（ITransportSession 接口已冻结，无实现类）。
 
 冻结 API 前必须先修复的契约问题:
 
@@ -1087,7 +1091,7 @@ Tcp/Udp packet generated
 
 2. **`src/ip/ipv6.cpp`**: 扩展头遍历中解析 8 字节 Fragment header (type 44)，提取 offset/more/identification/next_header，遇到非 0 offset 时设置 `is_fragment=true`。
 
-3. **`src/tcp/input.h` / `input.cpp`**: 新增 `FragmentInfo` 结构体和 `ExtractFragmentInfo()` 函数，从 `Ipv4ParseResult` / `Ipv6ParseResult` 中提取分片元数据。IPv4 flags 经 `(flags_frag >> 13) & 0x07` 解码后 MF = `flags & 0x04`。IPv6 Fragment header 中 `ff = (offset << 3) | (mf ? 1 : 0)`。
+3. **`src/tcp/input.h` / `input.cpp`**: 新增 `FragmentInfo` 结构体和 `ExtractFragmentInfo()` 函数，从 `Ipv4ParseResult` / `Ipv6ParseResult` 中提取分片元数据。IPv4 MF flag 掩码修正为 `0x04`（原 `0x01` 为保留位）。IPv6 Fragment header 中 `ff = (offset << 3) | (mf ? 1 : 0)`。
 
 4. **`src/core/shard.h` / `shard.cpp`**: 
    - `StackShard` 新增 `FragmentReassembler reassembler_` 成员和 `HandleFragment()` 方法。
@@ -1099,9 +1103,14 @@ Tcp/Udp packet generated
 
 6. **`tests/unit/shard_runtime_test.cpp`**: 新增 3 个分片重组测试 — IPv4 fragment reassembly、IPv6 fragment reassembly、non-fragmented packet passthrough。测试使用非重叠 8 字节对齐分片。
 
-7. **`tests/unit/tcp/handshake_test.cpp`**: 修正现有 fragment 测试中 IPv4 MF flag 编码（`0x80` 而非 `0x20`）和 checksum 重算前清零。
+7. **`tests/unit/tcp/handshake_test.cpp`**: 修正现有 fragment 测试中 IPv4 MF flag 编码。
 
-验证结果: 全量 CTest 普通 31/31, ASan/UBSan 31/31, TSan 31/31; include boundaries OK; `git diff --check` clean。
+**已知限制**:
+- 当前仅支持 TCP payload 分片重组；UDP/ICMP 分片重组在 P3U/P3A 扩展。
+- `FragmentInfo::protocol` 在 IPv6 场景下保存 final next-header（如 TCP/UDP），不是 0。
+- `FragmentReassembler` 容量尚未从 `NetstackConfig` 注入，使用默认构造参数。
+
+验证结果: 全量 CTest 普通 31/31, ASan/UBSan 31/31, TSan 31/31; include boundaries OK; `git diff --check` clean。commit `b6d79a8`。IPv4 MF flag 掩码修正已在 `b6d79a8` 中作为同一 commit 的一部分记录。
 
 #### 通用采样器
 
@@ -1251,12 +1260,11 @@ Netstack2 分支必须继续保留 OpenPPP2 的:
 
 rollback 只针对新连接/新实例, 不尝试把已建立 PCB 从 Netstack2 搬回 lwIP。
 
-### P4-UCP: UCP 接入
+### P4-UCP: UCP/KCC 接入
 
 分两步:
 
-1. 算法复用: 将 KCC 核心按 MIT 许可移植到 Netstack2 `src/cc`, 不引入 UCP
-   的 packet codec 和线程。
+1. 算法复用 (Netstack2 内部): 将 KCC 拥塞控制算法按 MIT 许可移植到 Netstack2 `src/tcp/congestion.cpp`, 不引入 UCP 的 packet codec 和线程。`CongestionAlgorithm::Kcc` 选择器启用 `KccController`, 与 `AimdController`/`BbrController` 共享 `DeliveryRateSampler`。详见 `docs/adr/006-kcc-congestion-control.md`。
 2. 协议接入: 在 OpenPPP2 增加 UCP dependency 和 adapter, 作为可选择 carrier。
 
 UCP 协议接入前必须解决 per-connection thread:

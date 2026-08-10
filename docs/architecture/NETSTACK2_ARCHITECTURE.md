@@ -577,6 +577,7 @@ Netstack2/
 ├── README.md
 ├── .clang-format
 ├── .gitignore
+├── AGENTS.md
 ├── cmake/
 │   └── compiler_flags.cmake
 ├── include/
@@ -586,6 +587,7 @@ Netstack2/
 │       ├── transport_session.h
 │       ├── config.h
 │       ├── netstack.h
+│       ├── session_factory.h
 │       └── shard.h
 ├── src/
 │   ├── CMakeLists.txt
@@ -593,37 +595,43 @@ Netstack2/
 │   │   ├── buffer.cpp
 │   │   ├── buffer_pool.cpp
 │   │   ├── dispatcher.cpp
+│   │   ├── netstack.cpp
+│   │   ├── runtime.cpp
+│   │   ├── runtime.h
 │   │   ├── shard.cpp
-│   │   └── timer_wheel.cpp
+│   │   ├── shard.h
+│   │   ├── thread_ownership.cpp
+│   │   ├── timer_wheel.cpp
+│   │   └── ... (internal headers)
 │   ├── ip/
+│   │   ├── checksum.cpp
+│   │   ├── fragment.cpp
+│   │   ├── icmpv4.cpp
+│   │   ├── icmpv6.cpp
 │   │   ├── ipv4.cpp
 │   │   ├── ipv6.cpp
-│   │   ├── icmp.cpp
-│   │   └── checksum.cpp
+│   │   └── pmtu.cpp
 │   ├── tcp/
-│   │   ├── flow.cpp
-│   │   ├── input.cpp
-│   │   ├── output.cpp
-│   │   ├── recovery.cpp
-│   │   ├── reassembly.cpp
-│   │   └── options.cpp
+│   │   ├── congestion.cpp       # AIMD/BBRv1 controllers
+│   │   ├── delivery.cpp           # user receive path
+│   │   ├── handshake.cpp          # passive/listen handshake
+│   │   ├── input.cpp              # IP→TCP parsing & demux
+│   │   ├── output.cpp             # wire output helpers
+│   │   ├── receive.cpp            # receive buffer / reassembly
+│   │   ├── segment.cpp            # TCP segment parsing
+│   │   ├── send.cpp               # send buffer / RTO / pacing
+│   │   └── ...
 │   ├── session/
-│   │   ├── socket_session.cpp
-│   │   └── userspace_session.cpp
+│   │   └── .gitkeep               # P4: KernelSocketSession / DpdkSession
 │   └── packetio/
 │       ├── null_io.cpp
-│       ├── tap_io.cpp
-│       ├── afxdp_io.cpp
-│       ├── netmap_io.cpp
-│       └── dpdk_io.cpp
-├── platform/
-│   ├── linux/
-│   ├── android/
-│   ├── ios/
-│   └── windows/
+│       └── tap_io.cpp             # P5: afxdp_io / netmap_io / dpdk_io
 ├── tests/
 │   ├── unit/
-│   │   └── support/
+│   │   ├── support/
+│   │   ├── core/
+│   │   ├── ip/
+│   │   └── tcp/
 │   ├── packet/
 │   ├── integration/
 │   ├── differential/
@@ -643,7 +651,11 @@ Netstack2/
     └── check_include_boundaries.sh
 ```
 
-源码在 CMake 中显式列举, 不使用 glob。
+说明:
+
+- `src/session/` 当前为空 (`.gitkeep`)，P4 OpenPPP2 集成阶段引入 `KernelSocketSession`、`OnloadSocketSession`、`DpdkSession`、`EfViSession` 等实现。
+- `src/packetio/` 当前实现 `null_io` 和 `tap_io`；AF_XDP/netmap/DPDK 后端在 P5 引入。
+- 源码在 CMake 中显式列举, 不使用 glob。
 
 ## 10. 构建规范
 

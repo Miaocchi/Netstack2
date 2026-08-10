@@ -21,3 +21,6 @@ compile_commands.json
 .idea/
 *.swp
 .DS_Store
+
+# Local test output
+/Testing/

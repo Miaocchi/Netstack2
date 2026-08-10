@@ -8,7 +8,7 @@
  * Public API — frozen at NETSTACK2-API-FREEZE-001. Signature changes
  * require an ADR and a consumer compile-contract test update.
  *
- * Ownership taxonomy (see docs/architecture/ownership.adr):
+ * Ownership taxonomy (see docs/architecture/ownership.md):
  *
  *   PktBuffer    pool-internal object. No public ownership operations, no
  *                atomic reference count, fixed standard layout.
