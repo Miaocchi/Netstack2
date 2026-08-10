@@ -689,7 +689,8 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
                             config_.max_rto_ms, config_.persist_timer_base_ms,
                             config_.persist_timer_max_ms,
                             config_.max_retransmissions,
-                            config_.max_persist_probes);
+                            config_.max_persist_probes,
+                            config_.cc_algorithm);
                     } catch (...) {
                         result.response = BuildReset(segment);
                         result.error = TcpHandshakeError::ReceiveBudget;

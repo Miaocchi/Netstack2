@@ -18,6 +18,7 @@
 #include <tcp/delivery.h>
 #include <tcp/isn.h>
 #include <tcp/options.h>
+#include <tcp/congestion.h>
 #include <tcp/receive.h>
 #include <tcp/segment.h>
 #include <tcp/send.h>
@@ -77,6 +78,8 @@ struct TcpHandshakeConfig {
 
     std::size_t max_timewait_entries = 4096;
     std::uint32_t timewait_ms = 120000;
+
+    CongestionAlgorithm cc_algorithm = CongestionAlgorithm::Aimd;
 
     bool Validate() const noexcept;
 };

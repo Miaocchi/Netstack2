@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 #include <utility>
 
 namespace tcpip2 {
@@ -51,14 +52,15 @@ TcpSendBuffer::TcpSendBuffer(std::uint32_t initial_sequence,
                              std::uint64_t persist_base_ms,
                              std::uint64_t persist_max_ms,
                              std::size_t max_retransmissions,
-                             std::size_t max_persist_probes)
+                             std::size_t max_persist_probes,
+                             CongestionAlgorithm cc_algorithm)
     : send_queue_limit_(queue_limit),
       retransmit_limit_(retransmit_limit),
       snd_una_(initial_sequence),
       snd_nxt_(initial_sequence),
       snd_max_(initial_sequence),
-      cwnd_(static_cast<std::uint32_t>(mss) * 2U),
-      ssthresh_(std::numeric_limits<std::uint32_t>::max()),
+      cc_algorithm_(cc_algorithm),
+      controller_(std::in_place_type<AimdController>, mss),
       mss_(mss),
       rto_ms_(initial_rto_ms),
       rto_deadline_ms_(0),
@@ -70,6 +72,10 @@ TcpSendBuffer::TcpSendBuffer(std::uint32_t initial_sequence,
       persist_current_ms_(persist_base_ms),
       max_persist_probes_(max_persist_probes) {
     (void)window_scale;
+    // Replace default-constructed AIMD with BBR if requested.
+    if (cc_algorithm == CongestionAlgorithm::Bbr) {
+        controller_ = BbrController(mss);
+    }
     send_queue_.reserve(queue_limit);
 }
 
@@ -95,7 +101,10 @@ bool TcpSendBuffer::RequestFin() noexcept {
 }
 
 std::size_t TcpSendBuffer::UsableWindow(std::uint32_t peer_window) const noexcept {
-    const std::size_t allowed = std::min<std::size_t>(peer_window, cwnd_);
+    const auto cwnd = std::visit([](const auto& c) noexcept {
+        return c.CongestionWindow();
+    }, controller_);
+    const std::size_t allowed = std::min<std::size_t>(peer_window, cwnd);
     // RFC 6675 pipe: in-flight minus SACKed bytes.
     const std::size_t pipe =
         in_flight_sequence_ > sacked_sequence_
@@ -317,6 +326,7 @@ bool TcpSendBuffer::StoreNewRecord(BufferRef owner,
                                   payload_length);
     }
     record.sent_time_ms = now_ms;
+    sampler_.OnPacketSent(record.delivery, now_ms);
     retransmit_queue_.push_back(std::move(record));
 
     send_queue_.erase(send_queue_.begin(),
@@ -368,6 +378,7 @@ void TcpSendBuffer::OnSent(BufferRef owner, std::size_t payload_offset,
             }
             probe.sent_time_ms = now_ms;
             probe.retransmitted = true;
+            sampler_.OnPacketSent(probe.delivery, now_ms);
             persist_probe_.emplace(std::move(probe));
             send_queue_.erase(send_queue_.begin(),
                               send_queue_.begin() +
@@ -406,11 +417,14 @@ void TcpSendBuffer::OnSent(BufferRef owner, std::size_t payload_offset,
             ++retransmission_count_;
             if (first_timeout) {
                 const std::uint32_t flight = SaturatingUint32(in_flight_sequence_);
-                ssthresh_ = std::max<std::uint32_t>(
-                    flight / 2U, static_cast<std::uint32_t>(mss_) * 2U);
+                // Set ssthresh via controller (AIMD only; BBR ignores loss).
+                if (cc_algorithm_ == CongestionAlgorithm::Aimd) {
+                    auto& aimd = std::get<AimdController>(controller_);
+                    aimd.OnFastRecoveryEntry(flight);
+                }
             }
-            cwnd_ = mss_;
-            fast_recovery_ = false;
+            // Controller RTO: reset cwnd to 1 MSS.
+            std::visit([&](auto& c) noexcept { c.OnRto(); }, controller_);
             fast_retransmit_pending_ = false;
             BackoffRto();
             ArmRto(now_ms);
@@ -422,9 +436,10 @@ void TcpSendBuffer::OnSent(BufferRef owner, std::size_t payload_offset,
         if (retransmit_queue_.empty()) {
             accepted = false;
         } else {
-            SendRecord& record = retransmit_queue_.front();
+        SendRecord& record = retransmit_queue_.front();
             record.retransmitted = true;
             record.sent_time_ms = now_ms;
+            record.delivery.retransmitted = true;
             ++retransmission_count_;
             fast_retransmit_pending_ = false;
             ArmRto(now_ms);
@@ -481,28 +496,26 @@ TcpSendAckResult TcpSendBuffer::OnAck(std::uint32_t acknowledgment,
 
         if (qualifying_duplicate) {
             ++dup_ack_count_;
-            if (fast_recovery_) {
+            const bool in_fast_recovery = std::visit([](const auto& c) noexcept {
+                if constexpr (std::is_same_v<std::decay_t<decltype(c)>, AimdController>) {
+                    return c.InFastRecovery();
+                }
+                return false;
+            }, controller_);
+            if (in_fast_recovery) {
                 // Inflate cwnd by 1 MSS per dup ACK during recovery (RFC 5681).
-                const std::uint64_t inflated =
-                    static_cast<std::uint64_t>(cwnd_) + mss_;
-                cwnd_ = inflated > std::numeric_limits<std::uint32_t>::max()
-                            ? std::numeric_limits<std::uint32_t>::max()
-                            : static_cast<std::uint32_t>(inflated);
+                if (cc_algorithm_ == CongestionAlgorithm::Aimd) {
+                    std::get<AimdController>(controller_).OnDupAck();
+                }
             }
             if (dup_ack_count_ == 3 && !retransmit_queue_.empty() &&
-                !fast_recovery_) {
+                !in_fast_recovery) {
                 const std::uint32_t flight = SaturatingUint32(in_flight_sequence_);
-                ssthresh_ = std::max<std::uint32_t>(
-                    flight / 2U, static_cast<std::uint32_t>(mss_) * 2U);
-                const std::uint64_t recovery_window =
-                    static_cast<std::uint64_t>(ssthresh_) +
-                    static_cast<std::uint64_t>(mss_) * 3U;
-                cwnd_ = recovery_window >
-                                std::numeric_limits<std::uint32_t>::max()
-                            ? std::numeric_limits<std::uint32_t>::max()
-                            : static_cast<std::uint32_t>(recovery_window);
+                if (cc_algorithm_ == CongestionAlgorithm::Aimd) {
+                    auto& aimd = std::get<AimdController>(controller_);
+                    aimd.OnFastRecoveryEntry(flight);
+                }
                 fast_retransmit_pending_ = true;
-                fast_recovery_ = true;
                 result.fast_retransmit = true;
             }
         } else {
@@ -537,6 +550,7 @@ TcpSendAckResult TcpSendBuffer::OnAck(std::uint32_t acknowledgment,
     std::optional<std::uint64_t> rtt_sample;
     bool ack_covers_retransmission = false;
     bool partial_rto_recovery = false;
+    std::optional<PacketDeliveryState> acked_record_delivery;
 
     while (remaining != 0 && !retransmit_queue_.empty()) {
         SendRecord& record = retransmit_queue_.front();
@@ -544,6 +558,11 @@ TcpSendAckResult TcpSendBuffer::OnAck(std::uint32_t acknowledgment,
         const std::size_t take = std::min(remaining, logical_length);
         const std::size_t payload_take = std::min(take, record.data.Size());
         const bool carries_fin = logical_length > record.data.Size();
+
+        // Capture delivery state of the first fully-ACKed record for rate sampling.
+        if (!acked_record_delivery.has_value() && take == logical_length) {
+            acked_record_delivery = record.delivery;
+        }
 
         retransmit_bytes_ -= take;
         in_flight_sequence_ -= take;
@@ -637,23 +656,34 @@ TcpSendAckResult TcpSendBuffer::OnAck(std::uint32_t acknowledgment,
         RecomputeRto(*rtt_sample);
     }
 
-    if (fast_recovery_) {
-        cwnd_ = ssthresh_;
-        fast_recovery_ = false;
+    // Build RateSample and feed the controller.
+    // Use the delivery state of the first ACKed record for the rate sample.
+    const auto in_fast_recovery = std::visit([](const auto& c) noexcept {
+        if constexpr (std::is_same_v<std::decay_t<decltype(c)>, AimdController>) {
+            return c.InFastRecovery();
+        }
+        return false;
+    }, controller_);
+
+    // Generate a rate sample from the first ACKed record.
+    RateSample rs;
+    if (acked_record_delivery.has_value()) {
+        rs = sampler_.OnAck(*acked_record_delivery,
+                             acknowledged_payload, now_ms,
+                             in_flight_bytes_);
+    } else {
+        rs.now_ms = now_ms;
+        rs.acked_bytes = acknowledged_payload;
+        rs.inflight_bytes = in_flight_bytes_;
+    }
+
+    if (in_fast_recovery) {
+        if (cc_algorithm_ == CongestionAlgorithm::Aimd) {
+            std::get<AimdController>(controller_).OnFastRecoveryExit();
+        }
         fast_retransmit_pending_ = false;
-    } else if (acknowledged_payload != 0 && cwnd_ < ssthresh_) {
-        const std::uint32_t increase = static_cast<std::uint32_t>(
-            std::min<std::size_t>(acknowledged_payload, mss_));
-        cwnd_ = std::numeric_limits<std::uint32_t>::max() - cwnd_ < increase
-                    ? std::numeric_limits<std::uint32_t>::max()
-                    : cwnd_ + increase;
-    } else if (acknowledged_payload != 0 && cwnd_ != 0) {
-        const std::uint32_t increase = std::max<std::uint32_t>(
-            1U, static_cast<std::uint32_t>(
-                    (static_cast<std::uint64_t>(mss_) * mss_) / cwnd_));
-        cwnd_ = std::numeric_limits<std::uint32_t>::max() - cwnd_ < increase
-                    ? std::numeric_limits<std::uint32_t>::max()
-                    : cwnd_ + increase;
+    } else {
+        std::visit([&rs](auto& c) noexcept { c.OnAck(rs); }, controller_);
     }
 
     if (retransmit_queue_.empty()) {
@@ -782,6 +812,8 @@ void TcpSendBuffer::Close() noexcept {
     sacked_sequence_ = 0;
     fast_retransmit_pending_ = false;
     pending_kind_ = PendingKind::None;
+    sampler_.Reset();
+    std::visit([](auto& c) noexcept { c.Reset(); }, controller_);
 }
 
 void TcpSendBuffer::UpdateMss(std::uint16_t mss) noexcept {
@@ -790,15 +822,9 @@ void TcpSendBuffer::UpdateMss(std::uint16_t mss) noexcept {
     }
     const bool pristine = snd_una_ == snd_max_ && retransmit_queue_.empty() &&
                           !persist_probe_.has_value();
-    const std::uint16_t old_mss = mss_;
     mss_ = mss;
-    if (pristine) {
-        cwnd_ = static_cast<std::uint32_t>(mss_) * 2U;
-    } else if (mss_ < old_mss) {
-        const std::uint64_t scaled =
-            static_cast<std::uint64_t>(cwnd_) * mss_ / old_mss;
-        cwnd_ = std::max<std::uint32_t>(
-            mss_, static_cast<std::uint32_t>(scaled));
+    if (cc_algorithm_ == CongestionAlgorithm::Aimd) {
+        std::get<AimdController>(controller_).UpdateMss(mss, pristine);
     }
 }
 
@@ -867,21 +893,49 @@ std::size_t TcpSendBuffer::OnSack(const TcpSackBlockList& sack_blocks,
 
     // Trigger fast retransmit if 3+ distinct records are SACKed and
     // we are not already in fast recovery.
-    if (sacked_count >= 3 && !fast_recovery_ && !retransmit_queue_.empty()) {
+    const auto in_fast_recovery = std::visit([](const auto& c) noexcept {
+        if constexpr (std::is_same_v<std::decay_t<decltype(c)>, AimdController>) {
+            return c.InFastRecovery();
+        }
+        return false;
+    }, controller_);
+    if (sacked_count >= 3 && !in_fast_recovery && !retransmit_queue_.empty()) {
         const std::uint32_t flight = SaturatingUint32(in_flight_sequence_);
-        ssthresh_ = std::max<std::uint32_t>(
-            flight / 2U, static_cast<std::uint32_t>(mss_) * 2U);
-        const std::uint64_t recovery_window =
-            static_cast<std::uint64_t>(ssthresh_) +
-            static_cast<std::uint64_t>(mss_) * 3U;
-        cwnd_ = recovery_window > std::numeric_limits<std::uint32_t>::max()
-                    ? std::numeric_limits<std::uint32_t>::max()
-                    : static_cast<std::uint32_t>(recovery_window);
+        if (cc_algorithm_ == CongestionAlgorithm::Aimd) {
+            std::get<AimdController>(controller_).OnFastRecoveryEntry(flight);
+        }
         fast_retransmit_pending_ = true;
-        fast_recovery_ = true;
     }
 
     return newly_sacked;
+}
+
+std::uint32_t TcpSendBuffer::CongestionWindow() const noexcept {
+    return std::visit([](const auto& c) noexcept {
+        return c.CongestionWindow();
+    }, controller_);
+}
+
+std::uint32_t TcpSendBuffer::Ssthresh() const noexcept {
+    if (cc_algorithm_ == CongestionAlgorithm::Aimd) {
+        return std::get<AimdController>(controller_).Ssthresh();
+    }
+    return 0;
+}
+
+std::uint32_t TcpSendBuffer::PacingRate() const noexcept {
+    return std::visit([](const auto& c) noexcept {
+        return c.PacingRate();
+    }, controller_);
+}
+
+bool TcpSendBuffer::InFastRecovery() const noexcept {
+    return std::visit([](const auto& c) noexcept {
+        if constexpr (std::is_same_v<std::decay_t<decltype(c)>, AimdController>) {
+            return c.InFastRecovery();
+        }
+        return false;
+    }, controller_);
 }
 
 } // namespace tcpip2

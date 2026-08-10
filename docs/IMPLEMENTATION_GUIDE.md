@@ -1024,6 +1024,15 @@ Tcp/Udp packet generated
 
 ### P3C: KCC 和 BBR 可切换拥塞控制
 
+#### P3C-01: DeliveryRateSampler + CongestionController 接口 + AIMD 适配 ✅ Implemented (2026-08-10)
+
+- `src/tcp/rate_sampler.h` / `rate_sampler.cpp`: `DeliveryRateSampler` 类，per-packet `PacketDeliveryState` 跟踪 delivered_bytes/time/first_sent_time/app_limited/retransmitted。ACK 时生成 `RateSample`（delivery_rate_bytes_per_sec、rtt_ms、interval_ms、inflight_bytes）。重传包不产生 delivery rate（ambiguous ACK）。app-limited 标记传播到 RateSample。
+- `src/tcp/congestion.h` / `congestion.cpp`: `CongestionAlgorithm` enum（Aimd/Bbr/Kcc）、`AimdController`（RFC 5681 slow start/CA/fast recovery/RTO）、`BbrController`（BBRv1 STARTUP/DRAIN/PROBE_BW/PROBE_RTT 状态机，telemetry ID "bbr_v1"）。热路径使用 `std::variant<AimdController, BbrController>` + `std::visit`，避免每 ACK 虚调用。
+- `src/tcp/send.h` / `send.cpp`: `SendRecord` 增加 `PacketDeliveryState delivery` 字段。`TcpSendBuffer` 持有 `std::variant<AimdController, BbrController> controller_` 和 `DeliveryRateSampler sampler_`，替代裸 `cwnd_`/`ssthresh_`/`fast_recovery_`。AIMD 逻辑（slow start、CA、fast recovery inflate/exit、RTO cwnd=1*MSS）全部委托给 `AimdController`。`UsableWindow()`、`CongestionWindow()`、`Ssthresh()`、`PacingRate()`、`InFastRecovery()` 委托给 controller。`TcpSendConfig` 和 `TcpHandshakeConfig` 增加 `CongestionAlgorithm cc_algorithm` 字段（默认 AIMD）。
+- `tests/unit/tcp/congestion_test.cpp`: 21 tests，覆盖 DeliveryRateSampler（初始状态、stamp、delivery rate 计算、重传不产生 rate、app-limited 传播、reset）、AimdController（初始 cwnd、slow start、CA、fast recovery inflate/exit、RTO、reset、UpdateMss）、TcpSendBuffer 集成（AIMD/BBR 算法选择、slow start 通过 send buffer、fast retransmit via dup ACK、close resets controller、ssthresh accessor）。
+
+验证结果: 全量 CTest 普通 31/31, ASan/UBSan 31/31, TSan 31/31; TCP congestion 21/21; include boundaries OK; `git diff --check` clean。
+
 #### 通用采样器
 
 KCC 和 BBR 不能直接消费“本 ACK 确认多少字节”作为带宽。实现

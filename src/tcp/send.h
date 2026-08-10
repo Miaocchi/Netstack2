@@ -7,9 +7,8 @@
  *
  * Single-owner send buffer. Manages unsent application data, in-flight
  * segments awaiting ACK, and RFC 6298 retransmission timeout with Karn's
- * rule. Basic AIMD congestion control (RFC 5681 baseline) is included;
- * KCC/BBR will replace the congestion-control leg in P4 without changing
- * the retransmit-queue contract.
+ * rule. Congestion control is delegated to a pluggable controller (AIMD
+ * or BBRv1); the retransmit-queue contract is unchanged (P3C).
  *
  * Ownership model: each in-flight send record holds a BufferRef (shard-local
  * retained handle) that keeps its payload backing alive until ACKed or lost.
@@ -22,9 +21,12 @@
 #include <cstdint>
 #include <deque>
 #include <optional>
+#include <variant>
 #include <vector>
 
 #include <tcpip2/buffer.h>
+#include <tcp/congestion.h>
+#include <tcp/rate_sampler.h>
 #include <tcp/receive.h>
 
 namespace tcpip2 {
@@ -41,6 +43,7 @@ struct TcpSendConfig {
     std::uint64_t persist_timer_max_ms = 60000;
     std::size_t max_retransmissions = 15;          ///< RFC 1122 §4.2.2.13.
     std::size_t max_persist_probes = 15;           ///< Abort after this many unanswered probes.
+    CongestionAlgorithm cc_algorithm = CongestionAlgorithm::Aimd;
 
     bool Validate() const noexcept;
 };
@@ -71,7 +74,8 @@ struct TcpSendAckResult {
  *   - Unsent data queue (application -> wire)
  *   - In-flight retransmission queue (wire -> ACK)
  *   - RFC 6298 RTO with Karn's rule and exponential backoff
- *   - Basic AIMD congestion control (cwnd, ssthresh)
+ *   - Pluggable congestion control (AIMD or BBRv1) via controller
+ *   - Delivery-rate sampling for BBR/KCC
  *   - Zero-window persist timer
  *   - FIN scheduling
  *
@@ -90,7 +94,8 @@ public:
                   std::uint64_t persist_base_ms,
                   std::uint64_t persist_max_ms,
                   std::size_t max_retransmissions,
-                  std::size_t max_persist_probes);
+                  std::size_t max_persist_probes,
+                  CongestionAlgorithm cc_algorithm = CongestionAlgorithm::Aimd);
 
     ~TcpSendBuffer() = default;
 
@@ -179,8 +184,9 @@ public:
     std::size_t UnsntBytes() const noexcept { return send_queue_.size(); }
     std::size_t InFlightBytes() const noexcept { return in_flight_bytes_; }
     std::size_t RetransmitQueueSize() const noexcept { return retransmit_queue_.size(); }
-    std::uint32_t CongestionWindow() const noexcept { return cwnd_; }
-    std::uint32_t Ssthresh() const noexcept { return ssthresh_; }
+    std::uint32_t CongestionWindow() const noexcept;
+    std::uint32_t Ssthresh() const noexcept;
+    std::uint32_t PacingRate() const noexcept;
     std::uint16_t Mss() const noexcept { return mss_; }
     void UpdateMss(std::uint16_t mss) noexcept;
     bool FinRequested() const noexcept { return fin_requested_; }
@@ -194,7 +200,10 @@ public:
     std::uint64_t CurrentRto() const noexcept { return rto_ms_; }
     std::size_t SackedBytes() const noexcept { return sacked_bytes_; }
     std::uint32_t SackedSequence() const noexcept { return sacked_sequence_; }
-    bool InFastRecovery() const noexcept { return fast_recovery_; }
+    bool InFastRecovery() const noexcept;
+
+    /// @return The selected congestion algorithm.
+    CongestionAlgorithm Algorithm() const noexcept { return cc_algorithm_; }
 
     /// True if all sent data (including FIN) has been ACKed and no unsent data remains.
     bool AllAcked() const noexcept;
@@ -216,6 +225,7 @@ private:
         std::size_t rto_attempts = 0;
         bool retransmitted = false;
         bool sacked = false;
+        PacketDeliveryState delivery;
     };
 
     enum class PendingKind {
@@ -261,9 +271,10 @@ private:
     std::uint32_t snd_nxt_;    ///< Next sequence to assign.
     std::uint32_t snd_max_;    ///< Highest sequence ever sent (+1).
 
-    // Congestion control (basic AIMD, RFC 5681)
-    std::uint32_t cwnd_;       ///< Congestion window (bytes).
-    std::uint32_t ssthresh_;   ///< Slow-start threshold.
+    // Congestion control (pluggable: AIMD or BBRv1)
+    CongestionAlgorithm cc_algorithm_;
+    std::variant<AimdController, BbrController> controller_;
+    DeliveryRateSampler sampler_;
     std::uint16_t mss_;        ///< Maximum segment size.
 
     // RTO (RFC 6298 with Karn's rule)
@@ -285,7 +296,6 @@ private:
 
     // Fast retransmit pending
     bool fast_retransmit_pending_ = false;
-    bool fast_recovery_ = false;
 
     // Retransmission tracking
     std::size_t retransmission_count_ = 0;

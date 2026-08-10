@@ -31,6 +31,8 @@ add_library(tcpip2 STATIC
     tcp/receive.cpp
     tcp/delivery.cpp
     tcp/send.cpp
+    tcp/rate_sampler.cpp
+    tcp/congestion.cpp
 )
 
 add_library(tcpip2::tcpip2 ALIAS tcpip2)
