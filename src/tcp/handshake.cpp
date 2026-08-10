@@ -338,6 +338,15 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
     Pcb& pcb, const TcpSegmentView& segment, std::uint64_t now_ms) noexcept {
     TcpHandshakeResult result;
     if (pcb.state == TcpState::TimeWait) {
+        // Fix 7: retransmitted FIN in TIME-WAIT restarts the 2MSL timer.
+        if (segment.HasFlag(TcpFlag::Fin)) {
+            const std::size_t index = &pcb - pcbs_.data();
+            if (pcb.timewait_timer.value != 0) {
+                timers_.Cancel(pcb.timewait_timer);
+                pcb.timewait_timer = TimerId{};
+            }
+            ScheduleTimeWait(index, now_ms);
+        }
         result.response = BuildAck(pcb, now_ms);
         return result;
     }
@@ -380,6 +389,20 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
         timestamp_present = true;
     }
 
+    // Fix 3: Validate segment sequence *before* processing ACK or FIN.
+    // This prevents out-of-window segments from acknowledging our FIN.
+    // Use IsSequenceAcceptable (backed by AcceptableWindow / rcv_adv_) rather
+    // than AdvertisedWindow(), so zero-window sessions still accept in-flight
+    // data that was within the previously advertised window.
+    {
+        std::uint32_t seg_len = static_cast<std::uint32_t>(segment.payload_length);
+        if (segment.HasFlag(TcpFlag::Fin)) ++seg_len;
+        if (!pcb.receive->IsSequenceAcceptable(segment.sequence, seg_len)) {
+            result.response = BuildAck(pcb, now_ms);
+            return result;
+        }
+    }
+
     // Update peer window and feed ACK to send buffer.
     pcb.peer_window = segment.window;
     if (pcb.send) {
@@ -402,48 +425,88 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
         const std::size_t index = &pcb - pcbs_.data();
         if (pcb.state == TcpState::FinWait1) {
             pcb.state = TcpState::FinWait2;
+            result.state_changed = true;
         } else if (pcb.state == TcpState::Closing) {
             if (!ScheduleTimeWait(index, now_ms)) {
                 RemoveAt(index);
                 return result;
             }
+            result.state_changed = true;
         } else if (pcb.state == TcpState::LastAck) {
             RemoveAt(index);
+            result.state_changed = true;
             return result;
         }
     }
 
-    if (segment.payload_length == 0) {
-        const std::size_t sequence_length = segment.HasFlag(TcpFlag::Fin) ? 1 : 0;
-        if (!pcb.receive->IsSequenceAcceptable(segment.sequence, sequence_length)) {
-            result.response = BuildAck(pcb, now_ms);
-            return result;
+    // Helper lambda for FIN processing with state transitions.
+    // Fix 2: FIN is only consumed when its sequence number equals RCV.NXT
+    //         (after any payload in this segment has been accepted).
+    // Fix 4: Call ShutdownWrite() on the session when FIN is consumed.
+    // Fix 8: Set state_changed on all state transitions.
+    auto handle_fin = [&](Pcb& p, std::uint32_t fin_seq) -> bool {
+        if (fin_seq != p.receive->RcvNxt()) return false;
+        const std::size_t index = &p - pcbs_.data();
+        p.receive->ConsumeFin();
+        p.fin_received = true;
+        if (p.session != nullptr && !p.close_notified) {
+            p.session->ShutdownWrite();
         }
+        p.close_notified = true;
+        if (p.state == TcpState::Established) {
+            p.state = TcpState::CloseWait;
+            result.state_changed = true;
+            return false;  // PCB still alive; caller should send ACK
+        } else if (p.state == TcpState::FinWait1) {
+            p.state = TcpState::Closing;
+            result.state_changed = true;
+            return false;
+        } else if (p.state == TcpState::FinWait2) {
+            if (!ScheduleTimeWait(index, now_ms)) {
+                RemoveAt(index);
+                return true;  // PCB removed; caller must not touch pcb
+            }
+            result.state_changed = true;
+            return false;
+        } else if (p.state == TcpState::Closing) {
+            if (!ScheduleTimeWait(index, now_ms)) {
+                RemoveAt(index);
+                return true;
+            }
+            result.state_changed = true;
+            return false;
+        }
+        return false;
+    };
+
+    if (segment.payload_length == 0) {
         if (timestamp_present && segment.sequence == pcb.receive->RcvNxt()) {
             pcb.options.peer_timestamp = incoming_timestamp;
         }
         if (segment.HasFlag(TcpFlag::Fin)) {
-            const std::size_t index = &pcb - pcbs_.data();
-            pcb.receive->ConsumeFin();
-            pcb.fin_received = true;
-            pcb.close_notified = true;
-            if (pcb.state == TcpState::Established) {
-                pcb.state = TcpState::CloseWait;
-            } else if (pcb.state == TcpState::FinWait1) {
-                pcb.state = TcpState::Closing;
-            } else if (pcb.state == TcpState::FinWait2) {
-                if (!ScheduleTimeWait(index, now_ms)) {
-                    RemoveAt(index);
-                    return result;
+            // Fix 2: zero-payload FIN must have SEQ == RCV.NXT.
+            if (segment.sequence == pcb.receive->RcvNxt()) {
+                const bool removed = handle_fin(pcb, segment.sequence);
+                if (removed) return result;
+                if (pcb.delayed_ack_timer.value != 0) {
+                    timers_.Cancel(pcb.delayed_ack_timer);
+                    pcb.delayed_ack_timer = TimerId{};
                 }
-            } else if (pcb.state == TcpState::Closing) {
-                if (!ScheduleTimeWait(index, now_ms)) {
-                    RemoveAt(index);
-                    return result;
-                }
+                result.response = BuildAck(pcb, now_ms);
+            } else {
+                // FIN in window but not at RCV.NXT — ACK but don't consume.
+                result.response = BuildAck(pcb, now_ms);
             }
-            result.response = BuildAck(pcb, now_ms);
         }
+        return result;
+    }
+
+    // Fix 4: Reject peer data in CloseWait and later states (half-close).
+    if (pcb.state == TcpState::CloseWait ||
+        pcb.state == TcpState::Closing ||
+        pcb.state == TcpState::LastAck ||
+        pcb.state == TcpState::TimeWait) {
+        result.response = BuildAck(pcb, now_ms);
         return result;
     }
 
@@ -479,31 +542,29 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
             result.response = BuildAck(pcb, now_ms);
         }
     }
+
+    // Fix 2: data+FIN — only consume FIN if data was accepted (not duplicate/OOO)
+    //         and FIN sequence == new RCV.NXT.
     if (segment.HasFlag(TcpFlag::Fin)) {
-        const std::size_t index = &pcb - pcbs_.data();
-        pcb.receive->ConsumeFin();
-        pcb.fin_received = true;
-        pcb.close_notified = true;
-        if (pcb.state == TcpState::Established) {
-            pcb.state = TcpState::CloseWait;
-        } else if (pcb.state == TcpState::FinWait1) {
-            pcb.state = TcpState::Closing;
-        } else if (pcb.state == TcpState::FinWait2) {
-            if (!ScheduleTimeWait(index, now_ms)) {
-                RemoveAt(index);
-                return result;
+        const std::uint32_t fin_seq =
+            segment.sequence + static_cast<std::uint32_t>(segment.payload_length);
+        if (fin_seq == pcb.receive->RcvNxt() &&
+            received.disposition != ReceiveDisposition::Duplicate &&
+            received.disposition != ReceiveDisposition::OutOfWindow) {
+            const bool removed = handle_fin(pcb, fin_seq);
+            result.state_changed = true;
+            if (removed) return result;
+            if (pcb.delayed_ack_timer.value != 0) {
+                timers_.Cancel(pcb.delayed_ack_timer);
+                pcb.delayed_ack_timer = TimerId{};
             }
-        } else if (pcb.state == TcpState::Closing) {
-            if (!ScheduleTimeWait(index, now_ms)) {
-                RemoveAt(index);
-                return result;
+            result.response = BuildAck(pcb, now_ms);
+        } else {
+            // FIN not at RCV.NXT or data wasn't accepted — just ACK.
+            if (!result.response.valid) {
+                result.response = BuildAck(pcb, now_ms);
             }
         }
-        if (pcb.delayed_ack_timer.value != 0) {
-            timers_.Cancel(pcb.delayed_ack_timer);
-            pcb.delayed_ack_timer = TimerId{};
-        }
-        result.response = BuildAck(pcb, now_ms);
     }
     return result;
 }
@@ -835,7 +896,20 @@ bool TcpHandshakeEngine::OnSessionClosed(
     FlowId flow_id, std::uint64_t generation) noexcept {
     for (std::size_t i = 0; i < pcbs_.size(); ++i) {
         if (pcbs_[i].flow_id == flow_id && pcbs_[i].generation == generation) {
+            // Fix 5: In closing/TIME-WAIT states, only clear session binding.
+            // The PCB lifetime is managed by retransmission/timer logic.
+            // Removing a TIME-WAIT PCB would cancel the 2MSL timer prematurely.
+            const TcpState state = pcbs_[i].state;
             pcbs_[i].session = nullptr;
+            pcbs_[i].session_bound = false;
+            if (state == TcpState::TimeWait ||
+                state == TcpState::FinWait1 ||
+                state == TcpState::FinWait2 ||
+                state == TcpState::Closing ||
+                state == TcpState::LastAck ||
+                state == TcpState::CloseWait) {
+                return true;
+            }
             RemoveAt(i);
             return true;
         }
@@ -922,21 +996,39 @@ void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
     std::size_t pcb_budget, PktBufferPool& pool,
     std::vector<BufferLease>& tx_leases, std::size_t max_segments) noexcept {
     std::size_t visited = 0, built = 0;
-    for (Pcb& pcb : pcbs_) {
-        if (visited >= pcb_budget || built >= max_segments) break;
+    // Fix 6: Use index-based iteration so we can RemoveAt stranded PCBs
+    //         whose send buffer is closed (FIN retransmission exhausted).
+    std::size_t i = 0;
+    while (i < pcbs_.size() && visited < pcb_budget && built < max_segments) {
+        Pcb& pcb = pcbs_[i];
         if (pcb.state == TcpState::SynReceived ||
-            pcb.state == TcpState::TimeWait || !pcb.send ||
-            pcb.send->IsClosed())
+            pcb.state == TcpState::TimeWait || !pcb.send) {
+            ++i;
             continue;
+        }
+        // Fix 6: If send buffer is exhausted in a closing state, the
+        //         connection is dead — remove the PCB.
+        if (pcb.send->IsClosed()) {
+            if (pcb.state == TcpState::FinWait1 ||
+                pcb.state == TcpState::FinWait2 ||
+                pcb.state == TcpState::Closing ||
+                pcb.state == TcpState::LastAck) {
+                RemoveAt(i);
+                // Don't advance i — swap-pop moved a new PCB here.
+                continue;
+            }
+            ++i;
+            continue;
+        }
         ++visited;
         const std::uint32_t spw = pcb.options.window_scale
             ? static_cast<std::uint32_t>(pcb.peer_window)
                 << pcb.options.send_window_scale
             : static_cast<std::uint32_t>(pcb.peer_window);
         TcpSendNextResult next = pcb.send->NextSegment(spw, now_ms);
-        if (!next.has_segment) continue;
+        if (!next.has_segment) { ++i; continue; }
         BufferLease tx = pool.Allocate();
-        if (!tx) { pcb.send->ResetPending(); continue; }
+        if (!tx) { pcb.send->ResetPending(); ++i; continue; }
         TcpResponse resp;
         resp.valid = true;
         resp.flow = ReverseFlow(pcb.incoming_flow);
@@ -959,7 +1051,7 @@ void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
         const TcpOutputResult out = BuildTcpControlPacket(
             resp, tx.Data(), tx.Capacity());
         if (out.error != TcpOutputError::None) {
-            pcb.send->ResetPending(); continue;
+            pcb.send->ResetPending(); ++i; continue;
         }
         tx.Resize(out.packet_length);
         // Owner lease must be created before OnSent, because OnSent
@@ -967,7 +1059,7 @@ void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
         BufferRef owner;
         if (!next.is_retransmission && next.payload_length > 0) {
             BufferLease ol = pool.Allocate();
-            if (!ol) { pcb.send->ResetPending(); continue; }
+            if (!ol) { pcb.send->ResetPending(); ++i; continue; }
             std::memcpy(ol.Data(), next.payload, next.payload_length);
             ol.Resize(next.payload_length);
             owner = pool.Retain(std::move(ol));
@@ -975,6 +1067,7 @@ void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
         pcb.send->OnSent(std::move(owner), 0, now_ms);
         try { tx_leases.push_back(std::move(tx)); ++built; }
         catch (...) { break; }
+        ++i;
     }
 }
 
@@ -1015,6 +1108,11 @@ void TcpHandshakeEngine::AbortFlow(FlowId flow_id,
 bool TcpHandshakeEngine::ScheduleTimeWait(std::size_t index,
                                            std::uint64_t now_ms) noexcept {
     if (index >= pcbs_.size()) return false;
+    // Capture identity before any eviction; RemoveAt uses swap-pop so the
+    // PCB at @p index may be relocated.
+    const FlowKey target_flow = pcbs_[index].incoming_flow;
+    const std::uint64_t target_generation = pcbs_[index].generation;
+
     // Enforce TIME-WAIT capacity via oldest-deadline eviction.
     std::size_t tw_count = 0;
     for (const Pcb& p : pcbs_) {
@@ -1033,10 +1131,12 @@ bool TcpHandshakeEngine::ScheduleTimeWait(std::size_t index,
         }
         if (oldest != kNotFound) {
             RemoveAt(oldest);
-            if (oldest < index) --index;
+            // Re-find by identity; swap-pop may have moved our target.
+            index = FindIndex(target_flow);
+            if (index == kNotFound) return false;
+            if (pcbs_[index].generation != target_generation) return false;
         }
     }
-    if (index >= pcbs_.size()) return false;
     Pcb& pcb = pcbs_[index];
     pcb.state = TcpState::TimeWait;
     pcb.timewait_deadline_ms =

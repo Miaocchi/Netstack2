@@ -128,18 +128,20 @@ public:
         next_ = 0;
     }
 
-    void ShutdownWrite() override {}
+    void ShutdownWrite() override { shutdown_write_called_ = true; }
     void Abort(SessionError) override {}
     void SetWritableCallback(WritableCallback cb) override { writable_ = std::move(cb); }
     void SetDataCallback(DataCallback) override {}
     void SetClosedCallback(ClosedCallback) override {}
 
     const std::vector<std::uint8_t>& Delivered() const noexcept { return delivered_; }
+    bool ShutdownWriteCalled() const noexcept { return shutdown_write_called_; }
 
 private:
     std::vector<SendResult> script_;
     std::vector<std::uint8_t> delivered_;
     std::size_t next_ = 0;
+    bool shutdown_write_called_ = false;
     WritableCallback writable_;
 };
 
@@ -1727,6 +1729,282 @@ TCPIP2_TEST(TimeWaitCapacityEvictsOldest) {
 
     // After 3 entries with capacity 2, at most 2 should remain.
     TCPIP2_EXPECT_TRUE(engine.PcbCount() <= 2);
+}
+
+// --- Tests for P3B-4 FIN/close/TIME-WAIT fixes ---
+
+// Fix 2: Out-of-order FIN (SEG.SEQ > RCV.NXT) must not be consumed.
+TCPIP2_TEST(OutOfOrderFinIsNotConsumed) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    // Send a FIN at seq = rcv_nxt + 10 (out of order).
+    const auto result = engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt + 10, snap.snd_nxt,
+                 TcpFlag::Fin | TcpFlag::Ack),
+        200);
+
+    // Should get an ACK (challenge) but NOT transition to CloseWait.
+    TCPIP2_EXPECT_TRUE(result.response.valid);
+    TcpPcbSnapshot updated;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::Established),
+                     static_cast<int>(updated.state));
+}
+
+// Fix 2: Duplicate data+FIN must not advance RCV.NXT a second time.
+TCPIP2_TEST(DuplicateDataFinDoesNotAdvanceAck) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    // Send data+FIN at the correct sequence.
+    const std::vector<std::uint8_t> payload = {0xAA, 0xBB};
+    const auto first = engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, snap.snd_nxt,
+                 TcpFlag::Fin | TcpFlag::Ack, {}, payload),
+        200);
+    TCPIP2_EXPECT_TRUE(first.response.valid);
+
+    TcpPcbSnapshot after_fin;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, after_fin));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::CloseWait),
+                     static_cast<int>(after_fin.state));
+
+    // Retransmit the same data+FIN.  In CloseWait, peer data is rejected
+    // (Fix 4).  The ACK number must not advance beyond the first FIN.
+    const auto dup = engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, snap.snd_nxt,
+                 TcpFlag::Fin | TcpFlag::Ack, {}, payload),
+        210);
+    TCPIP2_EXPECT_TRUE(dup.response.valid);
+    // ACK should still point to the original RCV.NXT + payload + 1 (FIN).
+    TCPIP2_EXPECT_EQ(after_fin.rcv_nxt, dup.response.acknowledgment);
+}
+
+// Fix 3: Out-of-window segment must not acknowledge our FIN.
+TCPIP2_TEST(OutOfWindowSeqDoesNotAckFin) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    // Close locally → FinWait1, pump to emit FIN.
+    engine.CloseFlow(snap.flow_id, snap.generation);
+    PktBufferPool pool(4, 2048);
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(200, 64, pool, tx, 64);
+
+    TcpPcbSnapshot after_close;
+    engine.Find(flow, after_close);
+
+    // Send a segment with SEQ far outside the receive window but
+    // ACK = SND.NXT (our FIN sequence).  This must NOT transition us
+    // out of FinWait1.
+    const auto result = engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt + 100000, after_close.snd_nxt,
+                 TcpFlag::Ack),
+        210);
+
+    TcpPcbSnapshot updated;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::FinWait1),
+                     static_cast<int>(updated.state));
+}
+
+// Fix 4: FIN triggers ShutdownWrite on the session.
+TCPIP2_TEST(FinTriggersSessionShutdownWrite) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    auto session = std::make_unique<ReceiveSession>();
+    ReceiveSession* session_ptr = session.get();
+    engine.AttachSession(flow, session_ptr, 150);
+
+    TCPIP2_EXPECT_FALSE(session_ptr->ShutdownWriteCalled());
+
+    // Remote sends FIN.
+    const auto result = engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, snap.snd_nxt,
+                 TcpFlag::Fin | TcpFlag::Ack),
+        200);
+
+    TCPIP2_EXPECT_TRUE(result.response.valid);
+    TCPIP2_EXPECT_TRUE(session_ptr->ShutdownWriteCalled());
+
+    TcpPcbSnapshot updated;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::CloseWait),
+                     static_cast<int>(updated.state));
+}
+
+// Fix 5: Late OnSessionClosed in TIME-WAIT must not remove the PCB.
+TCPIP2_TEST(LateSessionClosedDoesNotRemoveTimeWaitPcb) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    config.timewait_ms = 5000;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    auto session = std::make_unique<ReceiveSession>();
+    engine.AttachSession(flow, session.get(), 150);
+
+    // Close locally, pump to emit FIN, remote ACKs + sends FIN → TIME-WAIT.
+    engine.CloseFlow(snap.flow_id, snap.generation);
+    PktBufferPool pool(4, 2048);
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(200, 64, pool, tx, 64);
+
+    TcpPcbSnapshot after_close;
+    engine.Find(flow, after_close);
+    engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
+                 TcpFlag::Fin | TcpFlag::Ack),
+        210);
+
+    TcpPcbSnapshot tw_snap;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, tw_snap));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::TimeWait),
+                     static_cast<int>(tw_snap.state));
+
+    // Simulate a late session-closed callback.
+    const bool removed = engine.OnSessionClosed(
+        tw_snap.flow_id, tw_snap.generation);
+    TCPIP2_EXPECT_TRUE(removed);
+
+    // PCB must still exist in TIME-WAIT.
+    TcpPcbSnapshot still_here;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, still_here));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::TimeWait),
+                     static_cast<int>(still_here.state));
+    TCPIP2_EXPECT_EQ(std::size_t{1}, engine.PcbCount());
+    TCPIP2_EXPECT_EQ(std::size_t{1}, timers.PendingCount());
+}
+
+// Fix 7: Retransmitted FIN in TIME-WAIT restarts the 2MSL timer.
+TCPIP2_TEST(TimeWaitRetransmittedFinRestartsTimer) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    config.timewait_ms = 1000;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    engine.CloseFlow(snap.flow_id, snap.generation);
+    PktBufferPool pool(4, 2048);
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(200, 64, pool, tx, 64);
+
+    TcpPcbSnapshot after_close;
+    engine.Find(flow, after_close);
+    engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
+                 TcpFlag::Fin | TcpFlag::Ack),
+        210);
+
+    const std::size_t timers_before = timers.PendingCount();
+    TCPIP2_EXPECT_EQ(std::size_t{1}, timers_before);
+
+    // Advance time partway into the TIME-WAIT period.
+    timers.AdvanceTo(700);
+
+    // Remote retransmits FIN — timer should be restarted.
+    engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
+                 TcpFlag::Fin | TcpFlag::Ack),
+        700);
+
+    // Timer must still be pending (restarted, not expired at old deadline).
+    TCPIP2_EXPECT_EQ(std::size_t{1}, timers.PendingCount());
+
+    // Old deadline (210 + 1000 = 1210) should no longer fire the removal.
+    timers.AdvanceTo(1210);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, engine.PcbCount());
+
+    // New deadline (700 + 1000 = 1700) should remove the PCB.
+    timers.AdvanceTo(1700);
+    TCPIP2_EXPECT_EQ(std::size_t{0}, engine.PcbCount());
+}
+
+// Fix 8: state_changed is set on FIN-induced state transitions.
+TCPIP2_TEST(FinStateTransitionsSetStateChanged) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot snap = Establish(engine, flow);
+
+    // Remote FIN → CloseWait.
+    const auto result = engine.OnSegment(
+        MakeView(flow, snap.rcv_nxt, snap.snd_nxt,
+                 TcpFlag::Fin | TcpFlag::Ack),
+        200);
+    TCPIP2_EXPECT_TRUE(result.state_changed);
+}
+
+// Fix 1: TIME-WAIT capacity eviction preserves correct surviving flows.
+TCPIP2_TEST(TimeWaitEvictionPreservesSurvivingFlows) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    config.timewait_ms = 5000;
+    config.max_timewait_entries = 2;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+
+    // Establish and close 3 flows to overflow TIME-WAIT capacity.
+    std::array<FlowKey, 3> flows;
+    std::array<TcpPcbSnapshot, 3> snaps;
+    for (int i = 0; i < 3; ++i) {
+        flows[i] = MakeFlow(static_cast<std::uint16_t>(40000 + i),
+                            static_cast<std::uint16_t>(443));
+        snaps[i] = Establish(engine, flows[i], 1000 + i * 100,
+                              100 + i * 10);
+        engine.CloseFlow(snaps[i].flow_id, snaps[i].generation);
+
+        PktBufferPool pool(4, 2048);
+        std::vector<BufferLease> tx;
+        engine.PumpSendPaths(200 + i * 10, 64, pool, tx, 64);
+
+        TcpPcbSnapshot after_close;
+        engine.Find(flows[i], after_close);
+        engine.OnSegment(
+            MakeView(flows[i], snaps[i].rcv_nxt, after_close.snd_nxt,
+                     TcpFlag::Fin | TcpFlag::Ack),
+            210 + i * 10);
+    }
+
+    TCPIP2_EXPECT_TRUE(engine.PcbCount() <= 2);
+
+    // Every remaining PCB must be in TIME-WAIT and correspond to a
+    // known flow.  The first flow (oldest deadline) should have been
+    // evicted.
+    int tw_count = 0;
+    for (int i = 0; i < 3; ++i) {
+        TcpPcbSnapshot snap;
+        if (engine.Find(flows[i], snap)) {
+            TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::TimeWait),
+                             static_cast<int>(snap.state));
+            ++tw_count;
+        }
+    }
+    TCPIP2_EXPECT_EQ(2, tw_count);
 }
 
 TCPIP2_TEST_MAIN()

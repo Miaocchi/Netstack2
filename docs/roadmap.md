@@ -23,7 +23,7 @@
 | P3B-1 | **Completed** | bounded PCB + passive handshake + IPv4/IPv6 wire RX/TX，TCP 23/23、全量 28/28 三套构建全绿 |
 | P3B-2 | **Completed** | bounded receive ring、delayed ACK/SACK、Session partial/WouldBlock，TCP 40+23、全量 29/29 三套构建全绿 |
 | P3B-3 | **Completed** | retransmission queue + RTO、SACK scoreboard、data segment serialization、send buffer 接入 handshake engine 和 shard event loop，TCP 54+51、全量 30/30 三套构建全绿 |
-| P3B-4 | **In progress** | FIN/close/TIME-WAIT 状态机、CloseFlow/AbortFlow API、TIME-WAIT 容量驱逐，TCP handshake 66/66、全量 30/30 三套构建全绿。SACK scoreboard wire 接线仍属 P3C |
+| P3B-4 | **Completed** | FIN/close/TIME-WAIT 状态机、CloseFlow/AbortFlow API、TIME-WAIT 容量驱逐，FIN 处理/half-close/TIME-WAIT 驱逐 bugfix，TCP handshake 74/74、全量 30/30 三套构建全绿。SACK scoreboard wire 接线仍属 P3C |
 | P3C | Planned | TCP 互操作与性能 |
 | P4 | Planned | OpenPPP2 集成(在 API-FREEZE 之后接线) |
 | P5–P7 | Planned | 高性能 Packet I/O、平台铺开、调优 |
@@ -43,7 +43,7 @@
 | P3B-3 (send core) | `6fb047b` | 无 |
 | P3B-3 (SACK scoreboard) | `5583c8d` | 无 |
 | P3B-3 (data segment output) | `8bdf43e` | 无 |
-| P3B-4 (FIN/close/TIME-WAIT) | `83b7a04` | 无 |
+| P3B-4 (FIN/close/TIME-WAIT) | `83b7a04` + bugfix `pending` | 无 |
 
 规则:
 
@@ -261,7 +261,7 @@ P3A-01 IPv4/IPv6 parser + checksum ✅
   → P3B-2 receive path ✅
   → P3B-3 send path (retransmission, SACK, wiring) ✅
         ↓
-P3B-4 FIN/close/TIME-WAIT ✅ (in progress)
+P3B-4 FIN/close/TIME-WAIT ✅
         ↓
 P3C TCP 互操作与性能
         ↓

@@ -1011,9 +1011,9 @@ Tcp/Udp packet generated
 - 状态检查扩展: PumpSendPaths 在 SynReceived/TimeWait 跳过 (允许 FinWait1/FinWait2/Closing/LastAck/CloseWait 继续发送 FIN/retransmission)；EnqueueSendData 接受 Established + CloseWait；OnDelayedAck/OnSessionWritable/PumpSessionDeliveries 在 SynReceived/TimeWait 跳过。
 - `src/tcp/receive.h` / `receive.cpp`: `ConsumeFin()` (rcv_nxt += 1, fin_received_ = true) 和 `FinReceived()`。
 - `src/core/shard_message.h` / `shard.cpp`: `kFlowClose` / `kFlowAbort` 消息类型，shard 控制循环调用 `CloseFlow` / `AbortFlow`。
-- `tests/unit/tcp/handshake_test.cpp`: 66 tests, P3B-4 覆盖 CloseFlow (Established→FinWait1, CloseWait→LastAck, unknown flow), AbortFlow (RST + removal, unknown flow), remote FIN (Established→CloseWait), FIN ACK (FinWait1→FinWait2), simultaneous close (→Closing), both FIN ACKed (→TimeWait), TIME-WAIT expiry (PCB removed), TIME-WAIT retransmitted FIN (ACK), TIME-WAIT capacity eviction (oldest evicted)。
+- `tests/unit/tcp/handshake_test.cpp`: 74 tests, P3B-4 覆盖 CloseFlow (Established→FinWait1, CloseWait→LastAck, unknown flow), AbortFlow (RST + removal, unknown flow), remote FIN (Established→CloseWait), FIN ACK (FinWait1→FinWait2), simultaneous close (→Closing), both FIN ACKed (→TimeWait), TIME-WAIT expiry (PCB removed), TIME-WAIT retransmitted FIN (ACK + 2MSL restart), TIME-WAIT capacity eviction (oldest evicted, surviving flows preserved)。FIN/close bugfix 覆盖: 乱序 FIN 不消费, 重复 data+FIN 不推进 ACK, 窗口外 SEQ 不确认 FIN, FIN 触发 ShutdownWrite, late Session callback 不删除 TIME-WAIT PCB, 发送缓冲耗尽在关闭状态移除 PCB, 所有 FIN 引起的状态转移设置 state_changed。
 
-验证结果: 全量 CTest 普通 30/30, ASan/UBSan 30/30, TSan 30/30; TCP handshake 66/66; include boundaries OK; `git diff --check` clean。
+验证结果: 全量 CTest 普通 30/30, ASan/UBSan 30/30, TSan 30/30; TCP handshake 74/74; include boundaries OK; `git diff --check` clean。
 
 首个 interop gate:
 
