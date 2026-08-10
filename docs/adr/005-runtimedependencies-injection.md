@@ -122,3 +122,21 @@ public:
 3. 提供迁移路径（旧调用无需改动）；
 4. 更新 consumer compile-contract test；
 5. 所有测试通过（default / ASan / TSan）后合并。
+
+## 8. 落地状态
+
+- IClock 接口设计：已完成（见 §2.3）。
+- IEventSink 接口设计：已完成（见 §2.3）。
+- RuntimeDependencies 结构体：已设计，待实现。
+- SystemClock 默认实现：待实现。
+- 全量 steady_clock 替换：待执行。
+- StackShard 构造/事件分发：待修改。
+
+详细实施步骤见 `docs/plans/P4_OPENPPP2_INTEGRATION_PLAN.md`。
+
+## 9. 变更记录
+
+| 版本 | 日期 | 说明 |
+|------|------|------|
+| 1.0 | 2026-08-11 | 初始 Accepted 版本 |
+| 1.1 | 2026-08-11 | 增加 IClock/IEventSink 设计细节和 P4 后续工作指引 |

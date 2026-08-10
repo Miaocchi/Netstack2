@@ -25,8 +25,10 @@
 | P3B-3 | **Completed** | retransmission queue + RTO、SACK scoreboard、data segment serialization、send buffer 接入 handshake engine 和 shard event loop，TCP 54+51、全量 30/30 三套构建全绿 |
 | P3B-4 | **Completed** | FIN/close/TIME-WAIT 状态机、CloseFlow/AbortFlow API、TIME-WAIT 容量驱逐，FIN 处理/half-close/TIME-WAIT 驱逐 bugfix，TCP handshake 74/74、全量 30/30 三套构建全绿。SACK scoreboard wire 接线仍属 P3C |
 | P3C | **In progress** | P3C-01 DeliveryRateSampler + CongestionController 接口 + AIMD 适配完成，commit `aa9332e`。P3C-02 BBRv1 状态机测试完成，commit `78332bc`，TCP congestion 43/43、全量 31/31 三套构建全绿。P3C-03 per-flow pacer 完成，commit `957682f`，TCP send 57/57、全量 31/31 三套构建全绿。P3C-04 fragment reassembly → TCP input wiring 完成，commit `b6d79a8`，全量 31/31 三套构建全绿。下一步: 完成 P3C 收尾（KCC 算法移植 / RuntimeDependencies 注入设计落地） |
-| P4 | Planned | OpenPPP2 集成。需要先通过 ADR-005 引入 `RuntimeDependencies` 注入，将 `session_factory`、`clock`、`event_sink` 接入 Runtime |
-| P5–P7 | Planned | 高性能 Packet I/O、平台铺开、调优 |
+| P4 | **In progress** | OpenPPP2 集成。**最高优先级**：先完成 OpenPPP2 接入兼容（`RuntimeDependencies` 注入、`ISessionFactory` 被动监听、IClock/IEventSink 适配、OpenPPP2 adapter）。详见 `docs/plans/P4_OPENPPP2_INTEGRATION_PLAN.md`。 |
+| P5A | Planned | Onload socket session 和通用 kernel-bypass session 接口。AF_XDP/DPDK 扩展接口设计已完成，见 `docs/plans/HIGH_PERF_BACKEND_EXTENSIONS.md`。 |
+| P5B | Planned | AF_XDP/DPDK 纯用户态 Packet I/O。 |
+| P6–P7 | Planned | 平台铺开（Android/iOS/Windows）、调优。 |
 
 ## 2. 提交与标签
 
@@ -48,6 +50,10 @@
 | P3C-02 (BBRv1 state-machine tests) | `78332bc` | 无 |
 | P3C-03 (per-flow pacer) | `957682f` | 无 |
 | P3C-04 (fragment reassembly → TCP input wiring) | `b6d79a8` | 无 |
+| **P4-1** (RuntimeDependencies 注入) | TBD | 无 |
+| **P4-2** (ISessionFactory 被动监听) | TBD | 无 |
+| **P4-3** (IClock/IEventSink 适配) | TBD | 无 |
+| **P4-4** (OpenPPP2 adapter) | TBD | 无 |
 
 规则:
 

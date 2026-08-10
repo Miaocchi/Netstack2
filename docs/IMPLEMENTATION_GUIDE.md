@@ -1411,7 +1411,23 @@ git diff --check
 - ECN 开关关闭时完全不改变 non-ECN 行为;
 - KCC 与 BBR 的结果分别报告, 不只报告胜出的算法。
 
-## 10. 并行组织与关键路径
+## 10. 当前优先级与执行顺序
+
+**当前最高优先级是 P4 OpenPPP2 集成**。所有 P5 高性能后端工作应为 P4 让路；P4 完成后，再依次展开 P5A (Onload) 和 P5B (AF_XDP/DPDK)。
+
+### 10.1 立即执行项
+
+1. **ADR-005 落地**: 将 `RuntimeDependencies` 注入公共 API，新增 `include/tcpip2/clock.h` 和 `include/tcpip2/events.h`；
+2. **IClock 全替换**: 搜出所有 `steady_clock` / `system_clock` 调用，改为 `runtime.Clock()`；
+3. **IEventSink 接入**: 在 flow established / closed / reset 处触发事件，在 event loop 中发布 metric snapshot；
+4. **ISessionFactory 被动监听**: 在 TCP handshake 中识别 SYN → 监听端口匹配 → `OpenTcp()` → 创建 `ITransportSession`；
+5. **OpenPPP2 smoke test**: `tests/integration/openppp2_smoke_test.cpp` 跑通 SYN/FIN 数据路径。
+
+### 10.2 后端接口先行定义
+
+AF_XDP / Onload / DPDK 的通用扩展接口已定义在 `docs/plans/HIGH_PERF_BACKEND_EXTENSIONS.md`，P4 阶段只做接口设计，不实现具体后端，避免并行修改公共 API。
+
+## 11. 并行组织与关键路径
 
 可分五条工作线:
 
@@ -1456,8 +1472,17 @@ P0 和测试框架全程并行, 但每个性能结论都依赖 P0。
 11. ✅ `P3A-02`: ICMPv4/ICMPv6 bounded parser + PMTU cache。
 12. ✅ `P3A-03`: IPv4/IPv6 fragment reassembly。
 
-在第 9 步之前不接 Netstack2 submodule, 不修改 OpenPPP2 默认 stack, 不开始完整
-TCP 状态机。
+12. ✅ `P3B`: bounded PCB, handshake, RX/TX, ring, retrans, FIN/TIME-WAIT。
+13. ✅ `P3C`: delivery-rate sampler, BBRv1, pacer, fragment reassembly wiring。
+14. ✅ `P3U`: UDP parser + shard wiring。
+15. ✅ `P3I`: ICMP shard RX wiring + PMTU。
+16. `P4-01`: ADR-005 落地, 新增 `RuntimeDependencies`, `IClock`, `IEventSink`。
+17. `P4-02`: `ISessionFactory` 被动监听接入 TCP handshake。
+18. `P4-03`: OpenPPP2 smoke test (fake backend)。
+19. `P4-04`: OpenPPP2 Linux adapter (repository `/home/openppp2`).
+20. P5A/P5B: Onload / AF_XDP / DPDK 按 `docs/plans/HIGH_PERF_BACKEND_EXTENSIONS.md` 实现。
+
+在第 16 步之前不接 OpenPPP2 完整数据路径, 不实现 AF_XDP/DPDK 具体后端。
 
 ## 12. 风险与控制
 
