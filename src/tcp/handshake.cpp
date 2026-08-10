@@ -102,10 +102,12 @@ bool TcpHandshakeConfig::Validate() const noexcept {
 TcpHandshakeEngine::TcpHandshakeEngine(const TcpHandshakeConfig& config,
                                        const TcpIsnGenerator& isn,
                                        TimerWheel& timers,
-                                       std::uint64_t generation_epoch)
+                                       std::uint64_t generation_epoch,
+                                       ISessionFactory* session_factory)
     : config_(config), isn_(isn), timers_(timers),
       callback_gate_(std::make_shared<CallbackGate>()),
-      generation_epoch_(generation_epoch == 0 ? 1 : generation_epoch) {
+      generation_epoch_(generation_epoch == 0 ? 1 : generation_epoch),
+      session_factory_(session_factory) {
     if (!config_.Validate()) {
         throw std::invalid_argument("invalid TCP handshake configuration");
     }
@@ -699,6 +701,35 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
                     }
                     if (half_open_count_ > 0) --half_open_count_;
                     result.state_changed = true;
+
+                    // P4-2: Notify the session factory that a TCP flow has
+                    // been established.  When a factory is present it may
+                    // accept or reject the flow.  On acceptance the session
+                    // is bound immediately so that payload data in the same
+                    // segment (if any) is delivered through it.  On rejection
+                    // a RST is emitted and the PCB is removed.
+                    if (session_factory_ != nullptr) {
+                        TcpOpenRequest req;
+                        req.flow_id = pcb.flow_id;
+                        req.source = IpEndpoint{pcb.incoming_flow.source,
+                                                 pcb.incoming_flow.source_port};
+                        req.original_destination = IpEndpoint{
+                            pcb.incoming_flow.destination,
+                            pcb.incoming_flow.destination_port};
+                        const SessionOpenResult open_result =
+                            session_factory_->OpenTcp(req);
+                        if (open_result.session != nullptr) {
+                            pcb.session = open_result.session;
+                            pcb.session_bound = true;
+                            pcb.receive->SetBlocked(false);
+                            DrainSession(pcb);
+                        } else {
+                            result.response = BuildReset(segment);
+                            RemoveAt(existing_index);
+                            return result;
+                        }
+                    }
+
                     if (segment.payload_length != 0 || segment.HasFlag(TcpFlag::Fin)) {
                         TcpHandshakeResult established =
                             ProcessEstablished(pcb, segment, now_ms);

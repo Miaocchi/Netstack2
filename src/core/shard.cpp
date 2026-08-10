@@ -70,7 +70,7 @@ bool StackShard::Start() noexcept {
     try {
         tcp_ = std::make_unique<TcpHandshakeEngine>(
             TcpHandshakeConfig{}, TcpIsnGenerator(isn_secret), timer_,
-            tcp_engine_epoch_);
+            tcp_engine_epoch_, session_factory_);
         tcp_tx_.reserve(kTcpTxBudget);
     } catch (...) {
         tcp_.reset();

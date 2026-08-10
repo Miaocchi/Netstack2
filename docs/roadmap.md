@@ -50,7 +50,7 @@
 | P3C-02 (BBRv1 state-machine tests) | `78332bc` | 无 |
 | P3C-03 (per-flow pacer) | `957682f` | 无 |
 | P3C-04 (fragment reassembly → TCP input wiring) | `b6d79a8` | 无 |
-| **P4-1** (RuntimeDependencies 注入 + IClock) | TBD | 无 |
+| **P4-1** (RuntimeDependencies 注入 + IClock) | `97ab0c9` | 无 |
 | **P4-2** (ISessionFactory 被动监听) | TBD | 无 |
 | **P4-4** (OpenPPP2 adapter) | TBD | 无 |
 

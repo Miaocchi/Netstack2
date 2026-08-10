@@ -1421,8 +1421,8 @@ git diff --check
 1. ✅ **ADR-005 落地**: `RuntimeDependencies` 注入公共 API，新增 `include/tcpip2/clock.h`、`include/tcpip2/events.h`、`include/tcpip2/runtime_deps.h`；`netstack.h` 新增 `Start(const RuntimeDependencies&)` 重载，旧 `Start(IPacketIo*)` 标记 deprecated。StackShard 构造函数接收 `IClock*`/`IEventSink*`/`ISessionFactory*`，热路径使用 `clock_->NowMs()` 替代 `steady_clock`。三套构建 34/34 全绿。
 2. **IClock 全替换**: shard event loop 已使用 `clock_->NowMs()`；TCP/IP 层通过参数接收 `now_ms`，不直接调用 `steady_clock`。`SteadyNowMsFallback()` 仅作为 clock_ 为 null 的安全网（实际不会发生）。
 3. **IEventSink 接入**: 接口已定义，flow established/closed/reset 事件触发和 metric snapshot 发布留给 P4-2。
-4. **ISessionFactory 被动监听**: 接口已通过 `RuntimeDependencies` 注入 shard，TCP handshake 中 SYN → `OpenTcp()` → 创建 `ITransportSession` 的实际接线留给 P4-2。
-5. **OpenPPP2 smoke test**: `tests/integration/openppp2_smoke_test.cpp` 跑通 SYN/FIN 数据路径留给 P4-2。
+4. ✅ **ISessionFactory 被动监听**: 接口已通过 `RuntimeDependencies` 注入 shard，`TcpHandshakeEngine` 构造函数接收 `ISessionFactory*`。SYN → ESTABLISHED 转换时调用 `OpenTcp()`：accept 则绑定 `ITransportSession` 并 `DrainSession` 交付后续数据；reject 则发送 RST 并移除 PCB。`session_factory_` 为 null 时走 legacy 兼容路径，不 crash。三套构建 34/34 全绿。
+5. **OpenPPP2 smoke test**: `tests/integration/openppp2_smoke_test.cpp` 跑通 SYN/FIN 数据路径留给 P4-4。
 
 ### 10.2 后端接口先行定义
 

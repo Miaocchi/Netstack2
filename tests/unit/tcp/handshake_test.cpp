@@ -2008,4 +2008,180 @@ TCPIP2_TEST(TimeWaitEvictionPreservesSurvivingFlows) {
     TCPIP2_EXPECT_EQ(2, tw_count);
 }
 
+// ---------------------------------------------------------------------------
+// P4-2: ISessionFactory passive-listen integration tests
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Minimal ITransportSession that records TrySend/ShutdownWrite/Abort.
+class RecordingSession final : public ITransportSession {
+public:
+    SendResult TrySend(BufferView data) override {
+        delivered_.insert(delivered_.end(), data.Data(),
+                          data.Data() + data.Size());
+        return {data.Size(), SendStatus::Accepted};
+    }
+    void ShutdownWrite() override { shutdown_write_called_ = true; }
+    void Abort(SessionError) override { abort_called_ = true; }
+    void SetWritableCallback(WritableCallback cb) override { writable_ = std::move(cb); }
+    void SetDataCallback(DataCallback) override {}
+    void SetClosedCallback(ClosedCallback) override {}
+
+    const std::vector<std::uint8_t>& Delivered() const noexcept { return delivered_; }
+    bool ShutdownWriteCalled() const noexcept { return shutdown_write_called_; }
+    bool AbortCalled() const noexcept { return abort_called_; }
+
+private:
+    std::vector<std::uint8_t> delivered_;
+    bool shutdown_write_called_ = false;
+    bool abort_called_ = false;
+    WritableCallback writable_;
+};
+
+/// ISessionFactory that can accept or reject, and records calls.
+class FakeSessionFactory final : public ISessionFactory {
+public:
+    explicit FakeSessionFactory(bool accept_all = true)
+        : accept_all_(accept_all) {}
+
+    ~FakeSessionFactory() override {
+        for (auto* s : created_) delete s;
+    }
+
+    SessionOpenResult OpenTcp(const TcpOpenRequest& request) override {
+        ++open_tcp_count_;
+        last_request_ = request;
+        SessionOpenResult result;
+        if (accept_all_) {
+            auto* session = new RecordingSession();
+            created_.push_back(session);
+            result.session = session;
+        }
+        return result;
+    }
+
+    DatagramOpenResult OpenUdp(const UdpOpenRequest&) override {
+        return {};
+    }
+
+    int OpenTcpCount() const noexcept { return open_tcp_count_; }
+    const TcpOpenRequest& LastRequest() const noexcept { return last_request_; }
+
+private:
+    bool accept_all_;
+    int open_tcp_count_ = 0;
+    TcpOpenRequest last_request_;
+    std::vector<RecordingSession*> created_;
+};
+
+} // namespace
+
+TCPIP2_TEST(SessionFactoryReceivesEstablishedFlow) {
+    TimerWheel timers;
+    FakeSessionFactory factory(/*accept_all=*/true);
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
+                               timers, 1, &factory);
+    const FlowKey flow = MakeFlow();
+
+    // SYN -> SYN-ACK
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    TCPIP2_EXPECT_EQ(TcpHandshakeError::None, syn.error);
+    TCPIP2_EXPECT_TRUE(syn.response.valid);
+    TCPIP2_EXPECT_EQ(std::size_t{0}, static_cast<std::size_t>(factory.OpenTcpCount()));
+
+    // Final ACK -> Established -> factory should be called
+    const auto ack = engine.OnSegment(
+        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    TCPIP2_EXPECT_EQ(TcpHandshakeError::None, ack.error);
+    TCPIP2_EXPECT_EQ(std::size_t{0}, engine.HalfOpenCount());
+    TCPIP2_EXPECT_EQ(std::size_t{1}, engine.EstablishedCount());
+    TCPIP2_EXPECT_EQ(1, factory.OpenTcpCount());
+
+    // Verify factory received correct endpoint info
+    const auto& req = factory.LastRequest();
+    TCPIP2_EXPECT_EQ(flow.source, req.source.address);
+    TCPIP2_EXPECT_EQ(flow.source_port, req.source.port);
+    TCPIP2_EXPECT_EQ(flow.destination, req.original_destination.address);
+    TCPIP2_EXPECT_EQ(flow.destination_port, req.original_destination.port);
+
+    // Session should be bound on the PCB
+    TcpPcbSnapshot snap;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, snap));
+    TCPIP2_EXPECT_EQ(TcpState::Established, snap.state);
+}
+
+TCPIP2_TEST(SessionFactoryRejectionSendsRstAndRemovesPcb) {
+    TimerWheel timers;
+    FakeSessionFactory factory(/*accept_all=*/false);
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
+                               timers, 1, &factory);
+    const FlowKey flow = MakeFlow();
+
+    // SYN -> SYN-ACK
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    TCPIP2_EXPECT_EQ(TcpHandshakeError::None, syn.error);
+
+    // Final ACK -> factory rejects -> RST, PCB removed
+    const auto ack = engine.OnSegment(
+        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    TCPIP2_EXPECT_EQ(TcpHandshakeError::None, ack.error);
+    TCPIP2_EXPECT_TRUE(ack.response.valid);
+    TCPIP2_EXPECT_TRUE(ack.response.flags & TcpFlag::Rst);
+    TCPIP2_EXPECT_EQ(1, factory.OpenTcpCount());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, engine.PcbCount());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, engine.EstablishedCount());
+}
+
+TCPIP2_TEST(NullSessionFactoryDoesNotCrash) {
+    TimerWheel timers;
+    // session_factory = nullptr (default)
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
+                               timers);
+    const FlowKey flow = MakeFlow();
+
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    TCPIP2_EXPECT_EQ(TcpHandshakeError::None, syn.error);
+
+    const auto ack = engine.OnSegment(
+        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    TCPIP2_EXPECT_EQ(TcpHandshakeError::None, ack.error);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, engine.EstablishedCount());
+
+    // PCB exists but session is not bound (no crash, no RST)
+    TcpPcbSnapshot snap;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, snap));
+    TCPIP2_EXPECT_EQ(TcpState::Established, snap.state);
+}
+
+TCPIP2_TEST(SessionFactoryBoundSessionReceivesInlineData) {
+    TimerWheel timers;
+    FakeSessionFactory factory(/*accept_all=*/true);
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
+                               timers, 1, &factory);
+    const FlowKey flow = MakeFlow();
+
+    // Complete 3-way handshake
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    engine.OnSegment(
+        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    TCPIP2_EXPECT_EQ(1, factory.OpenTcpCount());
+
+    // Send a data segment after establishment
+    std::vector<std::uint8_t> payload = {'H', 'e', 'l', 'l', 'o'};
+    const auto data_result = engine.OnSegment(
+        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack,
+                 {}, payload), 102);
+    TCPIP2_EXPECT_EQ(TcpHandshakeError::None, data_result.error);
+
+    // Data was delivered to session via DrainSession; ready_bytes should be 0
+    TcpPcbSnapshot snap;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, snap));
+    TCPIP2_EXPECT_EQ(std::size_t{0}, snap.ready_bytes);
+}
+
 TCPIP2_TEST_MAIN()

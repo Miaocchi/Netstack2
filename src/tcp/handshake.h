@@ -144,7 +144,8 @@ public:
     TcpHandshakeEngine(const TcpHandshakeConfig& config,
                        const TcpIsnGenerator& isn,
                        TimerWheel& timers,
-                       std::uint64_t generation_epoch = 1);
+                       std::uint64_t generation_epoch = 1,
+                       ISessionFactory* session_factory = nullptr);
     ~TcpHandshakeEngine();
 
     TcpHandshakeEngine(const TcpHandshakeEngine&) = delete;
@@ -262,6 +263,7 @@ private:
     std::size_t receive_memory_bytes_ = 0;
     std::uint64_t next_flow_id_ = 1;
     std::uint64_t generation_epoch_ = 1;
+    ISessionFactory* session_factory_ = nullptr;
     bool shutdown_ = false;
 };
 
