@@ -45,7 +45,9 @@ namespace tcpip2 {
 
 namespace {
 
-std::uint64_t MonotonicNowMs() noexcept {
+// Fallback used only when clock_ is null (should not happen in practice —
+// the constructor substitutes DefaultClock — but kept as a safety net).
+std::uint64_t SteadyNowMsFallback() noexcept {
     return static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -54,10 +56,16 @@ std::uint64_t MonotonicNowMs() noexcept {
 } // namespace
 
 StackShard::StackShard(std::size_t shard_id, PktBufferPool& pool, IPacketQueue* queue,
-                       std::size_t inbox_capacity) noexcept
+                       std::size_t inbox_capacity,
+                       ISessionFactory* session_factory,
+                       IClock* clock,
+                       IEventSink* event_sink) noexcept
     : shard_id_(shard_id),
       pool_(pool),
       queue_(queue),
+      session_factory_(session_factory),
+      clock_(clock ? clock : DefaultClock()),
+      event_sink_(event_sink),
       packet_inbox_(inbox_capacity),
       control_inbox_(inbox_capacity),
       timer_(256) {}
@@ -151,7 +159,7 @@ void StackShard::Run() noexcept {
 }
 
 void StackShard::EventLoopIteration() noexcept {
-    const std::uint64_t now_ms = MonotonicNowMs();
+    const std::uint64_t now_ms = clock_ ? clock_->NowMs() : SteadyNowMsFallback();
 
     // Step 1: DrainReturnQueue — recycle foreign-thread releases.
     pool_.DrainReturnQueue();

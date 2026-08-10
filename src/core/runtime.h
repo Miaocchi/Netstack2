@@ -31,6 +31,7 @@
 #include <tcpip2/buffer.h>
 #include <tcpip2/config.h>
 #include <tcpip2/packet_io.h>
+#include <tcpip2/runtime_deps.h>
 
 namespace tcpip2 {
 
@@ -46,11 +47,17 @@ public:
     Runtime& operator=(const Runtime&) = delete;
 
     /**
-     * Start with given config and packet I/O. The Runtime creates one
-     * PktBufferPool per shard internally (per-shard pool model, ADR-001).
-     * Returns false on error.
+     * Start with given config and packet I/O (legacy entry point — does not
+     * inject session factory, clock, or event sink). Returns false on error.
      */
     bool Start(NetstackConfig config, IPacketIo* packet_io) noexcept;
+
+    /**
+     * Start with given config and structured runtime dependencies (ADR-005).
+     * Requires deps.Validate() (packet_io + session_factory non-null).
+     * Returns false on error.
+     */
+    bool Start(NetstackConfig config, const RuntimeDependencies& deps) noexcept;
 
     /** Stop all shards. Idempotent. Must not be called from shard thread. */
     void Stop() noexcept;
@@ -68,9 +75,17 @@ public:
      */
     PktBufferPool* ShardPool(std::size_t i) const noexcept;
 
+    // Dependency accessors (valid after Start, before Stop)
+    IClock* Clock() const noexcept { return clock_; }
+    ISessionFactory* SessionFactory() const noexcept { return session_factory_; }
+    IEventSink* EventSink() const noexcept { return event_sink_; }
+
 private:
     NetstackConfig config_;
     IPacketIo* packet_io_ = nullptr;
+    ISessionFactory* session_factory_ = nullptr;
+    IClock* clock_ = nullptr;
+    IEventSink* event_sink_ = nullptr;
     std::vector<std::unique_ptr<PktBufferPool>> shard_pools_;
     std::vector<std::unique_ptr<StackShard>> shards_;
     std::unique_ptr<PacketDispatcher> dispatcher_;

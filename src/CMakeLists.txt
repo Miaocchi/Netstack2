@@ -11,6 +11,7 @@ add_library(tcpip2 STATIC
     core/shard.cpp
     core/runtime.cpp
     core/netstack.cpp
+    core/clock.cpp
     core/thread_ownership.cpp
     core/timer_wheel.cpp
     packetio/null_io.cpp

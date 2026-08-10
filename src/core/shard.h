@@ -24,7 +24,10 @@
 #include <vector>
 
 #include <tcpip2/buffer.h>
+#include <tcpip2/clock.h>
+#include <tcpip2/events.h>
 #include <tcpip2/packet_io.h>
+#include <tcpip2/session_factory.h>
 #include <tcpip2/transport_session.h>
 
 #include <core/inbox_mpsc.h>
@@ -46,7 +49,10 @@ struct TcpResponse;
 class StackShard {
 public:
     StackShard(std::size_t shard_id, PktBufferPool& pool, IPacketQueue* queue,
-               std::size_t inbox_capacity = 1024) noexcept;
+               std::size_t inbox_capacity = 1024,
+               ISessionFactory* session_factory = nullptr,
+               IClock* clock = nullptr,
+               IEventSink* event_sink = nullptr) noexcept;
     ~StackShard();
 
     StackShard(const StackShard&) = delete;
@@ -119,6 +125,9 @@ private:
     std::size_t shard_id_;
     PktBufferPool& pool_;
     IPacketQueue* queue_;  // may be nullptr for test
+    ISessionFactory* session_factory_;  // may be nullptr (legacy Start)
+    IClock* clock_;  // never null after construction (defaults to DefaultClock)
+    IEventSink* event_sink_;  // may be nullptr (events silently dropped)
     InboxSpsc packet_inbox_;
     InboxMpsc control_inbox_;
     ThreadOwnershipGuard ownership_;

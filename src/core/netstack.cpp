@@ -41,6 +41,21 @@ bool Netstack2::Start(IPacketIo* packet_io) noexcept {
     return true;
 }
 
+bool Netstack2::Start(const RuntimeDependencies& deps) noexcept {
+    if (started_) return true;
+    if (!config_.Validate()) return false;
+    if (!deps.Validate()) return false;
+
+    runtime_ = std::unique_ptr<Runtime>(new Runtime());
+    if (!runtime_->Start(config_, deps)) {
+        runtime_.reset();
+        return false;
+    }
+
+    started_ = true;
+    return true;
+}
+
 void Netstack2::Stop() noexcept {
     if (runtime_) {
         runtime_->Stop();

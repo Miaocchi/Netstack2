@@ -62,7 +62,6 @@ Netstack2 按以下原则推进:
 尚未实现:
 
 - UDP flow 和 datagram session（P3U）;
-- ICMP 接入 shard RX 路径和 PMTU 端到端;
 - KCC 拥塞控制（当前为 stub）;
 - FQ-CoDel / AQM 出口调度（P3Q）;
 - OpenPPP2、UCP、Onload、AF_XDP、DPDK 的运行时接线;
@@ -372,23 +371,25 @@ RUNNING
 
 ```cpp
 struct RuntimeDependencies {
-    IPacketIo& packet_io;
-    ISessionFactory& sessions;
-    IClock& clock;
-    IEventSink* events;
+    IPacketIo* packet_io;       // 必须非 null
+    ISessionFactory* sessions;  // 必须非 null
+    IClock* clock;              // 可 null, 默认 SystemClock
+    IEventSink* events;         // 可 null
 };
 
 class Netstack2 {
 public:
-    StartResult Start(RuntimeDependencies dependencies);
-    void Stop(StopMode mode) noexcept;
+    bool Start(const RuntimeDependencies& deps) noexcept;
+    [[deprecated]] bool Start(IPacketIo* io) noexcept;
+    void Stop() noexcept;
 };
 ```
 
-当前无依赖的 `Start()` 在 adapter spike 中验证可接线; `session_factory.h`
-已定义 `ISessionFactory`、`TcpOpenRequest`、`UdpOpenRequest`、`SessionOpenResult`、
-`DatagramOpenResult`。`RuntimeDependencies` 结构体尚未正式引入 `netstack.h`, 留给
-API-FREEZE 阶段替换。
+`RuntimeDependencies` 已正式引入 `netstack.h` 和 `runtime_deps.h` 公共头。
+`IClock` (`clock.h`) 提供 `NowMs()/NowUs()` 抽象接口，`SystemClock` 为默认实现。
+`IEventSink` (`events.h`) 定义 flow event 和 metric snapshot 报告接口。
+旧 `Start(IPacketIo*)` 标记 `deprecated`，内部桥接到新接口。
+StackShard 热路径 EventLoopIteration 已使用 `clock_->NowMs()` 替代直接 `steady_clock` 调用。
 
 ### 6.2 Session 创建
 
@@ -1417,11 +1418,11 @@ git diff --check
 
 ### 10.1 立即执行项
 
-1. **ADR-005 落地**: 将 `RuntimeDependencies` 注入公共 API，新增 `include/tcpip2/clock.h` 和 `include/tcpip2/events.h`；
-2. **IClock 全替换**: 搜出所有 `steady_clock` / `system_clock` 调用，改为 `runtime.Clock()`；
-3. **IEventSink 接入**: 在 flow established / closed / reset 处触发事件，在 event loop 中发布 metric snapshot；
-4. **ISessionFactory 被动监听**: 在 TCP handshake 中识别 SYN → 监听端口匹配 → `OpenTcp()` → 创建 `ITransportSession`；
-5. **OpenPPP2 smoke test**: `tests/integration/openppp2_smoke_test.cpp` 跑通 SYN/FIN 数据路径。
+1. ✅ **ADR-005 落地**: `RuntimeDependencies` 注入公共 API，新增 `include/tcpip2/clock.h`、`include/tcpip2/events.h`、`include/tcpip2/runtime_deps.h`；`netstack.h` 新增 `Start(const RuntimeDependencies&)` 重载，旧 `Start(IPacketIo*)` 标记 deprecated。StackShard 构造函数接收 `IClock*`/`IEventSink*`/`ISessionFactory*`，热路径使用 `clock_->NowMs()` 替代 `steady_clock`。三套构建 34/34 全绿。
+2. **IClock 全替换**: shard event loop 已使用 `clock_->NowMs()`；TCP/IP 层通过参数接收 `now_ms`，不直接调用 `steady_clock`。`SteadyNowMsFallback()` 仅作为 clock_ 为 null 的安全网（实际不会发生）。
+3. **IEventSink 接入**: 接口已定义，flow established/closed/reset 事件触发和 metric snapshot 发布留给 P4-2。
+4. **ISessionFactory 被动监听**: 接口已通过 `RuntimeDependencies` 注入 shard，TCP handshake 中 SYN → `OpenTcp()` → 创建 `ITransportSession` 的实际接线留给 P4-2。
+5. **OpenPPP2 smoke test**: `tests/integration/openppp2_smoke_test.cpp` 跑通 SYN/FIN 数据路径留给 P4-2。
 
 ### 10.2 后端接口先行定义
 
@@ -1476,7 +1477,7 @@ P0 和测试框架全程并行, 但每个性能结论都依赖 P0。
 13. ✅ `P3C`: delivery-rate sampler, BBRv1, pacer, fragment reassembly wiring。
 14. ✅ `P3U`: UDP parser + shard wiring。
 15. ✅ `P3I`: ICMP shard RX wiring + PMTU。
-16. `P4-01`: ADR-005 落地, 新增 `RuntimeDependencies`, `IClock`, `IEventSink`。
+16. ✅ `P4-01`: ADR-005 落地, 新增 `RuntimeDependencies`, `IClock`, `IEventSink`。IClock 替换 shard 热路径 steady_clock。
 17. `P4-02`: `ISessionFactory` 被动监听接入 TCP handshake。
 18. `P4-03`: OpenPPP2 smoke test (fake backend)。
 19. `P4-04`: OpenPPP2 Linux adapter (repository `/home/openppp2`).

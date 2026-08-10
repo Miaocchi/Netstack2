@@ -25,6 +25,7 @@
 
 #include <tcpip2/config.h>
 #include <tcpip2/packet_io.h>
+#include <tcpip2/runtime_deps.h>
 
 namespace tcpip2 {
 
@@ -42,8 +43,20 @@ public:
      * Start with an external packet I/O. nullptr = no I/O (validate config
      * only). When a packet I/O is provided, the Runtime creates per-shard
      * buffer pools internally (ADR-001).
+     *
+     * @deprecated Prefer Start(const RuntimeDependencies&). This overload
+     *             does not inject a session factory, clock, or event sink.
      */
     bool Start(IPacketIo* packet_io = nullptr) noexcept;
+
+    /**
+     * Start with structured runtime dependencies (ADR-005).
+     *
+     * The Runtime creates per-shard buffer pools internally (ADR-001) and
+     * wires the session factory, clock, and event sink into every shard.
+     * Returns false if deps.Validate() fails or the Runtime fails to start.
+     */
+    bool Start(const RuntimeDependencies& deps) noexcept;
 
     void Stop() noexcept;
 

@@ -21,10 +21,13 @@
 #include <tcpip2/address.h>
 #include <tcpip2/buffer.h>
 #include <tcpip2/capabilities.h>
+#include <tcpip2/clock.h>
 #include <tcpip2/config.h>
+#include <tcpip2/events.h>
 #include <tcpip2/flow.h>
 #include <tcpip2/netstack.h>
 #include <tcpip2/packet_io.h>
+#include <tcpip2/runtime_deps.h>
 #include <tcpip2/session_factory.h>
 #include <tcpip2/transport_session.h>
 
@@ -93,6 +96,26 @@ static_assert(std::is_standard_layout_v<PacketIoCapabilities>,
 // Config
 static_assert(std::is_copy_constructible_v<NetstackConfig>,
               "NetstackConfig must be copyable (frozen)");
+
+// Clock / Events (P4-1)
+static_assert(std::is_abstract_v<IClock>,
+              "IClock must be abstract (frozen)");
+static_assert(std::is_final_v<SystemClock>,
+              "SystemClock must be final (frozen)");
+static_assert(std::is_copy_constructible_v<FlowEvent>,
+              "FlowEvent must be copyable (frozen)");
+static_assert(std::is_standard_layout_v<FlowEvent>,
+              "FlowEvent must be standard layout (frozen)");
+static_assert(std::is_copy_constructible_v<MetricSnapshot>,
+              "MetricSnapshot must be copyable (frozen)");
+static_assert(std::is_standard_layout_v<MetricSnapshot>,
+              "MetricSnapshot must be standard layout (frozen)");
+static_assert(std::is_abstract_v<IEventSink>,
+              "IEventSink must be abstract (frozen)");
+static_assert(std::is_copy_constructible_v<RuntimeDependencies>,
+              "RuntimeDependencies must be copyable (frozen)");
+static_assert(std::is_standard_layout_v<RuntimeDependencies>,
+              "RuntimeDependencies must be standard layout (frozen)");
 
 // ---------------------------------------------------------------------------
 // Runtime contract exercise
@@ -186,6 +209,32 @@ TCPIP2_TEST(PublicHeadersConsumeCleanly) {
     NullPacketIo cap_io(1);
     PacketIoCapabilities default_caps = cap_io.Capabilities();
     TCPIP2_EXPECT_EQ(std::uint16_t{1500}, default_caps.mtu);
+
+    // clock + events (P4-1)
+    SystemClock sys_clock;
+    TCPIP2_EXPECT_TRUE(sys_clock.NowMs() > 0);
+    TCPIP2_EXPECT_TRUE(sys_clock.NowUs() > 0);
+    IClock* default_clock = DefaultClock();
+    TCPIP2_EXPECT_TRUE(default_clock != nullptr);
+    TCPIP2_EXPECT_TRUE(default_clock->NowMs() > 0);
+
+    // RuntimeDependencies validation
+    RuntimeDependencies deps;
+    TCPIP2_EXPECT_FALSE(deps.Validate());  // null packet_io + session_factory
+    deps.packet_io = &io;
+    TCPIP2_EXPECT_FALSE(deps.Validate());  // still missing session_factory
+    deps.session_factory = nullptr;
+    TCPIP2_EXPECT_FALSE(deps.Validate());
+    deps.clock = &sys_clock;
+    TCPIP2_EXPECT_FALSE(deps.Validate());  // still missing mandatory deps
+
+    // FlowEvent / MetricSnapshot default-constructible and copyable
+    FlowEvent fe;
+    TCPIP2_EXPECT_EQ(std::uint64_t{0}, fe.flow_id.value);
+    TCPIP2_EXPECT_TRUE(fe.type == FlowEventType::Closed);
+    MetricSnapshot ms;
+    TCPIP2_EXPECT_EQ(std::size_t{0}, ms.shard_id);
+    TCPIP2_EXPECT_EQ(std::uint64_t{0}, ms.rx_packets);
 }
 
 TCPIP2_TEST_MAIN();
