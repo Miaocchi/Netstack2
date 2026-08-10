@@ -5,8 +5,8 @@
  * @brief Monotonic clock abstraction for the Netstack2 runtime.
  * @license GPL-3.0
  *
- * Public API — frozen at NETSTACK2-API-FREEZE-001. Signature changes
- * require an ADR and a consumer compile-contract test update.
+ * Public API — frozen at NETSTACK2-API-FREEZE-001 after ADR-005. Signature
+ * changes require an ADR and a consumer compile-contract test update.
  *
  * IClock allows tests to inject a deterministic clock. Production code uses
  * SystemClock, which wraps std::chrono::steady_clock.
@@ -33,10 +33,10 @@ public:
     virtual ~IClock() = default;
 
     /** Monotonic time in milliseconds. */
-    virtual std::uint64_t NowMs() noexcept = 0;
+    virtual std::uint64_t NowMs() const = 0;
 
     /** Monotonic time in microseconds. */
-    virtual std::uint64_t NowUs() noexcept = 0;
+    virtual std::uint64_t NowUs() const = 0;
 };
 
 /**
@@ -46,8 +46,8 @@ public:
  */
 class SystemClock final : public IClock {
 public:
-    std::uint64_t NowMs() noexcept override;
-    std::uint64_t NowUs() noexcept override;
+    std::uint64_t NowMs() const override;
+    std::uint64_t NowUs() const override;
 };
 
 /**

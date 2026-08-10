@@ -5,20 +5,22 @@
  * @brief Flow event and metrics observation for the Netstack2 runtime.
  * @license GPL-3.0
  *
- * Public API — frozen at NETSTACK2-API-FREEZE-001. Signature changes
- * require an ADR and a consumer compile-contract test update.
+ * Public API — frozen at NETSTACK2-API-FREEZE-001 after ADR-005. Signature
+ * changes require an ADR and a consumer compile-contract test update.
  *
  * IEventSink allows an external consumer (e.g. an OpenPPP2 adapter) to
  * observe flow lifecycle events and periodic metric snapshots without
  * gaining access to internal flow state.
  *
  * All callbacks are invoked on the owning shard thread. Implementations
- * must not block or call back into the Netstack2 API.
+ * must not block, must not call back into the Netstack2 API, and must not
+ * throw exceptions (methods are noexcept).
  */
 
 #include <cstddef>
 #include <cstdint>
 
+#include <tcpip2/flow.h>
 #include <tcpip2/session_factory.h>
 
 namespace tcpip2 {

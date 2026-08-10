@@ -44,8 +44,9 @@ public:
      * only). When a packet I/O is provided, the Runtime creates per-shard
      * buffer pools internally (ADR-001).
      *
-     * @deprecated Prefer Start(const RuntimeDependencies&). This overload
-     *             does not inject a session factory, clock, or event sink.
+     * This overload exists for backward compatibility. It does not inject a
+     * session factory, clock, or event sink. Prefer Start(const
+     * RuntimeDependencies&).
      */
     bool Start(IPacketIo* packet_io = nullptr) noexcept;
 

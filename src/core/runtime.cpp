@@ -47,25 +47,39 @@ bool Runtime::Start(NetstackConfig config, IPacketIo* packet_io) noexcept {
     if (running_.load(std::memory_order_relaxed)) return false;
     if (!config.Validate()) return false;
     if (packet_io == nullptr) return false;
-
-    // Verify the packet I/O exposes the expected number of queues.
     if (packet_io->QueueCount() < config.rx_queue_count) return false;
 
-    config_ = config;
-    packet_io_ = packet_io;
-    session_factory_ = nullptr;
-    clock_ = DefaultClock();
-    event_sink_ = nullptr;
+    RuntimeDependencies deps{};
+    deps.packet_io = packet_io;
+    // legacy path keeps session_factory/clock/event_sink at their defaults.
+    return DoStart(config, deps);
+}
 
-    // Step 2: Create dispatcher.
+bool Runtime::Start(NetstackConfig config, const RuntimeDependencies& deps) noexcept {
+    if (running_.load(std::memory_order_relaxed)) return false;
+    if (!config.Validate()) return false;
+    if (!deps.Validate()) return false;
+    if (deps.packet_io->QueueCount() < config.rx_queue_count) return false;
+
+    return DoStart(config, deps);
+}
+
+bool Runtime::DoStart(NetstackConfig config, const RuntimeDependencies& deps) noexcept {
+    config_ = config;
+    packet_io_ = deps.packet_io;
+    session_factory_ = deps.session_factory;
+    clock_ = deps.clock ? deps.clock : DefaultClock();
+    event_sink_ = deps.event_sink;
+
+    // Step 1: Create dispatcher.
     dispatcher_ = std::unique_ptr<PacketDispatcher>(
         new PacketDispatcher(config.shard_count, config.rx_queue_count));
 
-    // Step 3: Open queues.
+    // Step 2: Open queues.
     queues_.clear();
     queues_.reserve(config.rx_queue_count);
     for (std::size_t i = 0; i < config.rx_queue_count; ++i) {
-        auto q = packet_io->OpenQueue(i);
+        auto q = packet_io_->OpenQueue(i);
         if (!q) {
             // Rollback.
             queues_.clear();
@@ -75,7 +89,7 @@ bool Runtime::Start(NetstackConfig config, IPacketIo* packet_io) noexcept {
         queues_.push_back(std::move(q));
     }
 
-    // Step 4: Create per-shard buffer pools. Each shard gets its own pool
+    // Step 3: Create per-shard buffer pools. Each shard gets its own pool
     // so that Allocate()/ReturnBuffer() on the shard thread take the
     // lock-free fast path: the mutex is still acquired, but only the
     // owner shard thread contends for it (per-shard pool, ADR-001).
@@ -89,7 +103,7 @@ bool Runtime::Start(NetstackConfig config, IPacketIo* packet_io) noexcept {
             new PktBufferPool(config.pool_slot_count, config.pool_slot_capacity));
     }
 
-    // Step 5: Inject the pool into each queue. Queue i maps to shard i
+    // Step 4: Inject the pool into each queue. Queue i maps to shard i
     // (or to the custom mapping); the pool must be the owning shard's pool
     // so that RX allocations are drained by the same shard.
     for (std::size_t i = 0; i < config.rx_queue_count; ++i) {
@@ -100,7 +114,7 @@ bool Runtime::Start(NetstackConfig config, IPacketIo* packet_io) noexcept {
         queues_[i]->SetBufferPool(shard_pools_[owner_shard].get());
     }
 
-    // Step 6: Create shards. Each shard references its own pool.
+    // Step 5: Create shards. Each shard references its own pool.
     shards_.clear();
     shards_.reserve(config.shard_count);
     for (std::size_t i = 0; i < config.shard_count; ++i) {
@@ -109,90 +123,19 @@ bool Runtime::Start(NetstackConfig config, IPacketIo* packet_io) noexcept {
                                              session_factory_, clock_, event_sink_));
     }
 
-    // Step 7: Set queue->shard mapping.
+    // Step 6: Set queue->shard mapping.
     if (!config.rx_queue_to_shard.empty()) {
         for (std::size_t i = 0; i < config.rx_queue_count; ++i) {
             dispatcher_->SetQueueShard(i, config.rx_queue_to_shard[i]);
         }
     }
 
-    // Step 8: Start all shard threads.
+    // Step 7: Start all shard threads.
     for (auto& shard : shards_) {
         shard->Start();
     }
 
-    // Step 9: Set recv handlers — wake the owning shard.
-    for (std::size_t i = 0; i < config.rx_queue_count; ++i) {
-        const std::size_t owner_shard = dispatcher_->QueueShard(i);
-        StackShard* target = shards_[owner_shard].get();
-        queues_[i]->SetRecvHandler([target]() { target->Wake(); });
-    }
-
-    running_.store(true, std::memory_order_relaxed);
-    return true;
-}
-
-bool Runtime::Start(NetstackConfig config, const RuntimeDependencies& deps) noexcept {
-    if (running_.load(std::memory_order_relaxed)) return false;
-    if (!config.Validate()) return false;
-    if (!deps.Validate()) return false;
-    if (deps.packet_io->QueueCount() < config.rx_queue_count) return false;
-
-    config_ = config;
-    packet_io_ = deps.packet_io;
-    session_factory_ = deps.session_factory;
-    clock_ = deps.clock ? deps.clock : DefaultClock();
-    event_sink_ = deps.event_sink;
-
-    // Steps 2-9 are identical to the legacy Start() above.
-    dispatcher_ = std::unique_ptr<PacketDispatcher>(
-        new PacketDispatcher(config.shard_count, config.rx_queue_count));
-
-    queues_.clear();
-    queues_.reserve(config.rx_queue_count);
-    for (std::size_t i = 0; i < config.rx_queue_count; ++i) {
-        auto q = packet_io_->OpenQueue(i);
-        if (!q) {
-            queues_.clear();
-            dispatcher_.reset();
-            return false;
-        }
-        queues_.push_back(std::move(q));
-    }
-
-    shard_pools_.clear();
-    shard_pools_.reserve(config.shard_count);
-    for (std::size_t i = 0; i < config.shard_count; ++i) {
-        shard_pools_.emplace_back(
-            new PktBufferPool(config.pool_slot_count, config.pool_slot_capacity));
-    }
-
-    for (std::size_t i = 0; i < config.rx_queue_count; ++i) {
-        std::size_t owner_shard = i;
-        if (!config.rx_queue_to_shard.empty()) {
-            owner_shard = config.rx_queue_to_shard[i];
-        }
-        queues_[i]->SetBufferPool(shard_pools_[owner_shard].get());
-    }
-
-    shards_.clear();
-    shards_.reserve(config.shard_count);
-    for (std::size_t i = 0; i < config.shard_count; ++i) {
-        IPacketQueue* q = (i < config.rx_queue_count) ? queues_[i].get() : nullptr;
-        shards_.emplace_back(new StackShard(i, *shard_pools_[i], q, 1024,
-                                             session_factory_, clock_, event_sink_));
-    }
-
-    if (!config.rx_queue_to_shard.empty()) {
-        for (std::size_t i = 0; i < config.rx_queue_count; ++i) {
-            dispatcher_->SetQueueShard(i, config.rx_queue_to_shard[i]);
-        }
-    }
-
-    for (auto& shard : shards_) {
-        shard->Start();
-    }
-
+    // Step 8: Set recv handlers — wake the owning shard.
     for (std::size_t i = 0; i < config.rx_queue_count; ++i) {
         const std::size_t owner_shard = dispatcher_->QueueShard(i);
         StackShard* target = shards_[owner_shard].get();

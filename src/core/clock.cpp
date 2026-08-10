@@ -26,11 +26,11 @@ std::uint64_t SteadyNowUs() noexcept {
 
 } // namespace
 
-std::uint64_t SystemClock::NowMs() noexcept {
+std::uint64_t SystemClock::NowMs() const {
     return SteadyNowMs();
 }
 
-std::uint64_t SystemClock::NowUs() noexcept {
+std::uint64_t SystemClock::NowUs() const {
     return SteadyNowUs();
 }
 

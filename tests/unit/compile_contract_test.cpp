@@ -116,6 +116,8 @@ static_assert(std::is_copy_constructible_v<RuntimeDependencies>,
               "RuntimeDependencies must be copyable (frozen)");
 static_assert(std::is_standard_layout_v<RuntimeDependencies>,
               "RuntimeDependencies must be standard layout (frozen)");
+static_assert(std::is_trivially_copyable_v<RuntimeDependencies>,
+              "RuntimeDependencies must be trivially copyable (frozen)");
 
 // ---------------------------------------------------------------------------
 // Runtime contract exercise

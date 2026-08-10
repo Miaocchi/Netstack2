@@ -5,8 +5,8 @@
  * @brief RuntimeDependencies: structured dependency injection bundle.
  * @license GPL-3.0
  *
- * Public API — frozen at NETSTACK2-API-FREEZE-001. Signature changes
- * require an ADR and a consumer compile-contract test update.
+ * Public API — frozen at NETSTACK2-API-FREEZE-001 after ADR-005. Signature
+ * changes require an ADR and a consumer compile-contract test update.
  *
  * RuntimeDependencies bundles the external objects the Netstack2 runtime
  * needs at start time (ADR-005). It replaces the loose Start(IPacketIo*)

@@ -81,6 +81,8 @@ public:
     IEventSink* EventSink() const noexcept { return event_sink_; }
 
 private:
+    bool DoStart(NetstackConfig config, const RuntimeDependencies& deps) noexcept;
+
     NetstackConfig config_;
     IPacketIo* packet_io_ = nullptr;
     ISessionFactory* session_factory_ = nullptr;

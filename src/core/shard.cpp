@@ -42,19 +42,6 @@
 #include <udp/input.h>
 
 namespace tcpip2 {
-
-namespace {
-
-// Fallback used only when clock_ is null (should not happen in practice —
-// the constructor substitutes DefaultClock — but kept as a safety net).
-std::uint64_t SteadyNowMsFallback() noexcept {
-    return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
-}
-
-} // namespace
-
 StackShard::StackShard(std::size_t shard_id, PktBufferPool& pool, IPacketQueue* queue,
                        std::size_t inbox_capacity,
                        ISessionFactory* session_factory,
@@ -159,7 +146,7 @@ void StackShard::Run() noexcept {
 }
 
 void StackShard::EventLoopIteration() noexcept {
-    const std::uint64_t now_ms = clock_ ? clock_->NowMs() : SteadyNowMsFallback();
+    const std::uint64_t now_ms = clock_->NowMs();
 
     // Step 1: DrainReturnQueue — recycle foreign-thread releases.
     pool_.DrainReturnQueue();
