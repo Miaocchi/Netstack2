@@ -33,6 +33,10 @@
 #include <core/thread_ownership.h>
 #include <core/timer_wheel.h>
 #include <ip/fragment.h>
+#include <ip/icmpv4.h>
+#include <ip/icmpv6.h>
+#include <ip/pmtu.h>
+#include <udp/input.h>
 
 namespace tcpip2 {
 
@@ -83,6 +87,15 @@ public:
     std::size_t TcpHalfOpenCount() const noexcept {
         return tcp_half_open_count_.load(std::memory_order_relaxed);
     }
+    std::size_t UdpDatagramsReceived() const noexcept {
+        return udp_datagrams_received_.load(std::memory_order_relaxed);
+    }
+
+    /// Look up the cached PMTU for a destination.
+    PmtuLookupResult LookupPmtu(const std::uint8_t* dst_ip, std::uint8_t ip_version,
+                                std::uint64_t now_ms) const noexcept {
+        return pmtu_cache_.Lookup(dst_ip, ip_version, now_ms);
+    }
 
     // Budgets
     static constexpr std::size_t kRxBudget = 64;
@@ -96,6 +109,9 @@ private:
     void ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexcept;
     void HandleFragment(const std::uint8_t* packet, std::size_t length,
                         std::uint64_t now_ms) noexcept;
+    void HandleIcmp(const std::uint8_t* packet, std::size_t length,
+                    std::uint64_t now_ms) noexcept;
+    void HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept;
     bool EnqueueTcpResponse(const TcpResponse& response) noexcept;
     void FlushTcpTx() noexcept;
     void PumpTcpSendPaths(std::uint64_t now_ms) noexcept;
@@ -109,6 +125,7 @@ private:
     TimerWheel timer_;
     std::unique_ptr<TcpHandshakeEngine> tcp_;
     FragmentReassembler reassembler_;
+    PmtuCache pmtu_cache_;
     std::vector<BufferLease> tcp_tx_;
 
     std::thread thread_;
@@ -122,6 +139,7 @@ private:
     std::atomic<std::size_t> messages_processed_{0};
     std::atomic<std::size_t> tcp_pcb_count_{0};
     std::atomic<std::size_t> tcp_half_open_count_{0};
+    std::atomic<std::size_t> udp_datagrams_received_{0};
 };
 
 } // namespace tcpip2

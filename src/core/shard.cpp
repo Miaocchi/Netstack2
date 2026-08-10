@@ -35,6 +35,12 @@
 #include <tcp/output.h>
 #include <tcp/segment.h>
 
+#include <ip/icmpv4.h>
+#include <ip/icmpv6.h>
+#include <ip/ipv4.h>
+#include <ip/ipv6.h>
+#include <udp/input.h>
+
 namespace tcpip2 {
 
 namespace {
@@ -205,6 +211,7 @@ void StackShard::EventLoopIteration() noexcept {
     // Step 5: advance timers, then drain bounded retry/control output.
     timer_.AdvanceTo(now_ms);
     reassembler_.Purge(now_ms);
+    pmtu_cache_.Purge(now_ms);
     if (tcp_) {
         tcp_->PumpSessionDeliveries(now_ms, kControlInboxBudget);
         TcpResponse response;
@@ -243,6 +250,35 @@ void StackShard::ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexce
         return;
     }
     if (input.error != TcpInputError::None) {
+        if (input.error == TcpInputError::NotTcp) {
+            const std::uint8_t version = static_cast<std::uint8_t>(lease.Data()[0] >> 4);
+            const std::uint8_t protocol = (version == 4)
+                ? [&] {
+                    const Ipv4ParseResult ip = ParseIpv4(lease.Data(), lease.Size());
+                    return (ip.error == Ipv4ParseError::None) ? ip.header.protocol
+                                                              : static_cast<std::uint8_t>(0);
+                }()
+                : (version == 6)
+                ? [&] {
+                    const Ipv6ParseResult ip = ParseIpv6(lease.Data(), lease.Size());
+                    return (ip.error == Ipv6ParseResult::Error::None)
+                        ? ip.final_next_header
+                        : static_cast<std::uint8_t>(0);
+                }()
+                : static_cast<std::uint8_t>(0);
+
+            if (protocol == 1 || protocol == 58) {
+                HandleIcmp(lease.Data(), lease.Size(), now_ms);
+                return;
+            }
+            if (protocol == 17) {
+                const UdpInputResult udp = ParseIpUdpPacket(lease.Data(), lease.Size());
+                if (udp.error == UdpInputResult::Error::None) {
+                    HandleUdp(std::move(lease), now_ms);
+                    return;
+                }
+            }
+        }
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
@@ -302,6 +338,62 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
     }
     if (hr.response.valid && !EnqueueTcpResponse(hr.response)) {
         tcp_->DeferResponse(hr.response);
+    }
+}
+
+void StackShard::HandleUdp(BufferLease&& lease, std::uint64_t /*now_ms*/) noexcept {
+    udp_datagrams_received_.fetch_add(1, std::memory_order_relaxed);
+    // Full UDP flow tracking is future work. The lease is consumed (dropped).
+}
+
+void StackShard::HandleIcmp(const std::uint8_t* packet, std::size_t length,
+                            std::uint64_t now_ms) noexcept {
+    if (packet == nullptr || length == 0) return;
+
+    const std::uint8_t version = static_cast<std::uint8_t>(packet[0] >> 4);
+
+    if (version == 4) {
+        const Ipv4ParseResult ip = ParseIpv4(packet, length);
+        if (ip.error != Ipv4ParseError::None) return;
+        if (ip.header.protocol != 1) return;  // ICMPv4
+
+        const Icmpv4ParseResult icmp = ParseIcmpv4(ip.payload, ip.header.payload_length);
+        if (icmp.error != Icmpv4ParseError::None) return;
+
+        if (icmp.header.type == Icmpv4Type::DestinationUnreachable &&
+            icmp.header.code == Icmpv4DestUnreachableCode::FragmentationNeeded) {
+            // Extract original dst_ip from the quoted IPv4 header (bytes 16-19).
+            if (icmp.header.quoted_payload == nullptr ||
+                icmp.header.quoted_payload_len < 20) {
+                return;  // quoted payload too short
+            }
+            const std::uint8_t* orig_dst = icmp.header.quoted_payload + 16;
+            pmtu_cache_.LowerFromIcmp(orig_dst, 4, icmp.header.mtu, now_ms);
+        }
+        // TimeExceeded and ParameterProblem: no PMTU action for now.
+    } else if (version == 6) {
+        const Ipv6ParseResult ip = ParseIpv6(packet, length);
+        if (ip.error != Ipv6ParseResult::Error::None) return;
+        if (ip.final_next_header != 58) return;  // ICMPv6
+
+        // Verify ICMPv6 checksum (includes IPv6 pseudo-header).
+        if (!VerifyIcmpv6Checksum(ip.payload, ip.payload_length,
+                                  ip.header.src_ip, ip.header.dst_ip)) {
+            return;
+        }
+
+        const Icmpv6ParseResult icmp = ParseIcmpv6(ip.payload, ip.payload_length);
+        if (icmp.error != Icmpv6ParseResult::Error::None) return;
+
+        if (icmp.header.type == Icmpv6Type::PacketTooBig) {
+            // Extract original dst_ip from the quoted IPv6 fixed header (bytes 24-39).
+            if (icmp.header.quoted_payload == nullptr ||
+                icmp.header.quoted_payload_len < 40) {
+                return;  // quoted payload too short
+            }
+            const std::uint8_t* orig_dst = icmp.header.quoted_payload + 24;
+            pmtu_cache_.LowerFromIcmp(orig_dst, 6, icmp.header.mtu, now_ms);
+        }
     }
 }
 
