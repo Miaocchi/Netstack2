@@ -33,10 +33,10 @@ public:
     virtual ~IClock() = default;
 
     /** Monotonic time in milliseconds. */
-    virtual std::uint64_t NowMs() const = 0;
+    virtual std::uint64_t NowMs() const noexcept = 0;
 
     /** Monotonic time in microseconds. */
-    virtual std::uint64_t NowUs() const = 0;
+    virtual std::uint64_t NowUs() const noexcept = 0;
 };
 
 /**
@@ -46,8 +46,8 @@ public:
  */
 class SystemClock final : public IClock {
 public:
-    std::uint64_t NowMs() const override;
-    std::uint64_t NowUs() const override;
+    std::uint64_t NowMs() const noexcept override;
+    std::uint64_t NowUs() const noexcept override;
 };
 
 /**

@@ -60,7 +60,8 @@ public:
 
 ### 2.2 兼容性
 
-- `Start(IPacketIo*)` 保留，内部调用 `Start(RuntimeDependencies{packet_io})`。
+- `Start(IPacketIo*)` 保留为兼容入口，内部调用 `Start(RuntimeDependencies{packet_io})`。
+  该重载不会注入 `session_factory`/`clock`/`event_sink`，因此仅适用于不需要被动监听或外部时间源的场景。
 - 旧调用点不需要修改。
 - consumer compile-contract test 增加 `static_assert(sizeof(RuntimeDependencies) > 0)` 和可 trivially copyable 验证。
 
@@ -127,10 +128,11 @@ public:
 
 - IClock 接口设计：已完成（见 §2.3）。
 - IEventSink 接口设计：已完成（见 §2.3）。
-- RuntimeDependencies 结构体：已设计，待实现。
-- SystemClock 默认实现：待实现。
-- 全量 steady_clock 替换：待执行。
-- StackShard 构造/事件分发：待修改。
+- RuntimeDependencies 结构体：已完成（`include/tcpip2/runtime_deps.h`）。
+- SystemClock 默认实现：已完成（`src/core/clock.cpp`）。
+- 全量 steady_clock 替换：已完成（shard event loop 使用 `clock_->NowMs()`）。
+- StackShard 构造/事件分发：已完成（`RuntimeDependencies` 指针已分发给各 shard）。
+- 旧 `Start(IPacketIo*)` 兼容性：已保留，不注入 session_factory/clock/event_sink。
 
 详细实施步骤见 `docs/plans/P4_OPENPPP2_INTEGRATION_PLAN.md`。
 

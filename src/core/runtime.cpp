@@ -132,7 +132,24 @@ bool Runtime::DoStart(NetstackConfig config, const RuntimeDependencies& deps) no
 
     // Step 7: Start all shard threads.
     for (auto& shard : shards_) {
-        shard->Start();
+        if (!shard->Start()) {
+            // Roll back any shards that were already started before the
+            // failure so the caller does not get a partially running runtime.
+            for (auto& started : shards_) {
+                if (started.get() == shard.get()) break;
+                started->Stop();
+            }
+            // Clear queue recv handlers so they cannot wake a shard we are
+            // about to discard; clear remaining resources.
+            for (auto& q : queues_) {
+                q->SetRecvHandler(nullptr);
+            }
+            shards_.clear();
+            shard_pools_.clear();
+            queues_.clear();
+            dispatcher_.reset();
+            return false;
+        }
     }
 
     // Step 8: Set recv handlers — wake the owning shard.

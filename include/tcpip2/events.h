@@ -20,7 +20,6 @@
 #include <cstddef>
 #include <cstdint>
 
-#include <tcpip2/flow.h>
 #include <tcpip2/session_factory.h>
 
 namespace tcpip2 {
