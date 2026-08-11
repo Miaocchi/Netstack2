@@ -978,7 +978,7 @@ Tcp/Udp packet generated
 - clean in-order 第一段使用 40 ms delayed ACK, 第二段立即 ACK 并取消 timer。OOO、duplicate/overlap、out-of-window、right trim、gap fill、PSH、zero-window 在途数据均立即 ACK。每个 PCB 持有一个可覆盖的 latest pending ACK, TX/pool 暂时不可用时不会被其他 flow 的 control response 挤掉。
 - SACK block 使用 `[left,right)`，触发本次 ACK 的 block 排第一, 其余按序输出。未协商 Timestamp 时最多 4 blocks; 协商 Timestamp 时最多 3 blocks, TCP options 始终不超过 40 bytes。IPv4/IPv6 ACK 继续由 `src/tcp/output.cpp` 生成并校验 checksum/data offset。
 - established Timestamp 路径实现 missing-TS reject、wrap-safe PAWS compare 和 accepted-segment-only `TS.Recent` commit。out-of-window 或 future-sequence pure ACK 不可污染 PAWS; stale segment ACK-and-drop。精确 RST 删除 flow, 非精确 RST 只产生 challenge ACK, payload 不进入 Session。
-- `src/tcp/delivery.h` / `.cpp`: bounded Session pump。始终先消费合法 `accepted_bytes`, 支持 full/partial Accepted、partial WouldBlock、跨 ring wrap delivery; zero-progress、超额 acceptance、Closed/Error 和抛异常均转为明确状态, 不忙循环或重复交付。单轮 `TrySend` call budget 耗尽后由 shard 后续 iteration 继续 pump。
+- `src/tcp/delivery.h` / `.cpp`: bounded delivery pump。`DrainTcpReceiveBuffer` 接收 `DeliverFn` 回调而非 `ITransportSession&`，将 stack→app 方向的数据投递与 session 接口解耦。始终先消费合法 `accepted_bytes`, 支持 full/partial Accepted、partial WouldBlock、跨 ring wrap delivery; zero-progress、超额 acceptance、Closed/Error 和抛异常均转为明确状态, 不忙循环或重复交付。单轮 delivery call budget 耗尽后由 shard 后续 iteration 继续 pump。
 - `AttachSession` 是 owner-shard 内部接口; Session 必须保持存活直到 `{FlowId,generation}` 对应的 `OnSessionClosed` 被 owner 处理。`kSessionWritable` / `kSessionClosed` 消息增加 generation 校验; 每次 shard restart 使用递增 engine epoch, 防止旧 run callback 命中新 flow。真正的 `ISessionFactory` 创建、owning binding/callback pin 和 runtime dependency injection 仍属于 P4, 不在 P3B-2 中引入不完整 raw callback bridge。
 - 第三次握手 ACK 可携带 data 并继续进入 established receive path。Established payload 必须带 ACK 且 `SEG.ACK <= SND.NXT`; future ACK、无 ACK payload 和窗口外数据不会交付 Session。FIN sequence consumption 留给 P3B-4 close states。
 - `tests/unit/tcp/receive_test.cpp`: 23 tests, 覆盖 delayed ACK pairing、OOO/gap fill、wrap、overlap first-wins、RFC window cases、ring wrap、SACK ordering、RCV.ADV、memory bound 和全部 Session partial/error 组合。
@@ -1484,12 +1484,15 @@ git diff --check
 2. ✅ **IClock 全替换**: shard event loop 已使用 `clock_->NowMs()`；TCP/IP 层通过参数接收 `now_ms`，不直接调用 `steady_clock`。`SteadyNowMsFallback()` 仅作为 clock_ 为 null 的安全网（实际不会发生）。
 3. ✅ **IEventSink 接入**: `TcpHandshakeEngine::EmitFlowEvent()` 在以下转换点调用 `OnFlowEvent()`：ESTABLISHED（handshake 完成）、Reset（RST in SYN-RECEIVED / ESTABLISHED、AbortFlow）、Closed（LastAck 完成、FIN 重传耗尽、TIME-WAIT 超时/驱逐）。`StackShard::EventLoopIteration()` 每 1000ms 发布 `MetricSnapshot`（rx_packets/dropped_packets/tcp_pcb_count/half_open_count/udp_datagrams；rx_bytes/tx_bytes 暂为 0，待后续添加字节计数器）。TCP handshake 89/89、全量 34/34 三套构建全绿。
 4. ✅ **ISessionFactory 被动监听**: 接口已通过 `RuntimeDependencies` 注入 shard，`TcpHandshakeEngine` 构造函数接收 `ISessionFactory*`。SYN → ESTABLISHED 转换时调用 `OpenTcp()`：accept 则绑定 `ITransportSession` 并 `DrainSession` 交付后续数据；reject 则发送 RST 并移除 PCB。`session_factory_` 为 null 时走 legacy 兼容路径，不 crash。三套构建 34/34 全绿。
-5. ✅ **ITransportSession 回调接线**: `BindSessionCallbacks()` 在 ESTABLISHED 和 `AttachSession` 时注册 `SetDataCallback`/`SetWritableCallback`/`SetClosedCallback`。回调通过 `weak_ptr<CallbackGate>` 捕获引擎引用，构造 `ShardMessage`（`kSessionData`/`kSessionWritable`/`kSessionClosed`）投递回 owner shard。shard event loop 在 `kSessionData` 路径调用 `EnqueueSendData` 将数据转入 TCP 发送缓冲。`Shutdown()` 后 `CallbackGate::owner` 置空，回调变为 no-op。三套构建 34/34 全绿。
+5. ✅ **ITransportSession 回调接线**: `BindSessionCallbacks()` 在 ESTABLISHED 和 `AttachSession` 时注册 `SetWritableCallback`/`SetClosedCallback`（`SetDataCallback` 已移除，见下条）。回调通过 `weak_ptr<CallbackGate>` 捕获引擎引用，构造 `ShardMessage`（`kSessionWritable`/`kSessionClosed`）投递回 owner shard。`Shutdown()` 后 `CallbackGate::owner` 置空，回调变为 no-op。
 6. ✅ **P4-7 OpenPPP2 adapter smoke test**: 完整 TCP 生命周期集成测试 (`tests/integration/openppp2_smoke_test.cpp`)，覆盖 SYN→SYN-ACK→ACK→ESTABLISHED→data→FIN→Closed 全流程。`FakeSession`/`FakeSessionFactory`/`RecordingEventSink` 全部 mutex 保护，TSan 安全。`NullPacketIo::EgressSnapshot()` (ADR-007) 解决 `Egress()` 引用的 TSan 数据竞争。`handshake.cpp::Shutdown()` 对非 TimeWait PCB emit Closed event。35/35 三套构建全绿。
+7. ✅ **P3C-11 TCP RX delivery 方向修正**: `DrainTcpReceiveBuffer` 从直接调用 `ITransportSession::TrySend()`（app→stack 方向）改为通过 `DeliverFn` 回调投递。生产路径下 `DrainSession()` 构造的 `DeliverFn` 将收到的 TCP payload 复制到 `PktBufferPool` 分配的 `BufferLease`，通过 `TcpSession::OnDataReceived()` 交付应用（stack→app 方向）。`TcpHandshakeEngine` 构造函数新增 `PktBufferPool*` 参数，`StackShard` 传入 `&pool_`。`BindSessionCallbacks` 不再注册 `SetDataCallback`。测试 session（非 `TcpSession`）走 `TrySend` 回退路径以支持 scripted back-pressure 测试。三套构建 39/39 全绿，commit `eb08e3d`。
 
 ### 10.3 已知限制
 
 1. **初始 SYN+data 未处理**: 当前握手引擎在 SYN-RECEIVED → ESTABLISHED 转换时忽略 SYN 段的 payload。RFC 793 允许 SYN 段携带数据（数据在 ESTABLISHED 后交付），若需要支持应在后续实现中处理，或在文档中明确说明不支持。
+2. **app→stack 发送路径未接线**: `TcpSession::DrainSendQueue()` 存在但当前无调用点。`kSessionData` 消息路径保留但 `SetDataCallback` 已移除，app→stack 发送需要独立的 `EnqueueSendData` 调用路径。这是后续集成工作。
+3. **IEventSink 未完整触发**: 接口已注入并存储在 `StackShard`，但部分调用点仍不完整。属于 P4-5 后续工作项。
 
 ### 10.4 后端接口先行定义
 
