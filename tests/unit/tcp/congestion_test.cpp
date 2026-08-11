@@ -474,11 +474,9 @@ TCPIP2_TEST(BbrStartupExitsAfterThreeRoundsNoGrowth) {
     c.OnAck(MakeBbrSample(100, 1000000, 10));
     TCPIP2_EXPECT_EQ(c.CurrentState(), BbrController::State::Startup);
 
-    // Feed samples that don't grow BtlBw by >25%. After 3 such rounds,
-    // CheckStartupDone transitions to Drain.
-    // Since CheckStartupDone uses btlbw_ < startup_max_bw_ * 1.25, and
-    // startup_max_bw_ is reset to btlbw_ at end of each check, we need
-    // samples that don't increase btlbw_ at all.
+    // Each new OnAck starts a new round in the unit-test path (no
+    // OnPacketSent between ACKs). After three rounds where the per-round
+    // max bandwidth does not grow by >25%, BBR exits STARTUP.
     for (int i = 0; i < 3; ++i) {
         c.OnAck(MakeBbrSample(200 + i * 10, 1000000, 10));
     }

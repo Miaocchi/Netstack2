@@ -130,10 +130,9 @@ private:
     State state_ = State::Startup;
 
     // STARTUP tracking.
-    std::uint64_t startup_bw_samples_ = 0;
-    std::uint64_t startup_max_bw_ = 0;
+    std::uint64_t startup_prev_round_max_bw_ = 0;
+    std::uint64_t startup_round_max_bw_ = 0;
     std::uint8_t startup_rounds_no_growth_ = 0;
-    std::uint64_t startup_round_start_bytes_ = 0;
 
     // PROBE_BW cycle.
     static constexpr std::uint8_t kCycleLen = 8;

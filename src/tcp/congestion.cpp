@@ -152,7 +152,6 @@ void BbrController::OnAck(const RateSample& rs) noexcept {
     if (!round_started_ && rs.acked_bytes > 0) {
         round_started_ = true;
         round_start_bytes_ = bytes_sent_;
-        delivered_at_round_start_ = 0;  // will be compared against delivered
     }
 
     // Update bandwidth and RTT estimates.
@@ -162,10 +161,13 @@ void BbrController::OnAck(const RateSample& rs) noexcept {
     // State machine transitions.
     switch (state_) {
         case State::Startup:
-            CheckStartupDone();
+            // STARTUP exit is checked at the end of each round (see below).
             break;
         case State::Drain:
-            CheckDrainDone();
+            // Transition to PROBE_BW once cwnd has been reduced to BDP or
+            // less.  Check below after recomputing cwnd_, and again here so
+            // that a round where we immediately drain exits without waiting
+            // for the next ACK.
             break;
         case State::ProbeBw:
             AdvanceCycle(rs.now_ms);
@@ -206,9 +208,22 @@ void BbrController::OnAck(const RateSample& rs) noexcept {
     cwnd_ = std::max<std::uint64_t>(cwnd_from_bdp,
                                      static_cast<std::uint64_t>(mss_) * 4U);
 
-    // Round accounting.
-    if (round_started_ && bytes_sent_ >= round_start_bytes_) {
+    // DRAIN exit is checked after recomputing cwnd, since the transition
+    // depends on cwnd_ <= BDP.
+    if (state_ == State::Drain) {
+        CheckDrainDone();
+    }
+
+    // Round accounting.  A round ends after we've sent at least a round's
+    // worth of additional bytes.  In the unit-test path (no OnPacketSent)
+    // bytes_sent_ equals round_start_bytes_ at round start, so the round
+    // ends on the same ACK and CheckStartupDone is invoked per-ACK.
+    if (round_started_ &&
+        bytes_sent_ - round_start_bytes_ >= round_start_bytes_) {
         round_started_ = false;
+        if (state_ == State::Startup) {
+            CheckStartupDone();
+        }
     }
 
     (void)rs.app_limited;  // app-limited packets don't update BtlBw
@@ -220,12 +235,11 @@ void BbrController::UpdateBtlBw(const RateSample& rs) noexcept {
 
     if (rs.delivery_rate_bytes_per_sec > btlbw_) {
         btlbw_ = rs.delivery_rate_bytes_per_sec;
-        startup_rounds_no_growth_ = 0;
-    } else {
-        // Track max within a round for STARTUP exit detection.
-        if (rs.delivery_rate_bytes_per_sec > startup_max_bw_) {
-            startup_max_bw_ = rs.delivery_rate_bytes_per_sec;
-        }
+    }
+
+    // Track the maximum bandwidth sample seen during the current round.
+    if (rs.delivery_rate_bytes_per_sec > startup_round_max_bw_) {
+        startup_round_max_bw_ = rs.delivery_rate_bytes_per_sec;
     }
 }
 
@@ -238,19 +252,23 @@ void BbrController::UpdateRTprop(const RateSample& rs) noexcept {
 }
 
 void BbrController::CheckStartupDone() noexcept {
-    // Exit STARTUP after 3 rounds where BtlBw doesn't grow by >25%.
-    // Simplified: count rounds where the latest sample doesn't exceed
-    // the startup max by a significant margin.
-    if (btlbw_ > 0 && startup_max_bw_ > 0) {
+    // Exit STARTUP after 3 rounds where the per-round max bandwidth does not
+    // grow by more than 25% over the previous round's max bandwidth.
+    const std::uint64_t current = startup_round_max_bw_;
+    const std::uint64_t previous = startup_prev_round_max_bw_;
+
+    if (previous > 0 && current > 0) {
         const std::uint64_t threshold =
-            SaturatingMulDiv(startup_max_bw_, 5, 4);  // 1.25x
-        if (btlbw_ < threshold) {
+            SaturatingMulDiv(previous, 5, 4);  // 1.25x
+        if (current <= threshold) {
             ++startup_rounds_no_growth_;
         } else {
             startup_rounds_no_growth_ = 0;
         }
     }
-    startup_max_bw_ = btlbw_;
+
+    startup_prev_round_max_bw_ = current;
+    startup_round_max_bw_ = 0;
 
     if (startup_rounds_no_growth_ >= 3) {
         state_ = State::Drain;
@@ -329,7 +347,8 @@ void BbrController::Reset() noexcept {
     rtprop_stamp_ms_ = 0;
     state_ = State::Startup;
     startup_rounds_no_growth_ = 0;
-    startup_max_bw_ = 0;
+    startup_prev_round_max_bw_ = 0;
+    startup_round_max_bw_ = 0;
     cycle_index_ = 0;
     cycle_start_ms_ = 0;
     probe_rtt_enter_ms_ = 0;
