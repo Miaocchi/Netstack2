@@ -24,7 +24,7 @@ UdpInputResult ParseIpUdpPacket(const std::uint8_t* packet,
             result.error = UdpInputResult::Error::NotUdp;
             return result;
         }
-        if (ip.header.fragment_offset != 0 || (ip.header.flags & 0x04u) != 0) {
+        if (ip.header.fragment_offset != 0 || (ip.header.flags & 0x01u) != 0) {
             result.error = UdpInputResult::Error::MalformedIp;
             return result;
         }

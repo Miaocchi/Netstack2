@@ -35,7 +35,7 @@ TcpInputResult ParseIpTcpPacket(const std::uint8_t* packet,
             result.error = TcpInputError::NotTcp;
             return result;
         }
-        if (ip.header.fragment_offset != 0 || (ip.header.flags & 0x04u) != 0) {
+        if (ip.header.fragment_offset != 0 || (ip.header.flags & 0x01u) != 0) {
             result.error = TcpInputError::FragmentRequiresReassembly;
             return result;
         }
@@ -91,7 +91,7 @@ FragmentInfo ExtractFragmentInfo(const std::uint8_t* packet,
         info.protocol = ip.header.protocol;
         info.identification = ip.header.identification;
         info.fragment_offset = ip.header.fragment_offset;
-        info.more_fragments = (ip.header.flags & 0x04u) != 0;
+        info.more_fragments = (ip.header.flags & 0x01u) != 0;
         info.payload = ip.payload;
         info.payload_length = ip.header.payload_length;
         info.valid = true;

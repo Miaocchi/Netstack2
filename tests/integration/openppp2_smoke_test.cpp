@@ -45,18 +45,17 @@
 using namespace tcpip2;
 
 // ---------------------------------------------------------------------------
-// FakeSession — TcpSession subclass that records delivered data via the
-// DataCallback (the correct stack→app delivery path).
+// FakeSession records client payload accepted by the remote transport.
 // ---------------------------------------------------------------------------
 
 class FakeSession final : public TcpSession {
 public:
-    FakeSession() : TcpSession() {
-        SetDataCallback([this](BufferLease lease) {
-            std::lock_guard<std::mutex> lock(delivery_mutex_);
-            delivered_.insert(delivered_.end(),
-                              lease.Data(), lease.Data() + lease.Size());
-        });
+    FakeSession() : TcpSession() {}
+
+    SendResult TrySend(BufferView data) override {
+        std::lock_guard<std::mutex> lock(delivery_mutex_);
+        delivered_.insert(delivered_.end(), data.Data(), data.Data() + data.Size());
+        return {data.Size(), SendStatus::Accepted};
     }
 
     void ShutdownWrite() override {
@@ -101,16 +100,12 @@ private:
 
 class FakeSessionFactory final : public ISessionFactory {
 public:
-    ~FakeSessionFactory() override {
-        for (auto* s : created_) delete s;
-    }
-
     SessionOpenResult OpenTcp(const TcpOpenRequest& request) override {
         std::lock_guard<std::mutex> lock(mutex_);
         ++open_tcp_count_;
         last_source_ = request.source;
         last_destination_ = request.original_destination;
-        auto* session = new FakeSession();
+        auto session = std::make_shared<FakeSession>();
         created_.push_back(session);
         SessionOpenResult result;
         result.session = session;
@@ -138,7 +133,7 @@ public:
 
     FakeSession* LastSession() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return created_.empty() ? nullptr : created_.back();
+        return created_.empty() ? nullptr : created_.back().get();
     }
 
 private:
@@ -146,7 +141,7 @@ private:
     int open_tcp_count_ = 0;
     IpEndpoint last_source_;
     IpEndpoint last_destination_;
-    std::vector<FakeSession*> created_;
+    std::vector<std::shared_ptr<FakeSession>> created_;
 };
 
 // ---------------------------------------------------------------------------
@@ -232,6 +227,7 @@ bool InjectPacket(NullPacketIo& io, PktBufferPool* pool,
 TCPIP2_TEST(OpenPpp2SmokeTestFullLifecycle) {
     // --- Setup ---
     NullPacketIo io(1);
+    io.SetAsyncTxCompletion(true);
     FakeSessionFactory factory;
     RecordingEventSink sink;
     SystemClock clock;
@@ -325,7 +321,7 @@ TCPIP2_TEST(OpenPpp2SmokeTestFullLifecycle) {
         TCPIP2_EXPECT_TRUE(InjectPacket(io, pool, data));
     }
 
-    // Wait for data to be delivered to the session.
+    // Wait for client data to be delivered to the remote session.
     {
         FakeSession* session = factory.LastSession();
         TCPIP2_EXPECT_TRUE(session != nullptr);
@@ -342,18 +338,42 @@ TCPIP2_TEST(OpenPpp2SmokeTestFullLifecycle) {
         }
     }
 
-    // --- Step 4: FIN from client ---
+    // --- Step 4: Remote Session data returns to the TUN client ---
+    const std::vector<std::uint8_t> remote_payload = {'w', 'o', 'r', 'l', 'd'};
+    auto egress_after_client = WaitForEgress(io, egress1.size() + 1);
+    TCPIP2_EXPECT_TRUE(egress_after_client.size() > egress1.size());
+    {
+        FakeSession* session = factory.LastSession();
+        TCPIP2_EXPECT_TRUE(session != nullptr);
+        BufferLease remote_data = pool->Allocate();
+        TCPIP2_EXPECT_TRUE(static_cast<bool>(remote_data));
+        std::copy(remote_payload.begin(), remote_payload.end(), remote_data.Data());
+        remote_data.Resize(remote_payload.size());
+        session->OnDataReceived(std::move(remote_data));
+    }
+    auto egress_remote = WaitForEgress(io, egress_after_client.size() + 1);
+    TCPIP2_EXPECT_TRUE(egress_remote.size() > egress_after_client.size());
+    const auto remote_segment = test::PacketParser::ParseIpv4Tcp(egress_remote.back());
+    TCPIP2_EXPECT_TRUE(remote_segment.valid);
+    TCPIP2_EXPECT_EQ(remote_payload.size(), remote_segment.payload.size());
+    if (remote_segment.payload.size() == remote_payload.size()) {
+        TCPIP2_EXPECT_TRUE(std::equal(remote_payload.begin(), remote_payload.end(),
+                                      remote_segment.payload.begin()));
+    }
+
+    // --- Step 5: FIN from client ---
     {
         auto fin = test::PacketBuilder::BuildIpv4Tcp(
             client_ip, server_ip, client_port, server_port,
-            client_isn + 1 + static_cast<std::uint32_t>(payload.size()), server_isn + 1,
+            client_isn + 1 + static_cast<std::uint32_t>(payload.size()),
+            server_isn + 1 + static_cast<std::uint32_t>(remote_payload.size()),
             test::TcpFlags::Fin | test::TcpFlags::Ack, {});
         TCPIP2_EXPECT_TRUE(InjectPacket(io, pool, fin));
     }
 
     // Wait for the server's ACK to our FIN.
-    auto egress_fin = WaitForEgress(io, egress1.size() + 1);
-    TCPIP2_EXPECT_TRUE(egress_fin.size() > egress1.size());
+    auto egress_fin = WaitForEgress(io, egress_remote.size() + 1);
+    TCPIP2_EXPECT_TRUE(egress_fin.size() > egress_remote.size());
 
     // Wait a bit more for any close event.
     // The server enters CLOSE-WAIT after receiving our FIN.  It stays there
@@ -386,6 +406,7 @@ TCPIP2_TEST(OpenPpp2SmokeTestFullLifecycle) {
     // --- Cleanup ---
     stack.Stop();
     TCPIP2_EXPECT_FALSE(stack.IsRunning());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, io.PendingTxCompletions(0));
 
     // Verify a Closed or Reset event was emitted (now including Shutdown()).
     {

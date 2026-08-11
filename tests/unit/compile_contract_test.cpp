@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <type_traits>
 
 #include <tcpip2/address.h>
@@ -29,6 +30,7 @@
 #include <tcpip2/packet_io.h>
 #include <tcpip2/runtime_deps.h>
 #include <tcpip2/session_factory.h>
+#include <tcpip2/shutdown.h>
 #include <tcpip2/tap_io.h>
 #include <tcpip2/transport_session.h>
 
@@ -59,6 +61,8 @@ static_assert(std::is_standard_layout_v<PktBuffer>,
 // Transport session
 static_assert(std::is_trivially_copyable_v<BufferView>,
               "BufferView must be trivially copyable (frozen)");
+static_assert(std::is_invocable_r_v<ReceiveStatus, DataCallback, BufferLease&>,
+              "DataCallback must return ReceiveStatus and borrow BufferLease");
 
 // Address / Flow
 static_assert(std::is_copy_constructible_v<IpAddress>,
@@ -85,6 +89,9 @@ static_assert(std::is_copy_constructible_v<UdpOpenRequest>,
               "UdpOpenRequest must be copyable (frozen)");
 static_assert(std::is_copy_constructible_v<SessionOpenResult>,
               "SessionOpenResult must be copyable (frozen)");
+static_assert(std::is_same_v<decltype(SessionOpenResult{}.session),
+                             std::shared_ptr<ITransportSession>>,
+              "SessionOpenResult must retain a shared transport session");
 static_assert(std::is_copy_constructible_v<DatagramOpenResult>,
               "DatagramOpenResult must be copyable (frozen)");
 
@@ -97,6 +104,12 @@ static_assert(std::is_standard_layout_v<PacketIoCapabilities>,
 // Config
 static_assert(std::is_copy_constructible_v<NetstackConfig>,
               "NetstackConfig must be copyable (frozen)");
+
+// Shutdown
+static_assert(std::is_copy_constructible_v<StopOptions>,
+              "StopOptions must be copyable (v0.3)");
+static_assert(std::is_copy_constructible_v<StopResult>,
+              "StopResult must be copyable (v0.3)");
 
 // TapPacketIo (concrete backend)
 static_assert(std::is_final_v<TapPacketIo>,
@@ -139,7 +152,8 @@ TCPIP2_TEST(PublicHeadersConsumeCleanly) {
     TCPIP2_EXPECT_TRUE(stack.Start());
     TCPIP2_EXPECT_TRUE(stack.IsRunning());
     TCPIP2_EXPECT_TRUE(stack.Config().Validate());
-    stack.Stop();
+    StopResult stop_result = stack.Stop();
+    TCPIP2_EXPECT_TRUE(stop_result.IsComplete());
     TCPIP2_EXPECT_FALSE(stack.IsRunning());
 
     // buffer ownership types
@@ -164,6 +178,7 @@ TCPIP2_TEST(PublicHeadersConsumeCleanly) {
     io.SetRecvWouldBlock(false);
     io.SetSendWouldBlock(false);
     io.SetAsyncTxCompletion(true);
+    io.SetDrainTxWouldBlock(false);
     TCPIP2_EXPECT_EQ(std::size_t{1}, io.QueueCount());
     std::unique_ptr<IPacketQueue> q = io.OpenQueue(0);
     TCPIP2_EXPECT_TRUE(q != nullptr);
@@ -172,6 +187,9 @@ TCPIP2_TEST(PublicHeadersConsumeCleanly) {
     TCPIP2_EXPECT_EQ(std::size_t{0}, q->RecvBatch(out, 1, err));
     TCPIP2_EXPECT_TRUE(err == IoError::None);
     q->SetRecvHandler([] {});
+    q->StopRx();
+    TCPIP2_EXPECT_EQ(IoError::None, q->DrainTx(1));
+    TCPIP2_EXPECT_EQ(std::size_t{0}, q->OutstandingTx());
     TCPIP2_EXPECT_EQ(std::size_t{0}, io.PendingTxCompletions(0));
     io.DrainTxCompletions(0);
 
@@ -184,6 +202,8 @@ TCPIP2_TEST(PublicHeadersConsumeCleanly) {
     SendResult r;
     TCPIP2_EXPECT_TRUE(r.status == SendStatus::Accepted);
     TCPIP2_EXPECT_EQ(std::size_t{0}, r.accepted_bytes);
+    ReceiveStatus receive_status = ReceiveStatus::Accepted;
+    TCPIP2_EXPECT_TRUE(receive_status == ReceiveStatus::Accepted);
 
     // session factory types
     FlowId fid{99};

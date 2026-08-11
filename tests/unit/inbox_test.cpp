@@ -7,7 +7,9 @@
 
 #include <core/inbox_mpsc.h>
 #include <core/inbox_spsc.h>
+#include <core/packet_envelope.h>
 #include <core/shard.h>
+#include <core/shard_lanes.h>
 
 #include "Test.h"
 
@@ -126,6 +128,75 @@ TCPIP2_TEST(SpscMultithreaded) {
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
 }
 
+TCPIP2_TEST(ShardPacketLaneBoundsMessagesAndBytes) {
+    PktBufferPool pool(4, 64);
+    ShardPacketLane lane(1, 32);
+
+    PacketEnvelope first;
+    first.lease = pool.Allocate();
+    first.lease.Resize(32);
+    TCPIP2_EXPECT_TRUE(lane.Push(std::move(first)));
+    TCPIP2_EXPECT_EQ(std::size_t{1}, lane.MessageCount());
+    TCPIP2_EXPECT_EQ(std::size_t{32}, lane.ByteCount());
+
+    PacketEnvelope second;
+    second.lease = pool.Allocate();
+    second.lease.Resize(1);
+    TCPIP2_EXPECT_FALSE(lane.Push(std::move(second)));
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(second.lease));
+
+    PacketEnvelope out;
+    TCPIP2_EXPECT_TRUE(lane.Pop(out));
+    out.lease.Reset();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, lane.MessageCount());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, lane.ByteCount());
+
+    ShardPacketLane byte_limited(2, 16);
+    PacketEnvelope oversized;
+    oversized.lease = pool.Allocate();
+    oversized.lease.Resize(17);
+    TCPIP2_EXPECT_FALSE(byte_limited.Push(std::move(oversized)));
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(oversized.lease));
+
+    second.lease.Reset();
+    oversized.lease.Reset();
+    pool.DrainReturnQueue();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+TCPIP2_TEST(ShardEgressLaneBoundsMessagesAndBytes) {
+    PktBufferPool pool(3, 64);
+    ShardEgressLane lane(1, 32);
+
+    EgressEnvelope first;
+    first.lease = pool.Allocate();
+    first.lease.Resize(32);
+    first.queue_id = 1;
+    first.flow_hash = 7;
+    first.enqueue_time_ms = 42;
+    TCPIP2_EXPECT_TRUE(lane.Push(std::move(first)));
+    TCPIP2_EXPECT_EQ(std::size_t{1}, lane.MessageCount());
+    TCPIP2_EXPECT_EQ(std::size_t{32}, lane.ByteCount());
+
+    EgressEnvelope second;
+    second.lease = pool.Allocate();
+    second.lease.Resize(1);
+    TCPIP2_EXPECT_FALSE(lane.Push(std::move(second)));
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(second.lease));
+
+    EgressEnvelope out;
+    TCPIP2_EXPECT_TRUE(lane.Pop(out));
+    TCPIP2_EXPECT_EQ(std::size_t{1}, out.queue_id);
+    TCPIP2_EXPECT_EQ(std::uint32_t{7}, out.flow_hash);
+    TCPIP2_EXPECT_EQ(std::uint64_t{42}, out.enqueue_time_ms);
+    out.lease.Reset();
+    second.lease.Reset();
+    pool.DrainReturnQueue();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, lane.MessageCount());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, lane.ByteCount());
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
 // ---------------------------------------------------------------------------
 // MPSC tests
 // ---------------------------------------------------------------------------
@@ -160,6 +231,18 @@ TCPIP2_TEST(MpscPushUntilFull) {
     TCPIP2_EXPECT_FALSE(inbox.Push(std::move(msg)));
     TCPIP2_EXPECT_EQ(std::size_t{4}, inbox.Size());
     TCPIP2_EXPECT_EQ(std::size_t{4}, inbox.Capacity());
+}
+
+TCPIP2_TEST(MpscCountsRemoteDataMessages) {
+    InboxMpsc inbox(4);
+    ShardMessage data;
+    data.type = ShardMessageType::kSessionData;
+    ShardMessage control;
+    control.type = ShardMessageType::kControl;
+    TCPIP2_EXPECT_TRUE(inbox.Push(std::move(data)));
+    TCPIP2_EXPECT_TRUE(inbox.Push(std::move(control)));
+    TCPIP2_EXPECT_EQ(std::size_t{1}, inbox.Count(ShardMessageType::kSessionData));
+    TCPIP2_EXPECT_EQ(std::size_t{1}, inbox.Count(ShardMessageType::kControl));
 }
 
 TCPIP2_TEST(MpscMultipleProducers) {

@@ -20,17 +20,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <new>
+#include <utility>
 
 #include <tcpip2/buffer.h>
 
 namespace tcpip2 {
 
-class InboxSpsc {
+template <typename T>
+class SpscRing {
 public:
-    explicit InboxSpsc(std::size_t capacity) noexcept
+    explicit SpscRing(std::size_t capacity) noexcept
         : mask_(NextPow2Mask(capacity)),
-          slots_(static_cast<BufferLease*>(::operator new((mask_ + 1) * sizeof(BufferLease),
-                                                          std::nothrow))),
+          slots_(static_cast<T*>(::operator new((mask_ + 1) * sizeof(T), std::nothrow))),
           head_(0), tail_(0) {
         if (slots_ == nullptr) {
             // Allocation failure: degrade to 0 usable capacity.
@@ -41,20 +42,20 @@ public:
         // Construct empty leases in every slot (all are default-constructed
         // null leases; they will be move-assigned on Push).
         for (std::size_t i = 0; i <= mask_; ++i) {
-            ::new (slots_ + i) BufferLease();
+            ::new (slots_ + i) T();
         }
     }
 
-    ~InboxSpsc() {
+    ~SpscRing() {
         if (slots_ != nullptr) {
             for (std::size_t i = 0; i <= mask_; ++i) {
-                slots_[i].~BufferLease();
+                slots_[i].~T();
             }
             ::operator delete(slots_);
         }
     }
 
-    bool Push(BufferLease&& item) noexcept {
+    bool Push(T&& item) noexcept {
         if (slots_ == nullptr) return false;
         const std::size_t head = head_.load(std::memory_order_relaxed);
         const std::size_t tail = tail_.load(std::memory_order_acquire);
@@ -64,7 +65,7 @@ public:
         return true;
     }
 
-    bool Pop(BufferLease& out) noexcept {
+    bool Pop(T& out) noexcept {
         if (slots_ == nullptr) return false;
         const std::size_t tail = tail_.load(std::memory_order_relaxed);
         const std::size_t head = head_.load(std::memory_order_acquire);
@@ -90,8 +91,8 @@ public:
         return head == tail;
     }
 
-    InboxSpsc(const InboxSpsc&) = delete;
-    InboxSpsc& operator=(const InboxSpsc&) = delete;
+    SpscRing(const SpscRing&) = delete;
+    SpscRing& operator=(const SpscRing&) = delete;
 
 private:
     static std::size_t NextPow2Mask(std::size_t capacity) noexcept {
@@ -107,9 +108,11 @@ private:
     }
 
     std::size_t mask_;
-    BufferLease* slots_;
+    T* slots_;
     std::atomic<std::size_t> head_{0};  // producer writes
     std::atomic<std::size_t> tail_{0};  // consumer writes
 };
+
+using InboxSpsc = SpscRing<BufferLease>;
 
 } // namespace tcpip2

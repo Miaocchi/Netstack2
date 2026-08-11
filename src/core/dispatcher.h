@@ -9,21 +9,62 @@
  * shard layer. Each RX queue has a home shard (identity mapping by default,
  * or an explicit queue->shard table). When a packet's flow maps to the same
  * shard that owns the queue, the packet stays direct; otherwise it is
- * redirected via the target shard's SPSC packet inbox.
+ * redirected through that source shard's dedicated target lane.
  *
- * Dispatch() itself is a pure routing decision — it does not perform I/O.
- * The caller passes the shard array so the dispatcher can hand off the
- * redirect to the correct StackShard::PostPacket().
+ * Dispatch() is a pure routing decision. It never owns a queue, lease, or
+ * shard pointer; the caller performs the corresponding direct delivery or
+ * lane handoff.
  */
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include <tcpip2/flow.h>
 
+#include <ip/fragment.h>
+
 namespace tcpip2 {
 
-class StackShard;  // forward
+enum class PacketClass {
+    kOther,
+    kTcp,
+    kUdp,
+    kFragment,
+};
+
+enum class PacketClassificationError {
+    None,
+    Empty,
+    UnsupportedIpVersion,
+    MalformedIp,
+    TruncatedTransport,
+};
+
+struct PacketClassification {
+    PacketClass packet_class = PacketClass::kOther;
+    PacketClassificationError error = PacketClassificationError::None;
+    FlowKey flow;
+    FragmentKey fragment;
+    std::size_t owner_shard = 0;
+
+    bool IsRoutable() const noexcept {
+        return error == PacketClassificationError::None &&
+               (packet_class == PacketClass::kTcp ||
+                packet_class == PacketClass::kUdp ||
+                packet_class == PacketClass::kFragment);
+    }
+};
+
+enum class DispatchAction {
+    kLocal,
+    kRedirect,
+};
+
+struct DispatchDecision {
+    DispatchAction action = DispatchAction::kLocal;
+    PacketClassification classification;
+};
 
 class PacketDispatcher {
 public:
@@ -54,18 +95,16 @@ public:
         return FlowToShard(key, shard_count_);
     }
 
-    /**
-     * Redirect a packet to the correct shard. Returns true if the flow's
-     * shard matches the queue's shard (direct, caller keeps the packet),
-     * false if the packet was redirected via the target shard's inbox.
-     *
-     * On redirect, ownership of the BufferLease inside @p key's accompanying
-     * packet transfers to the target shard via PostPacket(). The caller is
-     * responsible for passing the lease separately; Dispatch() only routes.
-     *
-     * This overload is for the routing decision without an actual packet.
-     */
-    bool Dispatch(std::size_t rx_queue_id, FlowKey key, StackShard* shards[]) noexcept;
+    /** Read only the IP and transport headers needed to select an RX owner. */
+    PacketClassification ClassifyPacket(const std::uint8_t* packet,
+                                        std::size_t length) const noexcept;
+
+    /** Return a local/redirect decision for an already-known source shard. */
+    DispatchDecision Dispatch(std::size_t source_shard, const std::uint8_t* packet,
+                              std::size_t length) const noexcept;
+
+    /** Stable fragment-group ownership before a transport FlowKey exists. */
+    std::size_t FragmentShard(const FragmentKey& key) const noexcept;
 
     std::size_t ShardCount() const noexcept { return shard_count_; }
     std::size_t QueueCount() const noexcept { return queue_count_; }

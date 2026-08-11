@@ -20,6 +20,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <vector>
@@ -54,6 +55,7 @@ public:
     // ---- ITransportSession (application-facing) ----
 
     SendResult TrySend(BufferView data) override;
+    void ResumeReceive() override;
     void ShutdownWrite() override;
     void Abort(SessionError error) override;
     void SetWritableCallback(WritableCallback cb) override;
@@ -62,8 +64,12 @@ public:
 
     // ---- Shard-facing methods (non-virtual) ----
 
-    /// Deliver received data to the application via the data callback.
-    void OnDataReceived(BufferLease lease);
+    /**
+     * Offer remote data to the stack. WouldBlock retains the lease until a
+     * later ResumeReceive() retry; callers must not submit another lease while
+     * the session is paused.
+     */
+    ReceiveStatus OnDataReceived(BufferLease lease);
 
     /// Notify the application that the session can accept more data.
     void OnWritable();
@@ -98,6 +104,11 @@ private:
     WritableCallback writable_callback_;
     DataCallback data_callback_;
     ClosedCallback closed_callback_;
+    BufferLease pending_receive_;
+    std::condition_variable callback_cv_;
+    std::size_t callbacks_in_flight_ = 0;
+
+    void CallbackFinished() noexcept;
 };
 
 } // namespace tcpip2

@@ -52,6 +52,19 @@ TCPIP2_TEST(FqCoDelSingleFlowFifoOrdering) {
     TCPIP2_EXPECT_TRUE(sched.Empty());
 }
 
+TCPIP2_TEST(FqCoDelDequeuedPacketPreservesFlowHash) {
+    tcpip2::FqCoDelScheduler sched;
+    const std::uint32_t flow_hash = 0x93ab47d1u;
+    const auto payload = MakePayload(0x42, 32);
+    TCPIP2_EXPECT_TRUE(sched.Enqueue(payload.data(), payload.size(), flow_hash, 0));
+
+    const auto packet = sched.Dequeue(1);
+    TCPIP2_EXPECT_TRUE(packet.has_value());
+    if (packet) {
+        TCPIP2_EXPECT_EQ(flow_hash, packet->flow_hash);
+    }
+}
+
 TCPIP2_TEST(FqCoDelMultipleFlowRoundRobin) {
     tcpip2::FqCoDelConfig config;
     config.quantum = 100; // small quantum so each flow sends ~1 packet/round

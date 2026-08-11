@@ -354,7 +354,7 @@ FragmentAddResult FragmentReassembler::AddIpv6Fragment(
     std::uint16_t fragment_offset, bool more_fragments,
     const std::uint8_t* payload, std::size_t payload_len,
     std::uint64_t now_ms, std::uint32_t expires_ms,
-    std::uint32_t max_payload_bytes) noexcept {
+    std::uint32_t max_payload_bytes, std::uint8_t protocol) noexcept {
 
     FragmentAddResult result;
 
@@ -391,7 +391,7 @@ FragmentAddResult FragmentReassembler::AddIpv6Fragment(
 
     FragmentKey key;
     key.ip_version = 6;
-    key.protocol = 0;
+    key.protocol = protocol;
     key.identification = identification;
     std::memcpy(key.src_ip, src_ip, 16);
     std::memcpy(key.dst_ip, dst_ip, 16);

@@ -22,9 +22,9 @@ struct NetstackConfig {
     std::size_t rx_queue_count = 1;
 
     /**
-     * RX queue -> shard affinity. Empty means identity (queue i -> shard i).
-     * When non-empty it must have exactly rx_queue_count entries, each
-     * < shard_count.
+     * RX queue -> shard affinity. Empty means identity (queue i -> shard i),
+     * which is valid only when rx_queue_count <= shard_count. When non-empty
+     * it must have exactly rx_queue_count entries, each < shard_count.
      */
     std::vector<std::size_t> rx_queue_to_shard;
 
@@ -47,6 +47,7 @@ struct NetstackConfig {
     bool Validate() const noexcept {
         if (shard_count == 0) return false;
         if (rx_queue_count == 0) return false;
+        if (rx_queue_to_shard.empty() && rx_queue_count > shard_count) return false;
         if (!rx_queue_to_shard.empty()) {
             if (rx_queue_to_shard.size() != rx_queue_count) return false;
             for (std::size_t s : rx_queue_to_shard) {
@@ -76,10 +77,11 @@ struct NetstackConfig {
 
         if (initial_tcp_window == 0) return false;
         if (tcp_mss < 512) return false;
-        if (rto_initial_ms == 0) return false;
+        // TcpSendBuffer enforces RFC 6298's 200 ms minimum RTO.
+        if (rto_initial_ms < 200) return false;
         if (persist_timeout_ms == 0) return false;
         if (keepalive_ms == 0) return false;
-        if (time_wait_ms == 0) return false;
+        if (time_wait_ms == 0 || time_wait_ms > UINT32_MAX) return false;
         return true;
     }
 };

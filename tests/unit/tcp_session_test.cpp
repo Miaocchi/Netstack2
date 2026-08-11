@@ -12,6 +12,12 @@
 #include <session/tcp_session.h>
 
 #include <cstring>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -113,10 +119,13 @@ TCPIP2_TEST(TcpSessionSetDataCallbackReceivesData) {
     tcpip2::TcpSession session;
 
     std::vector<std::uint8_t> received;
-    session.SetDataCallback([&received](tcpip2::BufferLease lease) {
+    tcpip2::BufferLease accepted;
+    session.SetDataCallback([&received, &accepted](tcpip2::BufferLease& lease) {
         if (lease) {
             received.assign(lease.Data(), lease.Data() + lease.Size());
         }
+        accepted = std::move(lease);
+        return tcpip2::ReceiveStatus::Accepted;
     });
 
     auto lease = MakeLease(pool, 0xAB, 64);
@@ -126,6 +135,32 @@ TCPIP2_TEST(TcpSessionSetDataCallbackReceivesData) {
     TCPIP2_EXPECT_EQ(received.size(), static_cast<std::size_t>(64));
     TCPIP2_EXPECT_EQ(received[0], static_cast<std::uint8_t>(0xAB));
     TCPIP2_EXPECT_EQ(received[63], static_cast<std::uint8_t>(0xAB));
+}
+
+TCPIP2_TEST(TcpSessionRetainsWouldBlockLeaseUntilResume) {
+    tcpip2::PktBufferPool pool(4, 2048);
+    tcpip2::TcpSession session;
+    bool accept = false;
+    std::vector<std::uint8_t> received;
+    tcpip2::BufferLease accepted;
+    session.SetDataCallback([&](tcpip2::BufferLease& lease) {
+        if (!accept) return tcpip2::ReceiveStatus::WouldBlock;
+        received.assign(lease.Data(), lease.Data() + lease.Size());
+        accepted = std::move(lease);
+        return tcpip2::ReceiveStatus::Accepted;
+    });
+
+    auto lease = MakeLease(pool, 0xCD, 32);
+    TCPIP2_EXPECT_EQ(tcpip2::ReceiveStatus::WouldBlock,
+                     session.OnDataReceived(std::move(lease)));
+
+    session.ResumeReceive();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, received.size());
+
+    accept = true;
+    session.ResumeReceive();
+    TCPIP2_EXPECT_EQ(std::size_t{32}, received.size());
+    TCPIP2_EXPECT_EQ(std::uint8_t{0xCD}, received[0]);
 }
 
 TCPIP2_TEST(TcpSessionSetWritableCallbackFiresOnDrain) {
@@ -259,6 +294,63 @@ TCPIP2_TEST(TcpSessionCallbacksNotSetAreSafe) {
     }
     // No crash = pass.
     TCPIP2_EXPECT_TRUE(true);
+}
+
+TCPIP2_TEST(TcpSessionClearDataCallbackWaitsForInFlightInvocation) {
+    tcpip2::PktBufferPool pool(2, 1024);
+    tcpip2::TcpSession session;
+    std::mutex mutex;
+    std::condition_variable callback_cv;
+    bool entered = false;
+    bool release = false;
+    std::atomic<bool> clear_started{false};
+    std::atomic<bool> cleared{false};
+    std::atomic<tcpip2::ReceiveStatus> receive_status{tcpip2::ReceiveStatus::Closed};
+
+    session.SetDataCallback([&](tcpip2::BufferLease& lease) {
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            entered = true;
+            callback_cv.notify_all();
+            callback_cv.wait(lock, [&] { return release; });
+        }
+        lease.Reset();
+        return tcpip2::ReceiveStatus::Accepted;
+    });
+
+    std::thread receiver([&] {
+        receive_status.store(session.OnDataReceived(MakeLease(pool, 0xAB, 16)),
+                             std::memory_order_relaxed);
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        callback_cv.wait(lock, [&] { return entered; });
+    }
+
+    std::thread clearer([&] {
+        clear_started.store(true, std::memory_order_release);
+        session.SetDataCallback(nullptr);
+        cleared.store(true, std::memory_order_release);
+    });
+    while (!clear_started.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    TCPIP2_EXPECT_FALSE(cleared.load(std::memory_order_acquire));
+
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        release = true;
+    }
+    callback_cv.notify_all();
+    receiver.join();
+    clearer.join();
+
+    TCPIP2_EXPECT_TRUE(cleared.load(std::memory_order_acquire));
+    TCPIP2_EXPECT_EQ(tcpip2::ReceiveStatus::Accepted,
+                     receive_status.load(std::memory_order_relaxed));
+    pool.DrainReturnQueue();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
 }
 
 TCPIP2_TEST(TcpSessionTrySendEmptyView) {

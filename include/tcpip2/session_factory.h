@@ -5,8 +5,8 @@
  * @brief Session creation interface for the Netstack2 TCP/UDP engine.
  * @license GPL-3.0
  *
- * Public API — frozen at NETSTACK2-API-FREEZE-001. Signature changes
- * require an ADR and a consumer compile-contract test update.
+ * Public API — v0.3.0 contract from ADR-008. Signature changes require an ADR
+ * and a consumer compile-contract test update.
  *
  * Allows an external consumer (e.g. an OpenPPP2 adapter) to create
  * transport sessions by implementing ISessionFactory. The factory owns all
@@ -15,6 +15,7 @@
  */
 
 #include <cstdint>
+#include <memory>
 
 #include <tcpip2/address.h>
 #include <tcpip2/transport_session.h>
@@ -66,7 +67,7 @@ struct UdpOpenRequest {
 
 /** Result of a TCP session open attempt. */
 struct SessionOpenResult {
-    ITransportSession* session = nullptr;
+    std::shared_ptr<ITransportSession> session;
     SessionError error = SessionError::None;
 };
 

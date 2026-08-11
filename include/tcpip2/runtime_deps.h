@@ -24,7 +24,9 @@ namespace tcpip2 {
  * External dependencies injected into the Netstack2 runtime at start time.
  *
  * Ownership: all pointers are non-owning. The caller must keep the objects
- * alive until after Netstack2::Stop() returns.
+ * alive until Netstack2::Stop() returns a complete StopResult. A timeout or
+ * drain failure leaves the Runtime in Stopping, so dependencies remain needed
+ * through a successful retry or Netstack2 destruction.
  */
 struct RuntimeDependencies {
     /// Packet I/O backend (TUN, AF_XDP, etc.). Must not be null.

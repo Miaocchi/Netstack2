@@ -40,6 +40,16 @@ TCPIP2_TEST(AffinityVectorRules) {
     TCPIP2_EXPECT_TRUE(c.Validate());
 }
 
+TCPIP2_TEST(DefaultMappingCannotExceedShardCount) {
+    NetstackConfig c;
+    c.shard_count = 1;
+    c.rx_queue_count = 2;
+    TCPIP2_EXPECT_FALSE(c.Validate());
+
+    c.rx_queue_to_shard = {0, 0};
+    TCPIP2_EXPECT_TRUE(c.Validate());
+}
+
 TCPIP2_TEST(ZeroPoolInvalid) {
     NetstackConfig c;
     c.pool_slot_count = 0;
@@ -80,6 +90,14 @@ TCPIP2_TEST(TimeoutZeroInvalid) {
     NetstackConfig c4;
     c4.time_wait_ms = 0;
     TCPIP2_EXPECT_FALSE(c4.Validate());
+
+    NetstackConfig c5;
+    c5.rto_initial_ms = 199;
+    TCPIP2_EXPECT_FALSE(c5.Validate());
+
+    NetstackConfig c6;
+    c6.time_wait_ms = static_cast<std::uint64_t>(UINT32_MAX) + 1;
+    TCPIP2_EXPECT_FALSE(c6.Validate());
 }
 
 TCPIP2_TEST(PoolMemoryOverflowRejected) {

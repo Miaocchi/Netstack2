@@ -8,8 +8,8 @@
  * The Runtime wires together the packet I/O, the dispatcher, and the shard
  * threads. Start() opens queues, creates per-shard buffer pools, creates
  * shards, sets the queue->shard mapping, starts all shard threads, and
- * installs recv handlers that wake the owning shard. Stop() clears handlers,
- * posts stop messages, and joins.
+ * installs recv handlers that wake the owning shard. Stop() transitions to
+ * Stopping before it clears handlers, joins shards, and drains queue TX.
  *
  * Per-shard pool model (ADR-001): each shard owns its own PktBufferPool,
  * created by Runtime::Start(). The pool's owner_thread_id_ is set to the
@@ -20,18 +20,23 @@
  * boundaries (via SPSC inbox) are returned to their originating pool's
  * return_queue_ and drained by that shard's DrainReturnQueue().
  *
- * After Stop(), all pool outstanding buffers must be 0 — every lease that
- * entered the runtime has been released back to its pool.
+ * A timed-out Stop retains queues and pools in Stopping. Only a completed Stop
+ * destroys pools, after every outstanding lease has been returned.
  */
 
 #include <atomic>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include <tcpip2/buffer.h>
 #include <tcpip2/config.h>
 #include <tcpip2/packet_io.h>
 #include <tcpip2/runtime_deps.h>
+#include <tcpip2/shutdown.h>
+
+#include <core/shard_lanes.h>
 
 namespace tcpip2 {
 
@@ -59,10 +64,11 @@ public:
      */
     bool Start(NetstackConfig config, const RuntimeDependencies& deps) noexcept;
 
-    /** Stop all shards. Idempotent. Must not be called from shard thread. */
-    void Stop() noexcept;
+    /** Stop all shards and drain TX under @p options. Retryable on failure. */
+    StopResult Stop(const StopOptions& options = {}) noexcept;
 
-    bool IsRunning() const noexcept { return running_.load(std::memory_order_relaxed); }
+    bool IsRunning() const noexcept;
+    bool IsStopping() const noexcept;
 
     // Access for testing
     std::size_t ShardCount() const noexcept { return shards_.size(); }
@@ -81,7 +87,18 @@ public:
     IEventSink* EventSink() const noexcept { return event_sink_; }
 
 private:
+    enum class State {
+        Stopped,
+        Starting,
+        Running,
+        Stopping,
+    };
+
     bool DoStart(NetstackConfig config, const RuntimeDependencies& deps) noexcept;
+    StopResult DoStop(const StopOptions& options) noexcept;
+    void QuiesceShards() noexcept;
+    StopResult DrainTxAndFinalize(const StopOptions& options) noexcept;
+    StopResult FinalizeResources(IoError drain_error, std::size_t queue_id) noexcept;
 
     NetstackConfig config_;
     IPacketIo* packet_io_ = nullptr;
@@ -91,8 +108,15 @@ private:
     std::vector<std::unique_ptr<PktBufferPool>> shard_pools_;
     std::vector<std::unique_ptr<StackShard>> shards_;
     std::unique_ptr<PacketDispatcher> dispatcher_;
+    std::unique_ptr<ShardLanes> packet_lanes_;
+    std::unique_ptr<ShardEgressLanes> egress_lanes_;
     std::vector<std::unique_ptr<IPacketQueue>> queues_;
-    std::atomic<bool> running_{false};
+    mutable std::mutex lifecycle_mutex_;
+    std::condition_variable lifecycle_cv_;
+    State state_ = State::Stopped;
+    bool stop_in_progress_ = false;
+    bool shards_quiesced_ = false;
+    StopResult last_stop_result_;
 };
 
 } // namespace tcpip2

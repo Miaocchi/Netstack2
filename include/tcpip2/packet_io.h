@@ -5,8 +5,8 @@
  * @brief Pluggable packet I/O (kernel-bypass backends and virtio-style taps).
  * @license GPL-3.0
  *
- * Public API — frozen at NETSTACK2-API-FREEZE-001. Signature changes
- * require an ADR and a consumer compile-contract test update.
+ * Public API — v0.3.0 contract from ADR-008. Signature changes require an ADR
+ * and a consumer compile-contract test update.
  *
  * Each hardware queue is modeled as exactly one IPacketQueue, opened by a
  * single owner thread (RX queue -> owner shard). Polling backends call
@@ -92,6 +92,26 @@ public:
      */
     virtual void SetBufferPool(PktBufferPool* pool) noexcept = 0;
 
+    /**
+     * Stop new RX delivery before the runtime tears down owner shards.
+     * Existing undispatched RX leases must be released or otherwise remain
+     * owned by the queue until it is safe to release them.
+     */
+    virtual void StopRx() noexcept = 0;
+
+    /**
+     * Complete or cancel every accepted asynchronous TX lease.
+     *
+     * @p deadline_ms is the remaining timeout budget for this drain attempt;
+     * zero requests an unbounded final completion/cancel. A non-None result
+     * with OutstandingTx() != 0 retains all backend-held leases. Runtime will
+     * retain its pools and report the failure instead of destroying them.
+     */
+    virtual IoError DrainTx(std::uint64_t deadline_ms) noexcept = 0;
+
+    /** Number of accepted TX leases still held by the backend. */
+    virtual std::size_t OutstandingTx() const noexcept = 0;
+
     /** Event backends wake the owner thread by invoking @p wake. */
     virtual void SetRecvHandler(std::function<void()> wake) = 0;
 };
@@ -165,6 +185,9 @@ public:
      * to their owner pool.
      */
     void SetAsyncTxCompletion(bool on);
+
+    /** Test knob: make DrainTx report WouldBlock while pending TX remains. */
+    void SetDrainTxWouldBlock(bool on);
 
     /** Emulate TX completion for @p queue_id: release pending leases to their pools. */
     void DrainTxCompletions(std::size_t queue_id);

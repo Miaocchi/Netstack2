@@ -9,9 +9,9 @@
  *   3. Drain packet inbox (SPSC) — redirected packets from other shards
  *   4. Drain control inbox (MPSC) — check for StopMessage first
  *   5. Advance timers
- *   6. Protocol work (noop — future TCP engine)
- *   7. Pacing/FQ (noop)
- *   8. Send TX batch (noop — future TX path)
+ *   6. Protocol work
+ *   7. Pacing/FQ
+ *   8. Route FQ output to the selected queue owner and send TX
  *   9. Publish counters (noop)
  *  10. Wait — sleep 1ms or block on the control inbox with timeout
  *
@@ -26,8 +26,11 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <utility>
+
+#include <core/dispatcher.h>
 
 #include <tcp/handshake.h>
 #include <tcp/input.h>
@@ -108,16 +111,18 @@ std::uint32_t HashTxLease(const std::uint8_t* data, std::size_t size) noexcept {
 } // namespace
 
 StackShard::StackShard(std::size_t shard_id, PktBufferPool& pool, IPacketQueue* queue,
-                       std::size_t inbox_capacity,
-                       ISessionFactory* session_factory,
-                       IClock* clock,
-                       IEventSink* event_sink) noexcept
+                        std::size_t inbox_capacity,
+                        ISessionFactory* session_factory,
+                        IClock* clock,
+                        IEventSink* event_sink,
+                        TcpHandshakeConfig tcp_config) noexcept
     : shard_id_(shard_id),
       pool_(pool),
       queue_(queue),
-      session_factory_(session_factory),
-      clock_(clock ? clock : DefaultClock()),
-      event_sink_(event_sink),
+       session_factory_(session_factory),
+       clock_(clock ? clock : DefaultClock()),
+       event_sink_(event_sink),
+       tcp_config_(std::move(tcp_config)),
       packet_inbox_(inbox_capacity),
       control_inbox_(inbox_capacity),
       timer_(256) {}
@@ -134,13 +139,12 @@ bool StackShard::Start() noexcept {
     if (tcp_engine_epoch_ == 0) ++tcp_engine_epoch_;
     try {
         tcp_ = std::make_unique<TcpHandshakeEngine>(
-            TcpHandshakeConfig{}, TcpIsnGenerator(isn_secret), timer_,
+            tcp_config_, TcpIsnGenerator(isn_secret), timer_,
             tcp_engine_epoch_, session_factory_,
             [this](ShardMessage&& msg) noexcept {
                 return control_inbox_.Push(std::move(msg));
             },
-            event_sink_,
-            &pool_);
+            event_sink_);
     } catch (...) {
         tcp_.reset();
         return false;
@@ -195,6 +199,71 @@ bool StackShard::PostPacket(BufferLease&& lease) noexcept {
     return false;
 }
 
+bool StackShard::SetRxQueues(const std::vector<IPacketQueue*>& queues) noexcept {
+    if (running_.load(std::memory_order_relaxed)) return false;
+    try {
+        rx_queues_ = queues;
+        next_rx_queue_ = 0;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool StackShard::SetPacketLanes(PacketDispatcher* dispatcher,
+                                 const std::vector<ShardPacketLane*>& inbound,
+                                 const std::vector<ShardPacketLane*>& outbound,
+                                const std::vector<StackShard*>& targets) noexcept {
+    if (running_.load(std::memory_order_relaxed) || dispatcher == nullptr ||
+        inbound.size() != outbound.size() || outbound.size() != targets.size()) {
+        return false;
+    }
+    try {
+        dispatcher_ = dispatcher;
+        inbound_lanes_ = inbound;
+        outbound_lanes_ = outbound;
+        redirect_targets_ = targets;
+        next_inbound_lane_ = 0;
+        return true;
+    } catch (...) {
+        dispatcher_ = nullptr;
+        inbound_lanes_.clear();
+        outbound_lanes_.clear();
+        redirect_targets_.clear();
+        return false;
+    }
+}
+
+bool StackShard::SetTxQueues(const std::vector<IPacketQueue*>& queues) noexcept {
+    if (running_.load(std::memory_order_relaxed)) return false;
+    try {
+        tx_queues_ = queues;
+        return true;
+    } catch (...) {
+        tx_queues_.clear();
+        return false;
+    }
+}
+
+bool StackShard::SetEgressLanes(const std::vector<ShardEgressLane*>& inbound,
+                                 const std::vector<ShardEgressLane*>& outbound) noexcept {
+    if (running_.load(std::memory_order_relaxed) ||
+        inbound.size() != outbound.size() ||
+        outbound.size() != redirect_targets_.size()) {
+        return false;
+    }
+    try {
+        inbound_egress_lanes_ = inbound;
+        outbound_egress_lanes_ = outbound;
+        next_inbound_egress_lane_ = 0;
+        return true;
+    } catch (...) {
+        inbound_egress_lanes_.clear();
+        outbound_egress_lanes_.clear();
+        return false;
+    }
+}
+
 void StackShard::Run() noexcept {
     ownership_.SetOwner();
     // Reassign the pool's owner thread to this shard thread so that
@@ -208,6 +277,21 @@ void StackShard::Run() noexcept {
     if (tcp_) tcp_->Shutdown();
     fq_codel_.Reset();
     tcp_tx_.clear();
+    deferred_session_data_ = ShardMessage{};
+
+    // A stop message can overtake owning packet/control messages. Release all
+    // remaining leases on the owner thread before Runtime considers pool
+    // teardown; cross-shard lanes are released by Runtime after every join.
+    for (;;) {
+        BufferLease lease;
+        if (!packet_inbox_.Pop(lease)) break;
+        lease.Reset();
+    }
+    for (;;) {
+        ShardMessage msg;
+        if (!control_inbox_.Pop(msg)) break;
+        msg.data.Reset();
+    }
     tcp_pcb_count_.store(0, std::memory_order_relaxed);
     tcp_half_open_count_.store(0, std::memory_order_relaxed);
     // Final drain so foreign-thread buffer releases are cleaned up.
@@ -221,18 +305,47 @@ void StackShard::EventLoopIteration() noexcept {
     // Step 1: DrainReturnQueue — recycle foreign-thread releases.
     pool_.DrainReturnQueue();
 
-    // Step 2: RX batch from the local queue (if any).
-    if (queue_ != nullptr) {
+    // Step 2: RX batches from queues owned by this shard. Rotate the first
+    // queue each iteration so a busy queue cannot starve another owner queue.
+    const std::size_t queue_count = rx_queues_.empty()
+        ? (queue_ == nullptr ? 0 : 1)
+        : rx_queues_.size();
+    const std::size_t queue_visits = std::min(queue_count, kRxBudget);
+    const std::size_t per_queue_budget = queue_visits == 0 ? 0 : kRxBudget / queue_visits;
+    for (std::size_t visit = 0; visit < queue_visits; ++visit) {
+        IPacketQueue* rx_queue = queue_;
+        if (!rx_queues_.empty()) {
+            rx_queue = rx_queues_[(next_rx_queue_ + visit) % queue_count];
+        }
+        if (rx_queue == nullptr) continue;
+
         BufferLease rx[kRxBudget];
         IoError error = IoError::None;
-        const std::size_t n = queue_->RecvBatch(rx, kRxBudget, error);
+        const std::size_t n = rx_queue->RecvBatch(rx, per_queue_budget, error);
         for (std::size_t i = 0; i < n; ++i) {
             packets_received_.fetch_add(1, std::memory_order_relaxed);
-            ProcessPacket(std::move(rx[i]), now_ms);
+            RouteRxPacket(std::move(rx[i]), now_ms);
+        }
+    }
+    if (!rx_queues_.empty() && queue_visits != 0) {
+        next_rx_queue_ = (next_rx_queue_ + queue_visits) % queue_count;
+    }
+
+    // Step 3: Drain dedicated inbound source->target lanes round-robin. Each
+    // lane has one producer, avoiding an unsafe MPSC use of InboxSpsc.
+    if (!inbound_lanes_.empty()) {
+        for (std::size_t i = 0; i < kPacketInboxBudget; ++i) {
+            ShardPacketLane* lane = inbound_lanes_[next_inbound_lane_];
+            next_inbound_lane_ = (next_inbound_lane_ + 1) % inbound_lanes_.size();
+            if (lane == nullptr) continue;
+            PacketEnvelope envelope;
+            if (!lane->Pop(envelope)) continue;
+            packets_received_.fetch_add(1, std::memory_order_relaxed);
+            ProcessEnvelope(std::move(envelope), now_ms);
         }
     }
 
-    // Step 3: Drain packet inbox (SPSC) — redirected packets.
+    // Legacy SPSC inbox is retained for single-producer unit tests only.
     for (std::size_t i = 0; i < kPacketInboxBudget; ++i) {
         BufferLease lease;
         if (!packet_inbox_.Pop(lease)) break;
@@ -241,7 +354,17 @@ void StackShard::EventLoopIteration() noexcept {
     }
 
     // Step 4: Drain control inbox (MPSC). Check for StopMessage first.
+    bool session_data_blocked = false;
+    if (deferred_session_data_.data && tcp_) {
+        session_data_blocked = !tcp_->EnqueueRemoteData(
+            deferred_session_data_.flow_id, deferred_session_data_.generation,
+            deferred_session_data_.data);
+        if (!session_data_blocked) {
+            deferred_session_data_ = ShardMessage{};
+        }
+    }
     for (std::size_t i = 0; i < kControlInboxBudget; ++i) {
+        if (session_data_blocked) break;
         ShardMessage msg;
         if (!control_inbox_.Pop(msg)) break;
         if (msg.type == ShardMessageType::kStop) {
@@ -258,15 +381,14 @@ void StackShard::EventLoopIteration() noexcept {
             }
         }
         if (msg.type == ShardMessageType::kSessionClosed && tcp_) {
-            tcp_->OnSessionClosed(msg.flow_id, msg.generation);
+            tcp_->OnSessionClosed(msg.flow_id, msg.generation, msg.error);
         }
         if (msg.type == ShardMessageType::kSessionData && tcp_) {
-            // EnqueueSendData copies bytes into the TCP send buffer; the lease
-            // is still owned by msg and will be Reset() below.
-            tcp_->EnqueueSendData(msg.flow_id, msg.data);
-            // Prevent double-release: msg.data still holds the lease, and the
-            // unified Reset() at the end of the loop will release it. Do NOT
-            // reset it here.
+            if (!tcp_->EnqueueRemoteData(msg.flow_id, msg.generation, msg.data)) {
+                deferred_session_data_ = std::move(msg);
+                session_data_blocked = true;
+                break;
+            }
         }
         if (msg.type == ShardMessageType::kFlowClose && tcp_) {
             tcp_->CloseFlow(msg.flow_id, msg.generation);
@@ -302,9 +424,17 @@ void StackShard::EventLoopIteration() noexcept {
     // Step 7: pump TCP send paths (new data, retransmissions, persist probes).
     if (tcp_) {
         PumpTcpSendPaths(now_ms);
+        const std::size_t remote_low_watermark = std::max<std::size_t>(
+            1, control_inbox_.Capacity() / kRemoteReceiveLowWatermarkDivisor);
+        const std::size_t remote_backlog = control_inbox_.Count(
+            ShardMessageType::kSessionData) +
+            (deferred_session_data_.data ? 1U : 0U);
+        tcp_->ResumeSessionReceives(remote_backlog, remote_low_watermark);
     }
 
-    // Step 8: submit the bounded TCP control batch. Partial-send tails remain owned.
+    // Step 8: admit cross-shard egress into its queue-owner scheduler, then
+    // route the bounded local FQ-CoDel output to the selected TX queue owner.
+    DrainEgressLanes();
     FlushTcpTx();
 
     // Step 9: Publish periodic metric snapshot to the event sink (if any).
@@ -334,6 +464,25 @@ void StackShard::EventLoopIteration() noexcept {
     if (!stop_requested_.load(std::memory_order_relaxed)) {
         control_inbox_.Wait(1);
     }
+}
+
+void StackShard::RouteRxPacket(BufferLease&& lease, std::uint64_t now_ms) noexcept {
+    if (!lease) return;
+    if (dispatcher_ == nullptr) {
+        ProcessPacket(std::move(lease), now_ms);
+        return;
+    }
+
+    const DispatchDecision decision = dispatcher_->Dispatch(
+        shard_id_, lease.Data(), lease.Size());
+    if (decision.action != DispatchAction::kRedirect) {
+        ProcessPacket(std::move(lease), now_ms);
+        return;
+    }
+
+    PacketEnvelope envelope;
+    envelope.lease = std::move(lease);
+    RedirectPacket(decision.classification.owner_shard, std::move(envelope));
 }
 
 void StackShard::ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexcept {
@@ -366,8 +515,18 @@ void StackShard::ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexce
                 return;
             }
             if (protocol == 17) {
+                const FragmentInfo fragment = ExtractFragmentInfo(lease.Data(), lease.Size());
+                if (fragment.valid && fragment.protocol == 17) {
+                    HandleFragment(lease.Data(), lease.Size(), now_ms);
+                    return;
+                }
                 const UdpInputResult udp = ParseIpUdpPacket(lease.Data(), lease.Size());
                 if (udp.error == UdpInputResult::Error::None) {
+                    if (dispatcher_ != nullptr &&
+                        dispatcher_->FlowShard(udp.datagram.flow) != shard_id_) {
+                        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+                        return;
+                    }
                     HandleUdp(std::move(lease), now_ms);
                     return;
                 }
@@ -376,7 +535,39 @@ void StackShard::ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexce
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    const TcpHandshakeResult result = tcp_->OnSegment(input.segment, now_ms);
+    ProcessTcpSegment(input.segment, now_ms);
+}
+
+void StackShard::ProcessEnvelope(PacketEnvelope&& envelope, std::uint64_t now_ms) noexcept {
+    if (!envelope.lease) return;
+    if (envelope.type == PacketEnvelopeType::kRawIp) {
+        ProcessPacket(std::move(envelope.lease), now_ms);
+        return;
+    }
+    if (envelope.type == PacketEnvelopeType::kReassembledTcp) {
+        const TcpParseResult tcp = ParseTcpSegment(
+            envelope.source, envelope.destination,
+            envelope.lease.Data(), envelope.lease.Size());
+        if (tcp.error != TcpParseError::None) {
+            packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        ProcessTcpSegment(tcp.segment, now_ms);
+        return;
+    }
+    HandleReassembledUdp(envelope.source, envelope.destination, std::move(envelope.lease));
+}
+
+void StackShard::ProcessTcpSegment(const TcpSegmentView& segment,
+                                   std::uint64_t now_ms) noexcept {
+    TCPIP2_ASSERT_OWNER(ownership_);
+    if (dispatcher_ != nullptr && dispatcher_->FlowShard(segment.flow) != shard_id_) {
+        // No caller may mutate a PCB after a misrouted segment. The runtime
+        // routes every raw and reassembled TCP packet before this point.
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const TcpHandshakeResult result = tcp_->OnSegment(segment, now_ms);
     if (result.error != TcpHandshakeError::None) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
     }
@@ -403,7 +594,7 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
         result = reassembler_.AddIpv6Fragment(
             fi.src_ip, fi.dst_ip, fi.identification,
             fi.fragment_offset, fi.more_fragments,
-            fi.payload, fi.payload_length, now_ms);
+            fi.payload, fi.payload_length, now_ms, 0, 0, fi.protocol);
     }
     if (result.error != FragmentError::None) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
@@ -411,7 +602,8 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
     }
     if (!result.complete) return;
 
-    // Reassembly complete — re-parse as TCP segment and deliver.
+    // Reassembly complete — its fragment shard may differ from the canonical
+    // flow owner, so classify the transport segment before mutating a PCB.
     IpAddress src, dst;
     if (fi.ip_version == 4) {
         src = IpAddress::Ipv4(fi.src_ip[0], fi.src_ip[1], fi.src_ip[2], fi.src_ip[3]);
@@ -420,24 +612,110 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
         src = IpAddress::Ipv6(fi.src_ip);
         dst = IpAddress::Ipv6(fi.dst_ip);
     }
-    const TcpParseResult tcp = ParseTcpSegment(
-        src, dst, result.payload.data(), result.total_length);
-    if (tcp.error != TcpParseError::None) {
-        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+    if (fi.protocol == 6) {
+        const TcpParseResult tcp = ParseTcpSegment(
+            src, dst, result.payload.data(), result.total_length);
+        if (tcp.error != TcpParseError::None) {
+            packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        const std::size_t owner = dispatcher_ == nullptr
+            ? shard_id_
+            : dispatcher_->FlowShard(tcp.segment.flow);
+        if (owner == shard_id_) {
+            ProcessTcpSegment(tcp.segment, now_ms);
+            return;
+        }
+
+        BufferLease transport = pool_.Allocate();
+        if (!transport || result.total_length > transport.Capacity()) {
+            packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        std::memcpy(transport.Data(), result.payload.data(), result.total_length);
+        transport.Resize(result.total_length);
+        PacketEnvelope envelope;
+        envelope.type = PacketEnvelopeType::kReassembledTcp;
+        envelope.lease = std::move(transport);
+        envelope.source = src;
+        envelope.destination = dst;
+        RedirectPacket(owner, std::move(envelope));
         return;
     }
-    const TcpHandshakeResult hr = tcp_->OnSegment(tcp.segment, now_ms);
-    if (hr.error != TcpHandshakeError::None) {
-        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+
+    if (fi.protocol == 17) {
+        const bool validate_checksum = src.IsIpv6() ||
+            (result.total_length >= 8 &&
+             (result.payload[6] != 0 || result.payload[7] != 0));
+        const UdpParseResult udp = ParseUdpDatagram(
+            src, dst, result.payload.data(), result.total_length, validate_checksum);
+        if (udp.error != UdpParseError::None) {
+            packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        const std::size_t owner = dispatcher_ == nullptr
+            ? shard_id_
+            : dispatcher_->FlowShard(udp.flow);
+        if (owner == shard_id_) {
+            udp_datagrams_received_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+
+        BufferLease transport = pool_.Allocate();
+        if (!transport || result.total_length > transport.Capacity()) {
+            packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        std::memcpy(transport.Data(), result.payload.data(), result.total_length);
+        transport.Resize(result.total_length);
+        PacketEnvelope envelope;
+        envelope.type = PacketEnvelopeType::kReassembledUdp;
+        envelope.lease = std::move(transport);
+        envelope.source = src;
+        envelope.destination = dst;
+        RedirectPacket(owner, std::move(envelope));
+        return;
     }
-    if (hr.response.valid && !EnqueueTcpResponse(hr.response)) {
-        tcp_->DeferResponse(hr.response);
-    }
+
+    packets_dropped_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void StackShard::HandleUdp(BufferLease&& lease, std::uint64_t /*now_ms*/) noexcept {
+    (void)lease;
     udp_datagrams_received_.fetch_add(1, std::memory_order_relaxed);
     // Full UDP flow tracking is future work. The lease is consumed (dropped).
+}
+
+void StackShard::HandleReassembledUdp(const IpAddress& source, const IpAddress& destination,
+                                      BufferLease&& lease) noexcept {
+    if (!lease) return;
+    const bool validate_checksum = source.IsIpv6() ||
+        (lease.Size() >= 8 && (lease.Data()[6] != 0 || lease.Data()[7] != 0));
+    const UdpParseResult udp = ParseUdpDatagram(
+        source, destination, lease.Data(), lease.Size(), validate_checksum);
+    if (udp.error != UdpParseError::None ||
+        (dispatcher_ != nullptr && dispatcher_->FlowShard(udp.flow) != shard_id_)) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    udp_datagrams_received_.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool StackShard::RedirectPacket(std::size_t target_shard, PacketEnvelope&& envelope) noexcept {
+    if (target_shard >= outbound_lanes_.size() || target_shard >= redirect_targets_.size() ||
+        outbound_lanes_[target_shard] == nullptr || redirect_targets_[target_shard] == nullptr) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        redirect_drops_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (!outbound_lanes_[target_shard]->Push(std::move(envelope))) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        redirect_drops_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    redirected_packets_.fetch_add(1, std::memory_order_relaxed);
+    redirect_targets_[target_shard]->Wake();
+    return true;
 }
 
 void StackShard::HandleIcmp(const std::uint8_t* packet, std::size_t length,
@@ -492,7 +770,7 @@ void StackShard::HandleIcmp(const std::uint8_t* packet, std::size_t length,
 }
 
 bool StackShard::EnqueueTcpResponse(const TcpResponse& response) noexcept {
-    if (queue_ == nullptr) {
+    if (queue_ == nullptr && tx_queues_.empty()) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
@@ -538,49 +816,113 @@ void StackShard::PumpTcpSendPaths(std::uint64_t now_ms) noexcept {
     tcp_tx_.clear();
 }
 
-void StackShard::FlushTcpTx() noexcept {
-    if (queue_ == nullptr || fq_codel_.Empty()) return;
+void StackShard::DrainEgressLanes() noexcept {
+    if (inbound_egress_lanes_.empty()) return;
 
-    // Drain the scheduler into a local batch. CoDel dropping happens here;
-    // surviving packets are staged for SendBatch.
-    std::array<FqCoDelPacket, kTcpTxBudget> packets{};
-    std::size_t count = 0;
-    for (std::size_t i = 0; i < kTcpTxBudget; ++i) {
-        auto pkt = fq_codel_.Dequeue(clock_->NowMs());
-        if (!pkt) break;
-        packets[count++] = std::move(*pkt);
-    }
-    if (count == 0) return;
+    for (std::size_t i = 0;
+         i < kTcpTxBudget && fq_codel_.QueueLength() < kTcpTxBudget;
+         ++i) {
+        ShardEgressLane* lane = inbound_egress_lanes_[next_inbound_egress_lane_];
+        next_inbound_egress_lane_ =
+            (next_inbound_egress_lane_ + 1) % inbound_egress_lanes_.size();
+        if (lane == nullptr) continue;
 
-    // Copy each scheduled packet into a pool lease for the queue contract.
-    std::array<BufferLease, kTcpTxBudget> leases{};
-    for (std::size_t i = 0; i < count; ++i) {
-        leases[i] = pool_.Allocate();
-        if (leases[i]) {
-            std::memcpy(leases[i].Data(), packets[i].Data(), packets[i].Size());
-            leases[i].Resize(packets[i].Size());
+        EgressEnvelope envelope;
+        if (!lane->Pop(envelope)) continue;
+
+        const bool valid_queue = envelope.queue_id < tx_queues_.size() &&
+            tx_queues_[envelope.queue_id] != nullptr && dispatcher_ != nullptr &&
+            dispatcher_->QueueShard(envelope.queue_id) == shard_id_ &&
+            (static_cast<std::size_t>(envelope.flow_hash) % tx_queues_.size()) ==
+                envelope.queue_id;
+        if (!valid_queue || !envelope.lease ||
+            !fq_codel_.Enqueue(envelope.lease.Data(), envelope.lease.Size(),
+                                envelope.flow_hash, envelope.enqueue_time_ms)) {
+            packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         }
+        envelope.lease.Reset();
+    }
+}
+
+bool StackShard::RouteEgressPacket(const FqCoDelPacket& packet) noexcept {
+    if (packet.Empty()) return false;
+
+    // Legacy standalone shards have one directly owned queue. Runtime-configured
+    // shards have an index for every queue but only retain local queue pointers.
+    std::size_t queue_id = 0;
+    std::size_t target_shard = shard_id_;
+    IPacketQueue* queue = queue_;
+    if (!tx_queues_.empty()) {
+        queue_id = static_cast<std::size_t>(packet.flow_hash) % tx_queues_.size();
+        if (dispatcher_ == nullptr) return false;
+        target_shard = dispatcher_->QueueShard(queue_id);
+        if (target_shard == shard_id_) {
+            queue = tx_queues_[queue_id];
+        } else {
+            queue = nullptr;
+        }
+    }
+
+    BufferLease lease = pool_.Allocate();
+    if (!lease) return false;
+    if (packet.Size() > lease.Capacity()) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    std::memcpy(lease.Data(), packet.Data(), packet.Size());
+    lease.Resize(packet.Size());
+
+    if (target_shard != shard_id_) {
+        if (target_shard >= outbound_egress_lanes_.size() ||
+            target_shard >= redirect_targets_.size() ||
+            outbound_egress_lanes_[target_shard] == nullptr ||
+            redirect_targets_[target_shard] == nullptr) {
+            packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
+
+        EgressEnvelope envelope;
+        envelope.lease = std::move(lease);
+        envelope.queue_id = queue_id;
+        envelope.flow_hash = packet.flow_hash;
+        envelope.enqueue_time_ms = packet.enqueue_time_ms;
+        if (!outbound_egress_lanes_[target_shard]->Push(std::move(envelope))) {
+            return false;
+        }
+        redirect_targets_[target_shard]->Wake();
+        return true;
+    }
+
+    if (queue == nullptr) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return true;
     }
 
     IoError error = IoError::None;
-    std::size_t sent = queue_->SendBatch(leases.data(), count, error);
-    if (sent > count) sent = count;
+    std::size_t sent = queue->SendBatch(&lease, 1, error);
+    if (sent > 1) sent = 1;
+    if (sent == 1) return true;
+    return false;
+}
 
-    // Any unsent packet must be re-enqueued rather than dropped so that
-    // WouldBlock / partial-send tails remain in the egress queue.
-    for (std::size_t i = sent; i < count; ++i) {
-        if (!leases[i]) {
-            packets_dropped_.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-        if (!fq_codel_.Enqueue(packets[i].Data(), packets[i].Size(),
-                               packets[i].flow_hash, packets[i].enqueue_time_ms)) {
-            packets_dropped_.fetch_add(1, std::memory_order_relaxed);
-        }
-    }
+void StackShard::FlushTcpTx() noexcept {
+    if (fq_codel_.Empty()) return;
 
-    if (error != IoError::None && error != IoError::WouldBlock) {
-        packets_dropped_.fetch_add(count - sent, std::memory_order_relaxed);
+    // CoDel makes the drop decision on the protocol-owner shard. A surviving
+    // packet is then either submitted locally or moved to one bounded egress
+    // lane. A blocked queue/lane is re-admitted with its original timestamp.
+    for (std::size_t i = 0; i < kTcpTxBudget; ++i) {
+        auto pkt = fq_codel_.Dequeue(clock_->NowMs());
+        if (!pkt) break;
+        if (!RouteEgressPacket(*pkt)) {
+            if (!fq_codel_.Enqueue(pkt->Data(), pkt->Size(), pkt->flow_hash,
+                                   pkt->enqueue_time_ms)) {
+                packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+            }
+            // A full egress lane or a queue that would block applies bounded
+            // backpressure to this shard instead of spinning on one flow.
+            break;
+        }
     }
 }
 

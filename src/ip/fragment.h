@@ -64,12 +64,12 @@ struct FragmentAddResult {
 
 /// Key for identifying a fragment group.
 /// For IPv4: src_ip[4], dst_ip[4], protocol, identification(16-bit).
-/// For IPv6: src_ip[16], dst_ip[16], identification(32-bit).
+/// For IPv6: src_ip[16], dst_ip[16], next-header protocol, identification(32-bit).
 struct FragmentKey {
     std::uint8_t src_ip[16] = {};
     std::uint8_t dst_ip[16] = {};
     std::uint8_t ip_version = 0;     // 4 or 6
-    std::uint8_t protocol = 0;       // IPv4 only; 0 for IPv6
+    std::uint8_t protocol = 0;       // IPv4 protocol or IPv6 final next-header
     std::uint32_t identification = 0;
 
     bool Matches(const FragmentKey& other) const noexcept {
@@ -186,13 +186,14 @@ public:
     /// @param now_ms current monotonic time
     /// @param expires_ms TTL for this entry (0 = use default)
     /// @param max_payload_bytes per-datagram payload upper bound (0 = use default)
+    /// @param protocol final IPv6 next-header protocol for fragment association
     FragmentAddResult AddIpv6Fragment(
         const std::uint8_t src_ip[16], const std::uint8_t dst_ip[16],
         std::uint32_t identification,
         std::uint16_t fragment_offset, bool more_fragments,
         const std::uint8_t* payload, std::size_t payload_len,
         std::uint64_t now_ms, std::uint32_t expires_ms = 0,
-        std::uint32_t max_payload_bytes = 0) noexcept;
+        std::uint32_t max_payload_bytes = 0, std::uint8_t protocol = 0) noexcept;
 
     /// Purge expired entries. Returns number of entries removed.
     std::size_t Purge(std::uint64_t now_ms) noexcept;

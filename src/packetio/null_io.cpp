@@ -44,11 +44,13 @@ struct NullPacketIo::Impl {
     bool recv_would_block = false;
     bool send_would_block = false;
     bool async_tx_completion = false;
+    bool drain_tx_would_block = false;
     mutable std::mutex mutex;
     std::vector<std::deque<BufferLease>> rx_backlog;
     std::vector<std::deque<BufferLease>> pending_tx;
     std::vector<std::vector<std::vector<std::uint8_t>>> egress;
     std::vector<std::function<void()>> recv_handler;
+    std::vector<bool> rx_stopped;
 };
 
 namespace {
@@ -64,6 +66,10 @@ public:
             return 0;
         }
         std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (impl_->rx_stopped[queue_id_]) {
+            error = IoError::Closed;
+            return 0;
+        }
         error = IoError::None;
         std::size_t taken = 0;
         while (taken < capacity && !impl_->rx_backlog[queue_id_].empty()) {
@@ -115,6 +121,35 @@ public:
         pool_ = pool;
     }
 
+    void StopRx() noexcept override {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->recv_handler[queue_id_] = nullptr;
+        impl_->rx_stopped[queue_id_] = true;
+        auto& backlog = impl_->rx_backlog[queue_id_];
+        while (!backlog.empty()) {
+            backlog.front().Reset();
+            backlog.pop_front();
+        }
+    }
+
+    IoError DrainTx(std::uint64_t deadline_ms) noexcept override {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        auto& pending = impl_->pending_tx[queue_id_];
+        if (impl_->drain_tx_would_block && deadline_ms != 0 && !pending.empty()) {
+            return IoError::WouldBlock;
+        }
+        while (!pending.empty()) {
+            pending.front().Reset();
+            pending.pop_front();
+        }
+        return IoError::None;
+    }
+
+    std::size_t OutstandingTx() const noexcept override {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        return impl_->pending_tx[queue_id_].size();
+    }
+
     void SetRecvHandler(std::function<void()> wake) override {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->recv_handler[queue_id_] = std::move(wake);
@@ -135,6 +170,7 @@ NullPacketIo::NullPacketIo(std::size_t queue_count)
     impl_->pending_tx.resize(queue_count);
     impl_->egress.resize(queue_count);
     impl_->recv_handler.resize(queue_count);
+    impl_->rx_stopped.resize(queue_count, false);
 }
 
 NullPacketIo::~NullPacketIo() = default;
@@ -143,6 +179,10 @@ std::size_t NullPacketIo::QueueCount() const noexcept { return impl_->queue_coun
 
 std::unique_ptr<IPacketQueue> NullPacketIo::OpenQueue(std::size_t queue_id) {
     if (queue_id >= impl_->queue_count) return nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->rx_stopped[queue_id] = false;
+    }
     return std::unique_ptr<IPacketQueue>(new NullQueue(queue_id, impl_));
 }
 
@@ -151,6 +191,7 @@ bool NullPacketIo::Inject(std::size_t queue_id, BufferLease&& lease) {
     std::function<void()> wake;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (impl_->rx_stopped[queue_id]) return false;
         const bool was_empty = impl_->rx_backlog[queue_id].empty();
         impl_->rx_backlog[queue_id].push_back(std::move(lease));
         if (was_empty) {
@@ -183,9 +224,14 @@ void NullPacketIo::SetAsyncTxCompletion(bool on) {
     impl_->async_tx_completion = on;
 }
 
-void NullPacketIo::DrainTxCompletions(std::size_t queue_id) {
+void NullPacketIo::SetDrainTxWouldBlock(bool on) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->drain_tx_would_block = on;
+}
+
+void NullPacketIo::DrainTxCompletions(std::size_t queue_id) {
     if (queue_id >= impl_->queue_count) return;
+    std::lock_guard<std::mutex> lock(impl_->mutex);
     auto& pending = impl_->pending_tx[queue_id];
     while (!pending.empty()) {
         pending.front().Reset();

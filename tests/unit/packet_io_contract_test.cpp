@@ -374,11 +374,37 @@ TCPIP2_TEST(AsyncTxCompletionDefersRelease) {
     TCPIP2_EXPECT_EQ(std::size_t{2}, io.PendingTxCompletions(0));
     TCPIP2_EXPECT_EQ(std::size_t{2}, pool.OutstandingCount());
 
-    // Backend completion returns the buffers to their owning pool.
-    io.DrainTxCompletions(0);
+    // Queue drain returns accepted asynchronous leases before pool teardown.
+    TCPIP2_EXPECT_EQ(IoError::None, q->DrainTx(0));
     TCPIP2_EXPECT_EQ(std::size_t{0}, io.PendingTxCompletions(0));
+    TCPIP2_EXPECT_EQ(std::size_t{0}, q->OutstandingTx());
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
     TCPIP2_EXPECT_EQ(std::size_t{4}, pool.FreeCount());
+}
+
+TCPIP2_TEST(StopRxRejectsInjectionAndReleasesQueuedRxLeases) {
+    PktBufferPool pool(4, 512);
+    NullPacketIo io(1);
+    auto q = io.OpenQueue(0);
+
+    BufferLease queued = pool.Allocate();
+    queued.Resize(8);
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(queued)));
+    TCPIP2_EXPECT_EQ(std::size_t{1}, pool.OutstandingCount());
+
+    q->StopRx();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+
+    BufferLease rejected = pool.Allocate();
+    rejected.Resize(1);
+    TCPIP2_EXPECT_FALSE(io.Inject(0, std::move(rejected)));
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(rejected));
+    rejected.Reset();
+
+    BufferLease out[1];
+    IoError error = IoError::None;
+    TCPIP2_EXPECT_EQ(std::size_t{0}, q->RecvBatch(out, 1, error));
+    TCPIP2_EXPECT_EQ(IoError::Closed, error);
 }
 
 TCPIP2_TEST_MAIN();

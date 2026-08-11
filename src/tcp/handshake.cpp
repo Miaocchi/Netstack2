@@ -1,7 +1,6 @@
 #include <tcp/handshake.h>
 
 #include <core/shard_message.h>
-#include <session/tcp_session.h>
 #include <tcp/output.h>
 
 #include <algorithm>
@@ -107,21 +106,19 @@ TcpHandshakeEngine::TcpHandshakeEngine(const TcpHandshakeConfig& config,
                                        std::uint64_t generation_epoch,
                                        ISessionFactory* session_factory,
                                        PostMessageFn post_message,
-                                       IEventSink* event_sink,
-                                       PktBufferPool* pool)
+                                       IEventSink* event_sink)
     : config_(config), isn_(isn), timers_(timers),
       callback_gate_(std::make_shared<CallbackGate>()),
       generation_epoch_(generation_epoch == 0 ? 1 : generation_epoch),
       session_factory_(session_factory),
       post_message_fn_(std::move(post_message)),
-      event_sink_(event_sink),
-      pool_(pool) {
+      event_sink_(event_sink) {
     if (!config_.Validate()) {
         throw std::invalid_argument("invalid TCP handshake configuration");
     }
     pcbs_.reserve(config_.pcb_limit);
     pending_responses_.reserve(config_.pending_response_limit);
-    callback_gate_->owner = this;
+    callback_gate_->post_message = post_message_fn_;
 }
 
 TcpHandshakeEngine::~TcpHandshakeEngine() {
@@ -223,9 +220,12 @@ bool TcpHandshakeEngine::ScheduleRetry(Pcb& pcb,
     const std::uint64_t generation = pcb.generation;
     const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
     try {
-        pcb.retry_timer = timers_.Schedule(deadline_ms, [weak_gate, flow, generation] {
+        pcb.retry_timer = timers_.Schedule(deadline_ms, [weak_gate, this, flow, generation] {
             const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
-            if (gate && gate->owner != nullptr) gate->owner->OnRetry(flow, generation);
+            if (!gate) return;
+            gate->TryRun([this, flow, generation] {
+                if (!shutdown_) OnRetry(flow, generation);
+            });
         });
         return true;
     } catch (...) {
@@ -303,11 +303,12 @@ bool TcpHandshakeEngine::ScheduleDelayedAck(Pcb& pcb,
     try {
         pcb.delayed_ack_timer = timers_.Schedule(
             SaturatingAdd(now_ms, config_.delayed_ack_ms),
-            [weak_gate, flow, generation] {
+            [weak_gate, this, flow, generation] {
                 const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
-                if (gate && gate->owner != nullptr) {
-                    gate->owner->OnDelayedAck(flow, generation);
-                }
+                if (!gate) return;
+                gate->TryRun([this, flow, generation] {
+                    if (!shutdown_) OnDelayedAck(flow, generation);
+                });
             });
         return true;
     } catch (...) {
@@ -340,37 +341,11 @@ TcpDeliveryResult TcpHandshakeEngine::DrainSession(Pcb& pcb) noexcept {
         result.status = TcpDeliveryStatus::WouldBlock;
         return result;
     }
-    // Build a delivery function that copies received data into an owning
-    // BufferLease and delivers it to the session.
-    //
-    // Production path: if the session is a TcpSession, data is handed off
-    // via OnDataReceived (the stack→app direction). TrySend must NOT be
-    // used here — it is the app→stack send path.
-    //
-    // Test path: for non-TcpSession objects (e.g. ReceiveSession in unit
-    // tests), fall back to TrySend so that scripted back-pressure behavior
-    // (WouldBlock, partial acceptance) is still exercised.
-    ITransportSession* const session = pcb.session;
-    PktBufferPool* const pool = pool_;
-    DeliverFn deliver = [session, pool](BufferView data) -> SendResult {
-        auto* tcp_session = dynamic_cast<TcpSession*>(session);
-        if (tcp_session != nullptr) {
-            if (pool == nullptr) {
-                return {0, SendStatus::Error};
-            }
-            BufferLease lease = pool->Allocate();
-            if (!lease) {
-                return {0, SendStatus::WouldBlock};
-            }
-            if (data.Size() > lease.Capacity()) {
-                return {0, SendStatus::Error};
-            }
-            std::memcpy(lease.Data(), data.Data(), data.Size());
-            lease.Resize(data.Size());
-            tcp_session->OnDataReceived(std::move(lease));
-            return {data.Size(), SendStatus::Accepted};
-        }
-        // Test session fallback: use TrySend for back-pressure testing.
+    // Client TCP payload always enters the externally owned transport session
+    // through TrySend(). Remote payload travels in the other direction via
+    // the DataCallback registered in BindSessionCallbacks().
+    const std::shared_ptr<ITransportSession> session = pcb.session;
+    DeliverFn deliver = [session](BufferView data) -> SendResult {
         return session->TrySend(data);
     };
     result = DrainTcpReceiveBuffer(
@@ -635,6 +610,15 @@ void TcpHandshakeEngine::RemoveAt(std::size_t index) noexcept {
     }
     if (pcb.timewait_timer.value != 0) {
         timers_.Cancel(pcb.timewait_timer);
+    }
+    if (pcb.session) {
+        try {
+            pcb.session->SetWritableCallback(nullptr);
+            pcb.session->SetDataCallback(nullptr);
+            pcb.session->SetClosedCallback(nullptr);
+        } catch (...) {
+            // An external session may not prevent shutdown of shard-owned state.
+        }
     }
     if (pcb.receive) {
         const std::size_t memory = pcb.receive->MemoryBytes();
@@ -949,35 +933,50 @@ void TcpHandshakeEngine::BindSessionCallbacks(Pcb& pcb) noexcept {
     // WritableCallback — posted back to the shard as kSessionWritable.
     pcb.session->SetWritableCallback([weak_gate, flow_id, generation] {
         const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
-        if (!gate || gate->owner == nullptr) return;
+        if (!gate) return;
         ShardMessage msg;
         msg.type = ShardMessageType::kSessionWritable;
         msg.flow_id = flow_id;
         msg.generation = generation;
-        gate->owner->post_message_fn_(std::move(msg));
+        gate->TryPost(std::move(msg));
     });
 
     // ClosedCallback — posted back as kSessionClosed.
-    pcb.session->SetClosedCallback([weak_gate, flow_id, generation](SessionError) {
+    pcb.session->SetClosedCallback([weak_gate, flow_id, generation](SessionError error) {
         const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
-        if (!gate || gate->owner == nullptr) return;
+        if (!gate) return;
         ShardMessage msg;
         msg.type = ShardMessageType::kSessionClosed;
         msg.flow_id = flow_id;
         msg.generation = generation;
-        gate->owner->post_message_fn_(std::move(msg));
+        msg.error = error;
+        gate->TryPost(std::move(msg));
     });
 
-    // DataCallback is NOT set here. Received data flows stack→app via
-    // DrainSession → OnDataReceived → the application's own DataCallback.
-    // The app→stack direction uses TrySend() directly on the session.
+    // Remote payload returns to the shard, which owns the TCP send buffer.
+    pcb.session->SetDataCallback([weak_gate, flow_id, generation](BufferLease& lease) {
+        if (!lease) return ReceiveStatus::Accepted;
+        const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
+        if (!gate) return ReceiveStatus::Closed;
+        ShardMessage msg;
+        msg.type = ShardMessageType::kSessionData;
+        msg.flow_id = flow_id;
+        msg.generation = generation;
+        msg.data = std::move(lease);
+        if (gate->TryPost(std::move(msg))) {
+            return ReceiveStatus::Accepted;
+        }
+        lease = std::move(msg.data);
+        return gate->IsActive() && lease ? ReceiveStatus::WouldBlock
+                                          : ReceiveStatus::Closed;
+    });
 }
 
 TcpHandshakeResult TcpHandshakeEngine::AttachSession(
-    const FlowKey& incoming_flow, ITransportSession* session,
+    const FlowKey& incoming_flow, std::shared_ptr<ITransportSession> session,
     std::uint64_t now_ms) noexcept {
     TcpHandshakeResult result;
-    if (session == nullptr) {
+    if (!session) {
         result.error = TcpHandshakeError::InvalidSession;
         return result;
     }
@@ -988,7 +987,7 @@ TcpHandshakeResult TcpHandshakeEngine::AttachSession(
         return result;
     }
     Pcb& pcb = pcbs_[index];
-    pcb.session = session;
+    pcb.session = std::move(session);
     pcb.session_bound = true;
     pcb.receive->SetBlocked(false);
     BindSessionCallbacks(pcb);
@@ -1029,7 +1028,7 @@ TcpHandshakeResult TcpHandshakeEngine::OnSessionWritable(
 }
 
 bool TcpHandshakeEngine::OnSessionClosed(
-    FlowId flow_id, std::uint64_t generation) noexcept {
+    FlowId flow_id, std::uint64_t generation, SessionError error) noexcept {
     for (std::size_t i = 0; i < pcbs_.size(); ++i) {
         if (pcbs_[i].flow_id == flow_id && pcbs_[i].generation == generation) {
             // Fix 5: In closing/TIME-WAIT states, only clear session binding.
@@ -1042,11 +1041,14 @@ bool TcpHandshakeEngine::OnSessionClosed(
                 state == TcpState::FinWait1 ||
                 state == TcpState::FinWait2 ||
                 state == TcpState::Closing ||
-                state == TcpState::LastAck ||
-                state == TcpState::CloseWait) {
+                state == TcpState::LastAck) {
                 return true;
             }
-            RemoveAt(i);
+            if (error == SessionError::None || error == SessionError::RemoteClosed) {
+                CloseFlow(flow_id, generation);
+            } else {
+                AbortFlow(flow_id, generation);
+            }
             return true;
         }
     }
@@ -1110,7 +1112,7 @@ std::size_t TcpHandshakeEngine::EstablishedCount() const noexcept {
 void TcpHandshakeEngine::Shutdown() noexcept {
     if (shutdown_) return;
     shutdown_ = true;
-    if (callback_gate_) callback_gate_->owner = nullptr;
+    if (callback_gate_) callback_gate_->Deactivate();
     // Emit Closed for any connection that is still alive (ESTABLISHED,
     // CLOSE-WAIT, etc.) so consumers are notified before the PCB is
     // destroyed.  TIME-WAIT entries are evicted silently.
@@ -1136,11 +1138,50 @@ std::size_t TcpHandshakeEngine::EnqueueSendData(FlowId flow_id,
     return 0;
 }
 
-std::size_t TcpHandshakeEngine::EnqueueSendData(FlowId flow_id,
-    const BufferLease& lease) noexcept {
-    if (!lease) return 0;
-    const std::size_t sent = EnqueueSendData(flow_id, lease.Data(), lease.Size());
-    return sent;
+bool TcpHandshakeEngine::EnqueueRemoteData(FlowId flow_id,
+    std::uint64_t generation, BufferLease& lease) noexcept {
+    if (!lease) return true;
+    for (Pcb& pcb : pcbs_) {
+        if (pcb.flow_id != flow_id || pcb.generation != generation) continue;
+        if ((pcb.state != TcpState::Established && pcb.state != TcpState::CloseWait) ||
+            !pcb.send) {
+            lease.Reset();
+            return true;
+        }
+        const std::size_t accepted = pcb.send->Enqueue(lease.Data(), lease.Size());
+        if (accepted == lease.Size()) {
+            lease.Reset();
+            return true;
+        }
+        if (accepted != 0) {
+            const std::size_t remaining = lease.Size() - accepted;
+            std::memmove(lease.Data(), lease.Data() + accepted, remaining);
+            lease.Resize(remaining);
+        }
+        return false;
+    }
+    lease.Reset();
+    return true;
+}
+
+void TcpHandshakeEngine::ResumeSessionReceives(
+    std::size_t remote_backlog, std::size_t remote_low_watermark) noexcept {
+    if (remote_low_watermark == 0 || remote_backlog >= remote_low_watermark) {
+        return;
+    }
+    const std::size_t send_low_watermark =
+        std::max<std::size_t>(1, config_.send_queue_limit / 2);
+    for (Pcb& pcb : pcbs_) {
+        if (!pcb.session || !pcb.send ||
+            pcb.send->UnsntBytes() >= send_low_watermark) {
+            continue;
+        }
+        try {
+            pcb.session->ResumeReceive();
+        } catch (...) {
+            // A faulty external session must not terminate the owner shard.
+        }
+    }
 }
 
 void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
@@ -1304,10 +1345,12 @@ bool TcpHandshakeEngine::ScheduleTimeWait(std::size_t index,
     try {
         pcb.timewait_timer = timers_.Schedule(
             pcb.timewait_deadline_ms,
-            [weak_gate, flow, generation] {
+            [weak_gate, this, flow, generation] {
                 const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
-                if (gate && gate->owner != nullptr)
-                    gate->owner->OnTimeWaitExpired(flow, generation);
+                if (!gate) return;
+                gate->TryRun([this, flow, generation] {
+                    if (!shutdown_) OnTimeWaitExpired(flow, generation);
+                });
             });
         return true;
     } catch (...) {

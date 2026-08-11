@@ -108,6 +108,10 @@ private:
             pool_ = pool;
         }
 
+        void StopRx() noexcept override {}
+        IoError DrainTx(std::uint64_t) noexcept override { return IoError::None; }
+        std::size_t OutstandingTx() const noexcept override { return 0; }
+
         void SetRecvHandler(std::function<void()> wake) override {
             wake_ = std::move(wake);
         }

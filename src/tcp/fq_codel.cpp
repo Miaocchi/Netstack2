@@ -156,6 +156,8 @@ std::optional<FqCoDelPacket> FqCoDelScheduler::Dequeue(
             continue;
         }
 
+        const std::uint32_t flow_hash = flow.flow_hash;
+
         // If the flow is now empty, deactivate; otherwise rotate to back.
         if (flow.queue.empty()) {
             flow.active = false;
@@ -170,7 +172,7 @@ std::optional<FqCoDelPacket> FqCoDelScheduler::Dequeue(
         FqCoDelPacket result;
         result.data = std::move(pkt.data);
         result.enqueue_time_ms = pkt.enqueue_time_ms;
-        result.flow_hash = flow.flow_hash;
+        result.flow_hash = flow_hash;
         return result;
     }
 

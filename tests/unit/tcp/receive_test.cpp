@@ -25,6 +25,7 @@ public:
         return script_[next_++];
     }
 
+    void ResumeReceive() override {}
     void ShutdownWrite() override {}
     void Abort(SessionError) override {}
     void SetWritableCallback(WritableCallback cb) override { writable_ = std::move(cb); }
@@ -43,6 +44,7 @@ private:
 class ThrowingSession final : public ITransportSession {
 public:
     SendResult TrySend(BufferView) override { throw std::runtime_error("send failure"); }
+    void ResumeReceive() override {}
     void ShutdownWrite() override {}
     void Abort(SessionError) override {}
     void SetWritableCallback(WritableCallback) override {}

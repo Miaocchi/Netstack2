@@ -68,6 +68,15 @@ public:
         return capacity_;
     }
 
+    std::size_t Count(ShardMessageType type) const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::size_t count = 0;
+        for (const ShardMessage& msg : queue_) {
+            if (msg.type == type) ++count;
+        }
+        return count;
+    }
+
 private:
     std::size_t capacity_;
     mutable std::mutex mutex_;

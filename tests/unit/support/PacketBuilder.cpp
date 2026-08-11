@@ -283,7 +283,7 @@ std::vector<std::uint8_t> PacketBuilder::BuildIpv4TcpFragment(
 
     // Flags + fragment offset
     const std::uint16_t flags_frag =
-        static_cast<std::uint16_t>((mf ? 0x8000 : 0x00) | (fragment_offset & 0x1FFF));
+        static_cast<std::uint16_t>((mf ? 0x2000 : 0x00) | (fragment_offset & 0x1FFF));
     Append16(pkt, flags_frag);
 
     pkt.push_back(64);  // TTL

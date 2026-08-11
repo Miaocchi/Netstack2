@@ -25,6 +25,7 @@
 #include <tcpip2/tap_io.h>
 
 #include <cerrno>
+#include <atomic>
 #include <cstddef>
 #include <cstring>
 #include <functional>
@@ -54,7 +55,7 @@ public:
             return 0;
         }
         // Pool must be injected before first RecvBatch. If not, report Closed.
-        if (pool_ == nullptr) {
+        if (rx_stopped_.load(std::memory_order_acquire) || pool_ == nullptr) {
             error = IoError::Closed;
             return 0;
         }
@@ -152,6 +153,17 @@ public:
         pool_ = pool;
     }
 
+    void StopRx() noexcept override {
+        recv_handler_ = nullptr;
+        rx_stopped_.store(true, std::memory_order_release);
+    }
+
+    IoError DrainTx(std::uint64_t /*deadline_ms*/) noexcept override {
+        return IoError::None;
+    }
+
+    std::size_t OutstandingTx() const noexcept override { return 0; }
+
     void SetRecvHandler(std::function<void()> wake) override {
         // The TUN backend is poll-based in this version; the wake callback
         // is stored but not proactively invoked (no epoll). The caller
@@ -164,6 +176,7 @@ private:
     std::size_t queue_id_;
     PktBufferPool* pool_ = nullptr;
     std::function<void()> recv_handler_;
+    std::atomic<bool> rx_stopped_{false};
 };
 
 } // namespace

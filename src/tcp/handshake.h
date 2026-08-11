@@ -9,7 +9,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include <tcpip2/buffer.h>
@@ -157,11 +159,10 @@ public:
     TcpHandshakeEngine(const TcpHandshakeConfig& config,
                        const TcpIsnGenerator& isn,
                        TimerWheel& timers,
-                       std::uint64_t generation_epoch = 1,
-                       ISessionFactory* session_factory = nullptr,
-                       PostMessageFn post_message = nullptr,
-                       IEventSink* event_sink = nullptr,
-                       PktBufferPool* pool = nullptr);
+                        std::uint64_t generation_epoch = 1,
+                        ISessionFactory* session_factory = nullptr,
+                        PostMessageFn post_message = nullptr,
+                        IEventSink* event_sink = nullptr);
     ~TcpHandshakeEngine();
 
     TcpHandshakeEngine(const TcpHandshakeEngine&) = delete;
@@ -169,15 +170,16 @@ public:
 
     TcpHandshakeResult OnSegment(const TcpSegmentView& segment,
                                  std::uint64_t now_ms) noexcept;
-    /** Caller retains @p session until OnSessionClosed acknowledges the binding. */
+    /** The engine retains @p session until the flow is removed. */
     TcpHandshakeResult AttachSession(const FlowKey& incoming_flow,
-                                     ITransportSession* session,
+                                     std::shared_ptr<ITransportSession> session,
                                      std::uint64_t now_ms) noexcept;
     TcpHandshakeResult OnSessionWritable(FlowId flow_id,
                                          std::uint64_t generation,
                                          std::uint64_t now_ms) noexcept;
     bool OnSessionClosed(FlowId flow_id,
-                         std::uint64_t generation) noexcept;
+                          std::uint64_t generation,
+                          SessionError error = SessionError::RemoteClosed) noexcept;
     void PumpSessionDeliveries(std::uint64_t now_ms,
                                std::size_t pcb_budget = 64) noexcept;
 
@@ -187,8 +189,13 @@ public:
                                  std::size_t length) noexcept;
 
     /// Enqueue application data from a session DataCallback (owning lease).
-    /// Returns bytes accepted (0 if PCB not found or send buffer full).
-    std::size_t EnqueueSendData(FlowId flow_id, const BufferLease& lease) noexcept;
+    /// Leaves an unaccepted tail in @p lease so the shard can retry it.
+    bool EnqueueRemoteData(FlowId flow_id, std::uint64_t generation,
+                           BufferLease& lease) noexcept;
+
+    /** Resume sessions only when the caller has observed a low remote backlog. */
+    void ResumeSessionReceives(std::size_t remote_backlog,
+                               std::size_t remote_low_watermark) noexcept;
 
     /// Pump send paths for established PCBs: emit new data, retransmissions,
     /// and persist probes as serialized TX leases.
@@ -234,7 +241,7 @@ private:
         TcpSynOptions response_options;
         std::unique_ptr<TcpReceiveBuffer> receive;
         std::unique_ptr<TcpSendBuffer> send;
-        ITransportSession* session = nullptr;
+        std::shared_ptr<ITransportSession> session;
         bool session_bound = false;
         FlowId flow_id;
         std::uint64_t generation = 0;
@@ -251,7 +258,52 @@ private:
     };
 
     struct CallbackGate {
-        TcpHandshakeEngine* owner = nullptr;
+        mutable std::mutex mutex;
+        std::condition_variable cv;
+        PostMessageFn post_message;
+        bool active = true;
+        std::size_t in_flight_callbacks = 0;
+
+        bool TryPost(ShardMessage&& msg) noexcept {
+            std::unique_lock<std::mutex> lock(mutex);
+            if (!active || !post_message) return false;
+            ++in_flight_callbacks;
+            bool posted = false;
+            try {
+                posted = post_message(std::move(msg));
+            } catch (...) {
+                posted = false;
+            }
+            --in_flight_callbacks;
+            if (!active && in_flight_callbacks == 0) cv.notify_all();
+            return posted;
+        }
+
+        template <typename Fn>
+        void TryRun(Fn&& fn) noexcept {
+            std::unique_lock<std::mutex> lock(mutex);
+            if (!active) return;
+            ++in_flight_callbacks;
+            try {
+                fn();
+            } catch (...) {
+                // Timer callbacks cannot let an external failure kill a shard.
+            }
+            --in_flight_callbacks;
+            if (!active && in_flight_callbacks == 0) cv.notify_all();
+        }
+
+        bool IsActive() const noexcept {
+            std::lock_guard<std::mutex> lock(mutex);
+            return active && static_cast<bool>(post_message);
+        }
+
+        void Deactivate() noexcept {
+            std::unique_lock<std::mutex> lock(mutex);
+            active = false;
+            post_message = nullptr;
+            cv.wait(lock, [this] { return in_flight_callbacks == 0; });
+        }
     };
 
     std::size_t FindIndex(const FlowKey& incoming_flow) const noexcept;
@@ -288,7 +340,6 @@ private:
     ISessionFactory* session_factory_ = nullptr;
     PostMessageFn post_message_fn_;
     IEventSink* event_sink_ = nullptr;
-    PktBufferPool* pool_ = nullptr;
     bool shutdown_ = false;
 };
 
