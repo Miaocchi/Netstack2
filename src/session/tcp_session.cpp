@@ -18,50 +18,38 @@ TcpSession::TcpSession(std::size_t send_queue_limit)
 }
 
 SendResult TcpSession::TrySend(BufferView data) {
-    WritableCallback writable_cb;
-    SendResult result{0, SendStatus::Accepted};
+    std::lock_guard<std::mutex> lock(mutex_);
 
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-
-        if (closed_ || write_shutdown_) {
-            return {0, SendStatus::Closed};
-        }
-
-        const std::size_t available = (send_queue_.size() >= send_queue_limit_)
-            ? 0 : (send_queue_limit_ - send_queue_.size());
-
-        if (available == 0) {
-            // Queue is full — capture callback for deferred notification.
-            writable_cb = writable_callback_;
-            result = {0, SendStatus::WouldBlock};
-        } else {
-            const std::size_t to_copy = std::min(available, data.Size());
-            if (to_copy > 0) {
-                send_queue_.insert(send_queue_.end(), data.Data(),
-                                   data.Data() + to_copy);
-            }
-            result = {to_copy, SendStatus::Accepted};
-
-            // If we could not accept everything, notify the writable callback
-            // later when the shard drains the queue.
-            if (to_copy < data.Size()) {
-                writable_cb = writable_callback_;
-            }
-        }
+    if (closed_ || write_shutdown_) {
+        return {0, SendStatus::Closed};
     }
 
-    // Invoke callback outside the lock to avoid deadlocks.
-    if (writable_cb) {
-        writable_cb();
+    const std::size_t available = (send_queue_.size() >= send_queue_limit_)
+        ? 0 : (send_queue_limit_ - send_queue_.size());
+
+    if (available == 0) {
+        return {0, SendStatus::WouldBlock};
     }
 
-    return result;
+    const std::size_t to_copy = std::min(available, data.Size());
+    if (to_copy > 0) {
+        send_queue_.insert(send_queue_.end(), data.Data(),
+                           data.Data() + to_copy);
+    }
+    return {to_copy, SendStatus::Accepted};
 }
 
 void TcpSession::ShutdownWrite() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    write_shutdown_ = true;
+    WritableCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        write_shutdown_ = true;
+        cb = writable_callback_;
+    }
+
+    if (cb) {
+        cb();
+    }
 }
 
 void TcpSession::Abort(SessionError error) {
@@ -81,8 +69,19 @@ void TcpSession::Abort(SessionError error) {
 }
 
 void TcpSession::SetWritableCallback(WritableCallback cb) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    writable_callback_ = std::move(cb);
+    WritableCallback immediate;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        writable_callback_ = std::move(cb);
+        if (writable_callback_ && !closed_ && !write_shutdown_ &&
+            send_queue_.size() < send_queue_limit_) {
+            immediate = writable_callback_;
+        }
+    }
+
+    if (immediate) {
+        immediate();
+    }
 }
 
 void TcpSession::SetDataCallback(DataCallback cb) {
@@ -135,19 +134,36 @@ void TcpSession::OnClosed(SessionError error) {
 
 std::size_t TcpSession::DrainSendQueue(std::uint8_t* out,
                                         std::size_t max) noexcept {
-    std::lock_guard<std::mutex> lock(mutex_);
+    WritableCallback cb;
+    std::size_t copied = 0;
+    bool was_full = false;
 
-    if (out == nullptr) {
-        return 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        if (out == nullptr) {
+            return 0;
+        }
+
+        was_full = send_queue_.size() >= send_queue_limit_;
+        const std::size_t to_copy = std::min(max, send_queue_.size());
+        if (to_copy > 0) {
+            std::memcpy(out, send_queue_.data(), to_copy);
+            send_queue_.erase(send_queue_.begin(),
+                              send_queue_.begin() + static_cast<std::ptrdiff_t>(to_copy));
+        }
+        copied = to_copy;
+
+        if (was_full && send_queue_.size() < send_queue_limit_) {
+            cb = writable_callback_;
+        }
     }
 
-    const std::size_t to_copy = std::min(max, send_queue_.size());
-    if (to_copy > 0) {
-        std::memcpy(out, send_queue_.data(), to_copy);
-        send_queue_.erase(send_queue_.begin(),
-                          send_queue_.begin() + static_cast<std::ptrdiff_t>(to_copy));
+    if (cb) {
+        cb();
     }
-    return to_copy;
+
+    return copied;
 }
 
 bool TcpSession::CloseRequested() const noexcept {

@@ -135,20 +135,23 @@ TCPIP2_TEST(TcpSessionSetWritableCallbackFiresOnDrain) {
         ++writable_count;
     });
 
+    // SetWritableCallback fires immediately when the session is already writable.
+    TCPIP2_EXPECT_EQ(writable_count, 1);
+
     // Fill the queue.
     std::uint8_t data[] = {1, 2, 3, 4, 5, 6, 7, 8};
     auto r = session.TrySend(tcpip2::BufferView(data, sizeof(data)));
     TCPIP2_EXPECT_EQ(r.accepted_bytes, static_cast<std::size_t>(8));
 
-    // The writable callback may fire during TrySend when partial/full.
-    // Now drain some bytes.
+    // Draining a full queue frees space, so the callback should fire again.
     std::uint8_t out[4];
     std::size_t drained = session.DrainSendQueue(out, 4);
     TCPIP2_EXPECT_EQ(drained, static_cast<std::size_t>(4));
+    TCPIP2_EXPECT_EQ(writable_count, 2);
 
     // Manually call OnWritable (the shard would do this after draining).
     session.OnWritable();
-    TCPIP2_EXPECT_TRUE(writable_count >= 1);
+    TCPIP2_EXPECT_EQ(writable_count, 3);
 }
 
 TCPIP2_TEST(TcpSessionSetClosedCallbackFiresOnAbort) {
@@ -232,11 +235,14 @@ TCPIP2_TEST(TcpSessionOnWritableInvokesCallback) {
     int count = 0;
     session.SetWritableCallback([&count]() { ++count; });
 
-    session.OnWritable();
+    // SetWritableCallback fires immediately because the session is writable.
     TCPIP2_EXPECT_EQ(count, 1);
 
     session.OnWritable();
     TCPIP2_EXPECT_EQ(count, 2);
+
+    session.OnWritable();
+    TCPIP2_EXPECT_EQ(count, 3);
 }
 
 TCPIP2_TEST(TcpSessionCallbacksNotSetAreSafe) {
