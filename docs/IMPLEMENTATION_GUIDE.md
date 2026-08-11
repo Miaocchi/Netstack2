@@ -64,7 +64,7 @@ Netstack2 按以下原则推进:
 - UCP、Onload、AF_XDP、DPDK 的运行时接线;
 - IPv6 扩展头完整遍历（当前仅 Fragment header）;
 - OpenPPP2 真实 adapter（P4-7 smoke test 已通过, 真实 OpenPPP2 仓库 adapter 待 P4-04）。
-- FQ-CoDel scheduler 已实现 (`src/tcp/fq_codel.h`), 尚未接入 shard egress 路径;
+- FQ-CoDel scheduler 已实现 (`src/tcp/fq_codel.h`), 已接入 shard egress 路径 (`StackShard::FlushTcpTx`);
 - KCC 拥塞控制已实现 (`KccController`, ADR-006 Accepted), 尚未在 netem/真实 TUN 下验证。
 
 冻结 API 前必须先修复的契约问题:
@@ -1044,7 +1044,7 @@ Tcp/Udp packet generated
 - **初始状态**: cwnd=2*MSS, pacing_rate=0, STARTUP, BtlBw=0, RTprop=0
 - **BtlBw max-filter**: 非 app-limited 采样更新 BtlBw；app-limited 采样不污染 filter
 - **RTprop min-filter**: 忽略 rtt=0（未测量），有效 RTT 更新 min-filter
-- **STARTUP→DRAIN**: 连续 3 轮无 >25% 增长后退出 STARTUP 进入 DRAIN
+- **STARTUP→DRAIN**: 连续 3 轮 per-round max bandwidth 无 >25% 增长后退出 STARTUP 进入 DRAIN（commit `419c3db` 修正：比较 round 间 max bandwidth，而非 btlbw_ vs startup_max_bw_）
 - **STARTUP 保持**: 有增长时留在 STARTUP
 - **DRAIN→PROBE_BW**: inflight ≤ BDP 时进入 PROBE_BW
 - **PROBE_BW cycle**: 8 个 phase 轮转后仍在 PROBE_BW
@@ -1150,7 +1150,7 @@ Tcp/Udp packet generated
 
 2. **`tests/unit/tcp/fq_codel_test.cpp`**: 15 个测试，覆盖 enqueue/dequeue 基本操作、DRR 公平性、CoDel 丢包、多 flow 调度、空队列、Reset、队列上限、flow 数量上限等。
 
-**已知限制**：FQ-CoDel scheduler 已实现并通过测试，但尚未接入 shard egress 路径。当前 shard 直接通过 `IPacketIo::SendBatch` 发送，未经 FQ-CoDel 调度。接线属于后续工作。
+**已知限制**：FQ-CoDel scheduler 已实现、通过测试，并已接入 shard egress 路径（`StackShard::EnqueueTcpResponse`、`PumpTcpSendPaths`、`FlushTcpTx`）。当前接线为 per-shard instance，WouldBlock/partial-send 时重新入队剩余包。尚未在 netem/真实 TUN 下验证端到端公平性和延迟。
 
 验证结果: 全量 CTest 普通 37/37, ASan/UBSan 37/37, TSan 37/37; include boundaries OK; `git diff --check` clean。
 
