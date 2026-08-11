@@ -448,7 +448,8 @@ struct SendResult {
 
 ```cpp
 using WritableCallback = std::function<void()>;
-using DataCallback = std::function<void(BufferLease)>;
+enum class ReceiveStatus { Accepted, WouldBlock, Closed };
+using DataCallback = std::function<ReceiveStatus(BufferLease&)>;
 using ClosedCallback = std::function<void(SessionError)>;
 
 class ITransportSession {
@@ -456,6 +457,7 @@ public:
     virtual ~ITransportSession() = default;
 
     virtual SendResult TrySend(BufferView data) = 0;
+    virtual void ResumeReceive() = 0;
 
     virtual void ShutdownWrite() = 0;
 
@@ -477,7 +479,7 @@ public:
 * `TrySend()` 支持部分接收;
 * 返回后 Session 不得继续引用传入的 `BufferView`;
 * `WouldBlock` 必须通过 WritableCallback 恢复发送;
-* DataCallback 传递 owning `BufferLease`;
+* DataCallback returns ReceiveStatus and moves an owning `BufferLease` only on Accepted;
 * 所有 callback 必须投递回 owner shard 后才能修改 TcpFlow;
 * Session 背压必须反馈到 TCP advertised window 和内部缓存上限。
 

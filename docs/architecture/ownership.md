@@ -104,7 +104,17 @@ Free
 - 仅在重组、加密、平台 API 限制或聚合时复制；
 - AF_XDP/DPDK 在条件允许时实现 DMA buffer 复用。
 
-## 6. 测试与验证
+## 6. Shutdown
+
+`Runtime::Stop(const StopOptions&)` first changes state to `Stopping`, closes
+RX, quiesces Session callbacks, joins shards, and drains every queue's accepted
+TX leases. It then drains every pool return queue and verifies that both TX and
+pool outstanding counts are zero before destroying queues or pools. A timeout
+or drain failure returns `StopResult` and retains the Runtime/pools for retry;
+the destructor uses an unbounded final drain rather than freeing a referenced
+pool.
+
+## 7. 测试与验证
 
 - `static_assert(std::is_move_constructible_v<BufferLease>)`；
 - `static_assert(!std::is_copy_constructible_v<BufferLease>)`；

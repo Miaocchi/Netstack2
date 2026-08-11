@@ -347,18 +347,19 @@ validate config
 
 ```text
 RUNNING
-  -> reject new flows
-  -> disable receive callbacks
-  -> close/cancel Packet I/O waits
-  -> post StopMessage
-  -> drain session callbacks and TX completions
-  -> abort remaining flows with bounded deadline
-  -> join shards
-  -> verify pools outstanding == 0
+  -> STOPPING: reject new work
+  -> clear receive handlers and StopRx on every queue
+  -> deactivate/clear Session callbacks and wait for in-flight callback posts
+  -> post StopMessage and join shards
+  -> DrainTx every queue within the caller deadline
+  -> drain return queues and verify pools outstanding == 0
+  -> destroy queues and pools
   -> STOPPED
 ```
 
-`Stop()` 必须幂等, 且不得在 shard 自己的线程上 join 自己。
+`StopResult Stop(const StopOptions&)` 必须幂等, 且不得在 shard 自己的线程上
+join 自己。超时或 drain error 保持 `STOPPING` 和所有 pools/queues，调用者可以
+重试；析构使用无界最终 drain，绝不先销毁 pool。
 
 ## 6. 冻结前公共接口
 
@@ -380,7 +381,8 @@ class Netstack2 {
 public:
     bool Start(const RuntimeDependencies& deps) noexcept;
     bool Start(IPacketIo* io = nullptr) noexcept;  // 兼容旧调用
-    void Stop() noexcept;
+    StopResult Stop() noexcept;
+    StopResult Stop(const StopOptions&) noexcept;
 };
 ```
 
@@ -878,6 +880,12 @@ FQ/AQM、速率限制和 Session backpressure 约束。
 ### P3Q: Pacing、FQ 和 AQM
 
 采用 per-shard FQ-CoDel, 不直接复用 UCP server 的全局 mutex/credit thread。
+TX queue 由 canonical flow hash 选择。协议 owner 与所选 queue owner 不同时，
+协议 owner 只能把 packet 移入有 message/byte 硬上限的定向 SPSC egress lane；
+只有 queue owner shard 可以调用该 `IPacketQueue::SendBatch()`。handoff 保留原始
+enqueue timestamp，queue owner 重新进入本地 FQ-CoDel 时将 lane 等待时间计入
+sojourn；因此跨 shard 场景保持有界、per-flow scheduling 和 CoDel delay accounting，
+但会增加一次 queue-owner FQ admission。
 
 #### 调度层次
 
@@ -1484,7 +1492,7 @@ git diff --check
 2. ✅ **IClock 全替换**: shard event loop 已使用 `clock_->NowMs()`；TCP/IP 层通过参数接收 `now_ms`，不直接调用 `steady_clock`。`SteadyNowMsFallback()` 仅作为 clock_ 为 null 的安全网（实际不会发生）。
 3. ✅ **IEventSink 接入**: `TcpHandshakeEngine::EmitFlowEvent()` 在以下转换点调用 `OnFlowEvent()`：ESTABLISHED（handshake 完成）、Reset（RST in SYN-RECEIVED / ESTABLISHED、AbortFlow）、Closed（LastAck 完成、FIN 重传耗尽、TIME-WAIT 超时/驱逐）。`StackShard::EventLoopIteration()` 每 1000ms 发布 `MetricSnapshot`（rx_packets/dropped_packets/tcp_pcb_count/half_open_count/udp_datagrams；rx_bytes/tx_bytes 暂为 0，待后续添加字节计数器）。TCP handshake 89/89、全量 34/34 三套构建全绿。
 4. ✅ **ISessionFactory 被动监听**: 接口已通过 `RuntimeDependencies` 注入 shard，`TcpHandshakeEngine` 构造函数接收 `ISessionFactory*`。SYN → ESTABLISHED 转换时调用 `OpenTcp()`：accept 则绑定 `ITransportSession` 并 `DrainSession` 交付后续数据；reject 则发送 RST 并移除 PCB。`session_factory_` 为 null 时走 legacy 兼容路径，不 crash。三套构建 34/34 全绿。
-5. ✅ **ITransportSession 回调接线**: `BindSessionCallbacks()` 在 ESTABLISHED 和 `AttachSession` 时注册 `SetWritableCallback`/`SetClosedCallback`（`SetDataCallback` 已移除，见下条）。回调通过 `weak_ptr<CallbackGate>` 捕获引擎引用，构造 `ShardMessage`（`kSessionWritable`/`kSessionClosed`）投递回 owner shard。`Shutdown()` 后 `CallbackGate::owner` 置空，回调变为 no-op。
+5. ✅ **ITransportSession 回调接线**: `BindSessionCallbacks()` 在 ESTABLISHED 和 `AttachSession` 时注册 writable/data/closed callbacks。回调通过共享 `CallbackGate` 投递 `ShardMessage`；shutdown 先使 gate 失活并等待 in-flight post 完成，再清除 Session callbacks，因此 late callback 不会访问 shard 或 pool。
 6. ✅ **P4-7 OpenPPP2 adapter smoke test**: 完整 TCP 生命周期集成测试 (`tests/integration/openppp2_smoke_test.cpp`)，覆盖 SYN→SYN-ACK→ACK→ESTABLISHED→data→FIN→Closed 全流程。`FakeSession`/`FakeSessionFactory`/`RecordingEventSink` 全部 mutex 保护，TSan 安全。`NullPacketIo::EgressSnapshot()` (ADR-007) 解决 `Egress()` 引用的 TSan 数据竞争。`handshake.cpp::Shutdown()` 对非 TimeWait PCB emit Closed event。35/35 三套构建全绿。
 7. ✅ **P3C-11 TCP RX delivery 方向修正**: `DrainTcpReceiveBuffer` 从直接调用 `ITransportSession::TrySend()`（app→stack 方向）改为通过 `DeliverFn` 回调投递。生产路径下 `DrainSession()` 构造的 `DeliverFn` 将收到的 TCP payload 复制到 `PktBufferPool` 分配的 `BufferLease`，通过 `TcpSession::OnDataReceived()` 交付应用（stack→app 方向）。`TcpHandshakeEngine` 构造函数新增 `PktBufferPool*` 参数，`StackShard` 传入 `&pool_`。`BindSessionCallbacks` 不再注册 `SetDataCallback`。测试 session（非 `TcpSession`）走 `TrySend` 回退路径以支持 scripted back-pressure 测试。三套构建 39/39 全绿，commit `eb08e3d`。
 

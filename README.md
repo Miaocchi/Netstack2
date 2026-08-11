@@ -2,9 +2,9 @@
 
 Multithreaded userspace IPv4/IPv6 TCP/IP engine.
 
-> **API status: frozen (v0.2.0).** Public signatures in `include/tcpip2/` are
-> frozen by `NETSTACK2-API-FREEZE-001` (ADR-004, tag `v0.2.0`). Any signature
-> change requires an ADR, compatibility analysis, and a migration path.
+> **API status: v0.3.0.** ADR-008 supersedes the v0.2.0 signatures that could
+> not express callback ownership or deadline-aware shutdown. `Stop()` now
+> returns `StopResult`; statement-style v0.2.0 calls remain source compatible.
 
 ## Design invariants
 
@@ -14,16 +14,22 @@ Multithreaded userspace IPv4/IPv6 TCP/IP engine.
   flow pointer.
 - Packet I/O is pluggable through `IPacketIo` / `IPacketQueue`
   (TUN/Wintun/utun/VpnService/AF_XDP/netmap/DPDK). Each hardware queue is
-  bound to exactly one owner thread. The primary kernel-bypass backend for TCP
-  is a BPF (XDP/AF_XDP) driver; see `docs/architecture/packet_io_backends.md`.
+  bound to exactly one owner thread. TX queue selection is deterministic from
+  the canonical flow hash; protocol shards hand packets for foreign-owned
+  queues through bounded egress lanes and never call those queues directly.
+  The primary kernel-bypass backend for TCP is a BPF (XDP/AF_XDP) driver; see
+  `docs/architecture/packet_io_backends.md`.
 - Remote transport is pluggable through `ITransportSession`
   (kernel socket, Onload socket, userspace DPDK/EfVi backends).
 - The core library depends on nothing but the C++ standard library.
+- Shutdown enters `Stopping` before RX is closed. A failed or timed-out drain
+  retains queues and pools for a later `Stop()` retry; no pool is destroyed
+  while a backend or callback can retain a lease.
 
 ## Layout
 
 ```
-include/tcpip2/     public API (frozen)
+include/tcpip2/     public API (v0.3.0)
 src/core/           dispatcher, shard, timer wheel, buffer pool
 src/ip/             IPv4/IPv6/ICMP/checksum
 src/tcp/            TCP state machine, input, output, recovery, congestion (AIMD/BBR/KCC), FQ-CoDel
@@ -59,6 +65,7 @@ bash scripts/build-tsan.sh
 | NETSTACK2-004 Dispatcher / StackShard | done |
 | NETSTACK2-ADAPTER-SPIKE OpenPPP2 compile-only adapter | done |
 | NETSTACK2-API-FREEZE-001 public API freeze (v0.2.0) | done |
+| ADR-008 v0.3 API correctness reset | in progress |
 | P3A IP layer (IPv4/IPv6/ICMP/fragment reassembly) | done |
 | P3B TCP state machine (handshake/send/receive/close) | done |
 | P3C congestion control (AIMD/BBR/KCC/pacer/FQ-CoDel/TcpSession) | in progress |

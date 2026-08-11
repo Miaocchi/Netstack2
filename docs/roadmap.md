@@ -17,6 +17,7 @@
 | NETSTACK2-004 | **Completed** | Dispatcher 与 StackShard, 与 003 并行完成 |
 | NETSTACK2-ADAPTER-SPIKE | **Completed** | compile-only `OpenPppPacketIo` + `OpenPppSessionFactory` 编译通过; 新增 `session_factory.h`、`capabilities.h`、`address.h`、`flow.h` 公共头; `IPacketIo::Capabilities()` 虚方法加入; FlowId 统一到公共头 |
 | NETSTACK2-API-FREEZE-001 | **Completed** | 公共 API 冻结(10 头文件), ADR-004, tag `v0.2.0` |
+| ADR-008 v0.3 API correctness reset | **In progress** | v0.3.0 契约修复 R0–R3。R1 Session 双向数据路径(DataCallback `ReceiveStatus(BufferLease&)`、`ResumeReceive()`、`shared_ptr<ITransportSession>`)已完成; R2 生产 Dispatcher/queue→shard lane 模型(非法 mapping Start 前失败、canonical flow/fragment key 分片、SPSC source→target lane、egress 定向 lane)已完成; R3 Runtime 停机顺序与异步 TX 生命周期(`StopResult Stop(const StopOptions&)`、`IPacketQueue::StopRx/DrainTx/OutstandingTx`、Stopping 保留重试)已完成, commit `c66e0ad`, 三套构建 39/39 全绿。R0 文档纠偏随本行更新 |
 | P3A-01 | **Completed** | checked arithmetic、IPv4/IPv6 bounded parser、checksum，23/23 三套构建全绿 |
 | P3A-02 | **Completed** | ICMPv4/ICMPv6 bounded parser + PMTU cache，26/26 三套构建全绿 |
 | P3A-03 | **Completed** | IPv4/IPv6 fragment reassembly，44/44 三套构建全绿（含 byte-budget hardening） |
@@ -25,7 +26,7 @@
 | P3B-3 | **Completed** | retransmission queue + RTO、SACK scoreboard、data segment serialization、send buffer 接入 handshake engine 和 shard event loop，TCP 54+51、全量 30/30 三套构建全绿 |
 | P3B-4 | **Completed** | FIN/close/TIME-WAIT 状态机、CloseFlow/AbortFlow API、TIME-WAIT 容量驱逐，FIN 处理/half-close/TIME-WAIT 驱逐 bugfix，TCP handshake 74/74、全量 30/30 三套构建全绿。SACK scoreboard wire 接线仍属 P3C |
 | P3C | **In progress** | P3C-01 DeliveryRateSampler + CongestionController 接口 + AIMD 适配完成，commit `aa9332e`。P3C-02 BBRv1 状态机测试完成，commit `78332bc`，TCP congestion 43/43、全量 31/31 三套构建全绿。P3C-03 per-flow pacer 完成，commit `957682f`，TCP send 57/57、全量 31/31 三套构建全绿。P3C-04 fragment reassembly → TCP input wiring 完成，commit `b6d79a8`，全量 31/31 三套构建全绿。P3C-05 KccController hybrid (BBR bandwidth estimation + AIMD loss response) 完成，ADR-006 Accepted，三套构建 37/37 全绿。P3C-06 FQ-CoDel scheduler 完成，commit `3644da2`。P3C-07 TcpSession 实现，commit `9a515a9`。P3C-08 BBR STARTUP/DRAIN 退出逻辑修正，commit `419c3db`。P3C-09 FQ-CoDel 流表线性探测修复 + shard egress 接线，commit `d9c002d`/`61bd611`。P3C-10 TcpSession 可写回调修复，commit `b2ba037`。P3C-11 TCP RX delivery 方向修正：从 `TrySend`（app→stack）改为 `OnDataReceived`（stack→app），commit `eb08e3d`，三套构建 39/39 全绿。下一步: netem/真实 TUN 下 KCC/BBR 验证、TcpSession 接入 handshake ESTABLISHED 路径 |
-| P4 | **Completed** | OpenPPP2 集成。P4-1 RuntimeDependencies 注入 + P4-3 IClock 替换（commit `97ab0c9`）。P4-2 ISessionFactory 被动监听（commit `0269184`）。P4-4 ITransportSession 回调接线。P4-5 IEventSink flow event triggers（`EmitFlowEvent()` + `MetricSnapshot`）。P4-6 consumer contract test 更新。P4-7 OpenPPP2 adapter smoke test：完整 TCP 生命周期集成测试（SYN→SYN-ACK→ACK→ESTABLISHED→data→FIN→Closed），线程安全 `EgressSnapshot()` (ADR-007)，35/35 三套构建全绿。详见 `docs/plans/P4_OPENPPP2_INTEGRATION_PLAN.md`。 |
+| P4 | **In progress** | API spike complete, real integration pending。P4-1 RuntimeDependencies 注入 + P4-3 IClock 替换（commit `97ab0c9`）。P4-2 ISessionFactory 被动监听（commit `0269184`）。P4-4 ITransportSession 回调接线。P4-5 IEventSink flow event triggers（`EmitFlowEvent()` + `MetricSnapshot`）。P4-6 consumer contract test 更新。P4-7 OpenPPP2 adapter smoke test：完整 TCP 生命周期集成测试（SYN→SYN-ACK→ACK→ESTABLISHED→data→FIN→Closed），线程安全 `EgressSnapshot()` (ADR-007)。自 ADR-008 起 v0.3.0 契约，smoke 已按新 DataCallback/StopResult 契约更新（commit `c66e0ad` 三套构建 39/39）。真实 OpenPPP2 构建与 lwIP 回退集成仍 pending，详见 `docs/plans/P4_OPENPPP2_INTEGRATION_PLAN.md`。 |
 | P5A | Planned | Onload socket session 和通用 kernel-bypass session 接口。AF_XDP/DPDK 扩展接口设计已完成，见 `docs/plans/HIGH_PERF_BACKEND_EXTENSIONS.md`。 |
 | P5B | Planned | AF_XDP/DPDK 纯用户态 Packet I/O。 |
 | P6–P7 | Planned | 平台铺开（Android/iOS/Windows）、调优。 |
@@ -37,6 +38,7 @@
 | NETSTACK2-000 | `628eb60` | `v0.1.0`(annotated) |
 | NETSTACK2-002 | `8e20940` | 无(tag 留给 v0.2.0) |
 | NETSTACK2-API-FREEZE-001 | `3d82bb0` | `v0.2.0`(annotated) |
+| ADR-008 v0.3 API correctness reset (R1–R3) | `c66e0ad` | 无(版本已升 v0.3.0) |
 | P3A-01 | `707b14a` | 无 |
 | P3A-02 | `86d8adc` | 无 |
 | P3A-03 | `c889289` + hardening `2b5607e` | 无 |

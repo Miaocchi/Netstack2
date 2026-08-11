@@ -2,7 +2,7 @@
 
 > **范围**: `ITransportSession` 及其子类。
 > **相关文件**: `include/tcpip2/transport_session.h`。
-> **状态**: 接口已冻结于 NETSTACK2-API-FREEZE-001；具体实现类在 P4/P6/P7 引入。
+> **状态**: callback ownership/backpressure contract is v0.3.0 per ADR-008.
 
 ## 1. 设计目标
 
@@ -32,7 +32,8 @@ ITransportSession
 
 ```cpp
 using WritableCallback = std::function<void()>;
-using DataCallback     = std::function<void(BufferLease)>;
+enum class ReceiveStatus { Accepted, WouldBlock, Closed };
+using DataCallback     = std::function<ReceiveStatus(BufferLease&)>;
 using ClosedCallback   = std::function<void(SessionError)>;
 
 class ITransportSession {
@@ -40,6 +41,7 @@ public:
     virtual ~ITransportSession() = default;
 
     virtual SendResult TrySend(BufferView data) = 0;
+    virtual void ResumeReceive() = 0;
     virtual void ShutdownWrite() = 0;
     virtual void Abort(SessionError error) = 0;
 
@@ -62,8 +64,21 @@ public:
 所有回调必须先投递回 owner shard，在 shard event loop 中执行，才能修改 `TcpFlow` 状态：
 
 - `WritableCallback`：从 `WouldBlock` 恢复；
-- `DataCallback`：远端数据到达，以 owning `BufferLease` 传递；
+- `DataCallback`：远端数据到达，以 owning `BufferLease` reference 传递；
 - `ClosedCallback`：远端关闭、reset 或超时。
+
+`DataCallback` 返回 `Accepted` 时必须将 lease 移入 shard message；返回
+`WouldBlock` 时不得移动 lease，Session 保留它并暂停读取；返回 `Closed` 时
+拒绝该 lease。Stack only calls `ResumeReceive()` after both the remote-data
+mailbox and the flow's unsent remote-data backlog are strictly below 50% of
+their respective capacities.
+
+Shutdown first deactivates the shared callback gate, waits until any in-flight
+callback post finishes, and clears all three callbacks on every retained
+Session. A late callback therefore returns `Closed` or becomes a no-op without
+accessing a shard or pool that is being destroyed.
+`Set*Callback(nullptr)` must also synchronously quiesce callbacks already
+invoked by the Session before it returns.
 
 ## 4. 背压与 TCP advertised window
 
@@ -104,17 +119,18 @@ Session 阻塞时，TCP 引擎必须：
 ## 6. 与 Buffer 所有权模型的关系
 
 - `TrySend()` 接收 `BufferView`（非 owning），实现类需要立即拷贝或发送；
-- `DataCallback` 传递 `BufferLease`（owning），TCP 引擎获得数据所有权；
+- `DataCallback` 在 `Accepted` 时将 `BufferLease` ownership 转给 TCP 引擎；
 - 重传队列使用 `BufferRef` 保留原始 payload，不依赖 Session 状态。
 
-## 7. 冻结语义
+## 7. v0.3 语义
 
-NETSTACK2-API-FREEZE-001 冻结：
+ADR-008 v0.3.0 defines:
 
 - `TrySend()` 部分接收语义；
 - `BufferView` 返回后不再被 Session 引用；
 - `WouldBlock` 必须通过 `WritableCallback` 恢复；
-- `DataCallback` 传递 owning `BufferLease`；
+- `DataCallback` 的 `ReceiveStatus` 保证 remote receive backpressure；
+- `ResumeReceive()` 只在两个 remote-data backlog 都低于 50% low watermark 后调用；
 - callback 必须经 owner shard 投递；
 - Session 背压必须反馈到 TCP advertised window 和内部缓存上限。
 
