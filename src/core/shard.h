@@ -41,6 +41,8 @@
 #include <ip/pmtu.h>
 #include <udp/input.h>
 
+#include <tcp/fq_codel.h>
+
 namespace tcpip2 {
 
 class TcpHandshakeEngine;
@@ -135,6 +137,7 @@ private:
     std::unique_ptr<TcpHandshakeEngine> tcp_;
     FragmentReassembler reassembler_;
     PmtuCache pmtu_cache_;
+    FqCoDelScheduler fq_codel_;
     std::vector<BufferLease> tcp_tx_;
 
     std::thread thread_;

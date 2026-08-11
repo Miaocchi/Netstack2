@@ -39,9 +39,74 @@
 #include <ip/icmpv6.h>
 #include <ip/ipv4.h>
 #include <ip/ipv6.h>
+#include <tcpip2/flow.h>
 #include <udp/input.h>
 
 namespace tcpip2 {
+
+namespace {
+
+std::uint32_t HashTxLease(const std::uint8_t* data, std::size_t size) noexcept {
+    // Derive a flow hash from source/dest IP and ports in the serialized
+    // IPv4/IPv6 + TCP packet. Falls back to FNV-1a of the whole packet if
+    // the packet is too short or not IP/TCP.
+    if (data == nullptr || size < 20) {
+        std::uint32_t hash = 2166136261u;
+        const std::uint32_t kPrime = 16777619u;
+        for (std::size_t i = 0; i < size; ++i) {
+            hash ^= data[i];
+            hash *= kPrime;
+        }
+        return hash;
+    }
+
+    const std::uint8_t version = static_cast<std::uint8_t>(data[0] >> 4);
+    if (version == 4 && size >= 20) {
+        const std::uint8_t* tcp = data + 20;
+        FlowKey key;
+        key.source = IpAddress::Ipv4(
+            (static_cast<std::uint32_t>(data[12]) << 24) |
+            (static_cast<std::uint32_t>(data[13]) << 16) |
+            (static_cast<std::uint32_t>(data[14]) << 8) |
+            static_cast<std::uint32_t>(data[15]));
+        key.destination = IpAddress::Ipv4(
+            (static_cast<std::uint32_t>(data[16]) << 24) |
+            (static_cast<std::uint32_t>(data[17]) << 16) |
+            (static_cast<std::uint32_t>(data[18]) << 8) |
+            static_cast<std::uint32_t>(data[19]));
+        key.source_port = static_cast<std::uint16_t>(
+            (static_cast<std::uint16_t>(tcp[0]) << 8) | tcp[1]);
+        key.destination_port = static_cast<std::uint16_t>(
+            (static_cast<std::uint16_t>(tcp[2]) << 8) | tcp[3]);
+        key.protocol = 6;
+        return static_cast<std::uint32_t>(FlowHash(key) >> 32);
+    }
+
+    if (version == 6 && size >= 40) {
+        const std::uint8_t* tcp = data + 40;
+        FlowKey key;
+        key.source = IpAddress::Ipv6(data + 8);
+        key.destination = IpAddress::Ipv6(data + 24);
+        key.source_port = static_cast<std::uint16_t>(
+            (static_cast<std::uint16_t>(tcp[0]) << 8) | tcp[1]);
+        key.destination_port = static_cast<std::uint16_t>(
+            (static_cast<std::uint16_t>(tcp[2]) << 8) | tcp[3]);
+        key.protocol = 6;
+        return static_cast<std::uint32_t>(FlowHash(key) >> 32);
+    }
+
+    // Fallback: FNV-1a of the whole packet.
+    std::uint32_t hash = 2166136261u;
+    const std::uint32_t kPrime = 16777619u;
+    for (std::size_t i = 0; i < size; ++i) {
+        hash ^= data[i];
+        hash *= kPrime;
+    }
+    return hash;
+}
+
+} // namespace
+
 StackShard::StackShard(std::size_t shard_id, PktBufferPool& pool, IPacketQueue* queue,
                        std::size_t inbox_capacity,
                        ISessionFactory* session_factory,
@@ -75,7 +140,6 @@ bool StackShard::Start() noexcept {
                 return control_inbox_.Push(std::move(msg));
             },
             event_sink_);
-        tcp_tx_.reserve(kTcpTxBudget);
     } catch (...) {
         tcp_.reset();
         return false;
@@ -141,6 +205,7 @@ void StackShard::Run() noexcept {
         EventLoopIteration();
     }
     if (tcp_) tcp_->Shutdown();
+    fq_codel_.Reset();
     tcp_tx_.clear();
     tcp_pcb_count_.store(0, std::memory_order_relaxed);
     tcp_half_open_count_.store(0, std::memory_order_relaxed);
@@ -222,7 +287,7 @@ void StackShard::EventLoopIteration() noexcept {
     if (tcp_) {
         tcp_->PumpSessionDeliveries(now_ms, kControlInboxBudget);
         TcpResponse response;
-        while (tcp_tx_.size() < kTcpTxBudget &&
+        while (fq_codel_.QueueLength() < kTcpTxBudget &&
                tcp_->PopPendingResponse(response)) {
             if (!EnqueueTcpResponse(response)) {
                 tcp_->DeferResponse(response);
@@ -426,7 +491,11 @@ void StackShard::HandleIcmp(const std::uint8_t* packet, std::size_t length,
 }
 
 bool StackShard::EnqueueTcpResponse(const TcpResponse& response) noexcept {
-    if (queue_ == nullptr || tcp_tx_.size() >= kTcpTxBudget) {
+    if (queue_ == nullptr) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (fq_codel_.QueueLength() >= kTcpTxBudget) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
@@ -442,9 +511,9 @@ bool StackShard::EnqueueTcpResponse(const TcpResponse& response) noexcept {
         return false;
     }
     lease.Resize(output.packet_length);
-    try {
-        tcp_tx_.push_back(std::move(lease));
-    } catch (...) {
+    if (!fq_codel_.Enqueue(lease.Data(), lease.Size(),
+                            static_cast<std::uint32_t>(FlowHash(response.flow) >> 32),
+                            clock_->NowMs())) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
@@ -452,25 +521,65 @@ bool StackShard::EnqueueTcpResponse(const TcpResponse& response) noexcept {
 }
 
 void StackShard::PumpTcpSendPaths(std::uint64_t now_ms) noexcept {
-    if (!tcp_ || tcp_tx_.size() >= kTcpTxBudget) return;
-    const std::size_t remaining = kTcpTxBudget - tcp_tx_.size();
+    if (!tcp_) return;
+    if (fq_codel_.QueueLength() >= kTcpTxBudget) return;
+    const std::size_t remaining = kTcpTxBudget - fq_codel_.QueueLength();
+    tcp_tx_.clear();
     tcp_->PumpSendPaths(now_ms, kControlInboxBudget, pool_, tcp_tx_, remaining);
+    for (auto& lease : tcp_tx_) {
+        if (!lease) continue;
+        const std::uint32_t flow_hash = HashTxLease(lease.Data(), lease.Size());
+        if (!fq_codel_.Enqueue(lease.Data(), lease.Size(), flow_hash, now_ms)) {
+            packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        }
+        lease.Reset();
+    }
+    tcp_tx_.clear();
 }
 
 void StackShard::FlushTcpTx() noexcept {
-    if (queue_ == nullptr || tcp_tx_.empty()) return;
-    IoError error = IoError::None;
-    std::size_t sent = queue_->SendBatch(tcp_tx_.data(), tcp_tx_.size(), error);
-    if (sent > tcp_tx_.size()) sent = tcp_tx_.size();
-    if (sent > 0) {
-        for (std::size_t i = sent; i < tcp_tx_.size(); ++i) {
-            tcp_tx_[i - sent] = std::move(tcp_tx_[i]);
-        }
-        tcp_tx_.resize(tcp_tx_.size() - sent);
+    if (queue_ == nullptr || fq_codel_.Empty()) return;
+
+    // Drain the scheduler into a local batch. CoDel dropping happens here;
+    // surviving packets are staged for SendBatch.
+    std::array<FqCoDelPacket, kTcpTxBudget> packets{};
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < kTcpTxBudget; ++i) {
+        auto pkt = fq_codel_.Dequeue(clock_->NowMs());
+        if (!pkt) break;
+        packets[count++] = std::move(*pkt);
     }
+    if (count == 0) return;
+
+    // Copy each scheduled packet into a pool lease for the queue contract.
+    std::array<BufferLease, kTcpTxBudget> leases{};
+    for (std::size_t i = 0; i < count; ++i) {
+        leases[i] = pool_.Allocate();
+        if (leases[i]) {
+            std::memcpy(leases[i].Data(), packets[i].Data(), packets[i].Size());
+            leases[i].Resize(packets[i].Size());
+        }
+    }
+
+    IoError error = IoError::None;
+    std::size_t sent = queue_->SendBatch(leases.data(), count, error);
+    if (sent > count) sent = count;
+
+    // Any unsent packet must be re-enqueued rather than dropped so that
+    // WouldBlock / partial-send tails remain in the egress queue.
+    for (std::size_t i = sent; i < count; ++i) {
+        if (!leases[i]) {
+            packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+        if (!fq_codel_.Enqueue(packets[i].Data(), packets[i].Size(),
+                               packets[i].flow_hash, packets[i].enqueue_time_ms)) {
+            packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
     if (error != IoError::None && error != IoError::WouldBlock) {
-        packets_dropped_.fetch_add(tcp_tx_.size(), std::memory_order_relaxed);
-        tcp_tx_.clear();
+        packets_dropped_.fetch_add(count - sent, std::memory_order_relaxed);
     }
 }
 
