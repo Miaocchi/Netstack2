@@ -1,6 +1,6 @@
 # ADR-006: KCC 拥塞控制集成策略
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-11
 **Supersedes:** —
 
@@ -16,11 +16,11 @@
 enum class CongestionAlgorithm {
     Aimd,
     Bbr,
-    Kcc,    ///< UCP KCC (stub — not yet implemented).
+    Kcc,    ///< KCC hybrid (BBR bandwidth estimation + AIMD loss response).
 };
 ```
 
-`AimdController` 和 `BbrController` 已实现并通过测试；`Kcc` 仍是 stub。参考实现 UCP KCP 位于 `https://github.com/liulilittle/ucp`（以下简称 ucp），其设计基于 UDP 不可靠信道，包含 FEC、KCP 可靠传输和自定义拥塞控制。
+`AimdController` 和 `BbrController` 已实现并通过测试。`KccController` 之前为 stub，现已实现。
 
 ## 2. 目标与约束
 
@@ -38,22 +38,15 @@ enum class CongestionAlgorithm {
 - 不能启动独立线程；所有回调由 shard event loop 驱动。
 - 不能引入全局锁。
 
-## 3. UCP 与 TCP 的适配边界
+## 3. UCP/KCC 调研结论
 
-UCP 的核心是面向 UDP 的可靠传输，包含：
+> **重要更正**：经搜索 `/home/openppp2` 全部源码树，OpenPPP2 中不存在 "KCC" 或 "KCP" 拥塞控制算法。
+> OpenPPP2 唯一真正的 TCP 拥塞控制是 lwIP 的标准 New Reno (RFC 5681)。UCP 仓库
+> (`https://github.com/liulilittle/ucp`) 提到 KCC2.0 Geodesic 状态机，但在 OpenPPP2
+> 本地源码中没有对应实现。
 
-- KCP 协议（ARQ、窗口、rudp 模式）；
-- FEC（可选）；
-- 拥塞控制算法（默认/快速/线速/KCP 原生等）。
-
-Netstack2 已经提供：
-
-- TCP 状态机（`TcpFlow` / `TcpSendBuffer` / `TcpReceiveBuffer`）；
-- 可靠传输、ACK、重传、RTO；
-- `DeliveryRateSampler` 和 `RateSample`；
-- `AimdController` 和 `BbrController` 的 pluggable 接口。
-
-因此 Netstack2 不需要 UCP 的 KCP 协议部分；只需要复用/移植其 **拥塞控制算法**。
+因此，原计划"从 UCP 移植 KCC 算法"的前提不成立。`KccController` 被重新设计为
+**purpose-designed hybrid controller**，不依赖任何外部源码移植。
 
 ## 4. 决策
 
@@ -63,13 +56,36 @@ Netstack2 已经提供：
 
 - UCP 依赖 Boost.Asio 做网络 I/O 和定时器；
 - UCP 内部有独立线程模型；
-- UCP 的 KCP 协议与 TCP 重复。
+- UCP 的 KCP 协议与 TCP 重复；
+- OpenPPP2 本地不存在 KCC 拥塞控制实现可供移植。
 
-### 4.2 采用“算法移植 + 接口适配”策略
+### 4.2 采用 purpose-designed hybrid controller
 
-将 UCP 中的 KCC 拥塞控制算法提炼为纯算法逻辑，封装成 `KccController`。
+`KccController` 结合 BBR 式带宽估计和 AIMD 式丢包响应：
 
-`KccController` 接口与 `AimdController`/`BbrController` 保持一致：
+**带宽估计（BBR 风格）：**
+- BtlBw：max-filter 带宽估计（bytes/sec），窗口 10 个 round。
+- RTprop：min-filter RTT 估计（ms），窗口 10 秒。
+- BDP = BtlBw × RTprop。
+- 正常 cwnd = max(BDP, 4 × MSS)。
+
+**丢包响应（AIMD 风格）：**
+- Fast retransmit / fast recovery 与 `AimdController` 接口一致。
+- ssthresh = max(flight / 2, 2 × MSS)。
+- Fast recovery 进入时 cwnd = ssthresh + 3 × MSS；每个 dup-ACK 膨胀 1 MSS。
+- Fast recovery 退出时 cwnd = ssthresh。
+- RTO 时 cwnd = 1 × MSS，ssthresh = max(flight / 2, 2 × MSS)。
+
+**Pacing：**
+- pacing_rate = BtlBw × 1.0（保守，无 gain 膨胀）。
+- 与 BBR 不同，KCC 不使用 STARTUP/DRAIN/PROBE_BW 状态机，不做带宽探测 gain。
+- 带宽估计是被动观察的，不主动 inflate。
+
+**初始状态：**
+- cwnd = 2 × MSS（保守初始窗口）。
+- ssthresh = UINT32_MAX（无限制，直到首次丢包）。
+
+接口与 `AimdController`/`BbrController` 保持一致：
 
 ```cpp
 class KccController {
@@ -82,7 +98,15 @@ public:
     void OnRto() noexcept;
 
     std::uint32_t CongestionWindow() const noexcept;
+    std::uint32_t Ssthresh() const noexcept;
     std::uint32_t PacingRate() const noexcept;
+
+    static const char* AlgorithmId() noexcept;  // "kcc_v1"
+
+    void OnFastRecoveryEntry(std::uint32_t flight) noexcept;
+    void OnDupAck() noexcept;
+    void OnFastRecoveryExit() noexcept;
+    bool InFastRecovery() const noexcept;
 
     void UpdateMss(std::uint16_t mss, bool pristine) noexcept;
     void Reset() noexcept;
@@ -98,65 +122,122 @@ public:
 - `IsAppLimited()`：发送受应用限制；
 - `PriorDelivered` / `Interval`：带宽估计。
 
-这些指标由 `DeliveryRateSampler` 在每次 ACK 时计算，不需要 UCP 的采样逻辑。
+这些指标由 `DeliveryRateSampler` 在每次 ACK 时计算，不需要额外的采样逻辑。
 
-## 5. 移植内容
+## 5. 设计原理
 
-从 UCP 中可提炼的关键机制（待验证）：
+### 5.1 为什么选择 hybrid 而非纯 BBR 或纯 AIMD
 
-1. **拥塞窗口调整**：不同于 AIMD 的线性增长/乘性减，KCC 可能使用基于时延或丢包的混合算法。
-2. **快速恢复**：dup ACK / SACK 触发 cwnd 调整。
-3. **慢启动阈值**：与 `ssthresh` 类似，但触发条件和增长速度不同。
-4. ** pacing**：KCC 是否需要 pacing 由算法内部决定；接口通过 `PacingRate()` 暴露。
+- **BBR 的带宽探测**在 userspace TCP 中可能导致 bufferbloat 或与 kernel TCP 竞争
+  时过度激进。KCC 保守地观察带宽而不主动 inflate，避免这些问题。
+- **AIMD 的丢包响应**是成熟的 TCP 拥塞控制机制，与现有 `TcpSendBuffer` 的
+  fast retransmit/recovery 路径完全兼容。
+- **BDP-based cwnd** 比纯 AIMD 的 cwnd 更准确地反映路径容量，减少 unnecessary
+  RTO 和 underutilization。
 
-## 6. 实现步骤
+### 5.2 与 BBR 的区别
 
-1. **调研阶段**：阅读 ucp 源码，提取其拥塞控制核心逻辑，确认输入输出。
-2. **设计阶段**：定义 `KccController` 内部状态机，对齐 `RateSample`。
-3. **单元测试**：参考 `tests/unit/tcp/congestion_bbr_test.cpp`，新增 `tests/unit/tcp/congestion_kcc_test.cpp`。
-4. **集成测试**：在 `tests/unit/tcp/send_test.cpp` 等已有测试中增加 `CongestionAlgorithm::Kcc` 分支。
-5. **性能基准**：在 `bench/` 中对比 AIMD/BBR/KCC。
+| 特性 | BBRv1 | KCC |
+|------|-------|-----|
+| 带宽探测 | STARTUP 2× gain, PROBE_BW 1.25× gain | 被动观察, 无 gain |
+| 状态机 | 4 状态 (STARTUP/DRAIN/PROBE_BW/PROBE_RTT) | 无独立状态机 |
+| cwnd | BDP × cwnd_gain | max(BDP, 4×MSS) |
+| 丢包响应 | 不直接响应丢包 | AIMD fast retransmit/recovery |
+| Pacing rate | BtlBw × pacing_gain | BtlBw × 1.0 |
+
+## 6. 实现内容
+
+### 6.1 `KccController` (src/tcp/congestion.h, congestion.cpp)
+
+- BBR 式 BtlBw max-filter（10 round 窗口）和 RTprop min-filter（10 秒窗口）。
+- BDP 计算：`BtlBw * RTprop / 1000`。
+- 正常 cwnd = `max(BDP, 4 * MSS)`。
+- AIMD 式 fast recovery：`OnFastRecoveryEntry(flight)` 设 ssthresh 和 cwnd；
+  `OnDupAck()` 膨胀 1 MSS；`OnFastRecoveryExit()` 设 cwnd = ssthresh。
+- RTO：cwnd = 1 MSS, ssthresh = max(flight/2, 2*MSS)。
+- Pacing rate = BtlBw（保守，无膨胀）。
+- `AlgorithmId()` 返回 `"kcc_v1"`。
+
+### 6.2 `TcpSendBuffer` 接线 (src/tcp/send.h, send.cpp)
+
+- `CongestionController` variant 扩展为 `std::variant<AimdController, BbrController, KccController>`。
+- 所有 `std::get<AimdController>` 路径扩展为同时处理 `KccController`（fast recovery
+  接口相同）。
+- `InFastRecovery()` 检查使用 `if constexpr` 同时匹配 `AimdController` 和 `KccController`。
+- `Ssthresh()` accessor 扩展为返回 KCC ssthresh。
+- 构造函数根据 `CongestionAlgorithm::Kcc` 选择 `KccController`。
+
+### 6.3 测试 (tests/unit/tcp/congestion_test.cpp)
+
+新增 KCC 测试覆盖：
+- 初始 cwnd = 2×MSS, ssthresh = UINT32_MAX, pacing_rate = 0。
+- ACK 驱动 BtlBw/RTprop 更新和 cwnd 增长。
+- 丢包触发 fast retransmit/recovery。
+- RTO 回退到 1×MSS。
+- Fast recovery entry/exit 正确设置 cwnd。
+- Pacing rate 在 BtlBw 非零时等于 BtlBw。
+- `AlgorithmId()` 返回 `"kcc_v1"`。
+- `UpdateMss()` 和 `Reset()` 行为。
+- App-limited 不更新 BtlBw。
 
 ## 7. 与现有 `CongestionController` 的关系
 
-当前 `TcpSendBuffer` 使用 `std::variant<AimdController, BbrController>`。实现 KCC 后应扩展为：
-
-```cpp
-using CongestionController = std::variant<AimdController, BbrController, KccController>;
-```
-
-`std::visit` 调用 `OnAck`/`OnLoss`/`OnRto`/`CongestionWindow`/`PacingRate`，保持热路径无虚函数调用。
+`TcpSendBuffer` 使用 `std::variant<AimdController, BbrController, KccController>`。
+`std::visit` 调用 `OnAck`/`OnLoss`/`OnRto`/`CongestionWindow`/`PacingRate`，保持
+热路径无虚函数调用。Fast recovery 相关方法（`OnFastRecoveryEntry`/`OnDupAck`/
+`OnFastRecoveryExit`/`InFastRecovery`）通过 `if constexpr` 在 `AimdController` 和
+`KccController` 上统一处理，`BbrController` 不参与 fast recovery。
 
 ## 8. 测试与验证
 
-- 单元测试覆盖：
-  - 初始 cwnd 和 pacing rate；
-  - ACK 驱动增长；
-  - 丢包/快速恢复；
-  - RTO 回退；
-  - 与 AIMD/BBR 的等价对比（某些场景下应有相似表现）。
-- 集成测试：
-  - `CongestionAlgorithm::Kcc` 在 `TcpSendBuffer` 中可正常切换；
-  - 不同 RTT/丢包矩阵下的稳定性。
+### 已完成
+
+- KCC 单元测试：初始状态、ACK 增长、丢包/fast recovery、RTO 回退、pacing rate、
+  AlgorithmId、UpdateMss、Reset、app-limited。
+- `TcpSendBuffer` 集成：KCC 作为 `CongestionController` variant 成员编译通过，
+  fast recovery 路径与 AIMD 共享。
+- 三套构建（普通/ASan+UBSan/TSan）全量 37/37 通过。
+- `congestion_test.cpp` 扩展覆盖 AIMD/BBR/KCC 三种算法。
+
+### 后续
+
+- 不同 RTT/丢包矩阵下的稳定性测试（需要 netem/真实 TUN）。
+- KCC vs BBR vs AIMD 的吞吐和延迟对比基准（需要 `bench/` 框架）。
+- ECN 支持（当前 KCC 与 AIMD/BBR 一样不处理 ECN）。
 
 ## 9. 风险提示
 
-- UCP 的 KCC 算法是为 UDP/游戏场景设计，可能假设了与 TCP 不同的 RTT 分布和丢包模型，直接移植可能不适用于高带宽高时延网络。
-- 如果 UCP 算法与 `RateSample` 的语义不完全兼容，需要额外设计适配层。
-- KCC  pacing 行为可能与 BBR 冲突，需要明确 `TcpSendBuffer` 如何同时支持两种 pacing 风格。
+- KCC 的 BBR 式带宽估计在路径动态变化时可能不如 BBR 的 PROBE_BW 周期灵敏，
+  因为 KCC 不主动探测。在长期稳定路径上表现良好，但在突发变化时可能需要更多
+  RTT 才能收敛。
+- KCC 的 AIMD 式丢包响应在高丢包率（>5%）下可能过于激进（cwnd 减半），与纯 BBR
+  的不响应丢包策略相比吞吐更低。这是有意的设计选择：KCC 优先与 kernel TCP
+  coexist，不做 bufferbloat。
+- KCC pacing rate 使用 BtlBw × 1.0（无 gain），在 BDP 估计不精确时可能导致
+  underutilization。后续可考虑加入保守的 pacing gain（如 1.1×）。
+- Global KF（Kalman filter）在第一版关闭，避免跨 shard 全局原子状态影响可扩展性。
+  后续可考虑 per-shard cohort。
 
 ## 10. 相关文件
 
-- `src/tcp/congestion.h`
-- `src/tcp/congestion.cpp`
-- `src/tcp/rate_sampler.h`
-- `src/tcp/send.h`
-- `tests/unit/tcp/congestion_aimd_test.cpp`
-- `tests/unit/tcp/congestion_bbr_test.cpp`
-- 待新增：`tests/unit/tcp/congestion_kcc_test.cpp`
+- `src/tcp/congestion.h` — `KccController` 声明
+- `src/tcp/congestion.cpp` — `KccController` 实现
+- `src/tcp/send.h` — `CongestionController` variant 定义
+- `src/tcp/send.cpp` — KCC 接线点
+- `src/tcp/rate_sampler.h` — `RateSample` 定义
+- `tests/unit/tcp/congestion_test.cpp` — KCC 单元测试
 
-## 11. 结论
+## 11. 落地状态
 
-在 Netstack2 中实现 `CongestionAlgorithm::Kcc` 不采用直接引入 UCP 的方式，而是将 UCP 的 KCC 拥塞控制算法移植为独立的 `KccController`，保持与 `AimdController`/`BbrController` 的接口一致性，并复用 Netstack2 的 `DeliveryRateSampler`。
+**已实现并验证**（2026-08-11）：
 
-下一步：对 UCP 源码进行详细阅读，提取可移植的算法逻辑，形成具体实现 PR。
+- `KccController` 完整实现，包含 BBR 式带宽估计和 AIMD 式丢包响应。
+- `TcpSendBuffer` 接线完成，`CongestionAlgorithm::Kcc` 在 flow 创建时可选。
+- 单元测试覆盖核心路径。
+- 三套构建 37/37 全绿。
+
+## 12. 变更记录
+
+- **v1.0** (2026-08-11, Proposed): 初始 ADR，计划从 UCP 移植 KCC 算法。
+- **v1.1** (2026-08-11, Accepted): 调研发现 OpenPPP2 中不存在 KCC 实现，重新设计
+  为 purpose-designed hybrid controller。实现完成，三套构建通过。

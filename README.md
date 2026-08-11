@@ -26,8 +26,8 @@ Multithreaded userspace IPv4/IPv6 TCP/IP engine.
 include/tcpip2/     public API (frozen)
 src/core/           dispatcher, shard, timer wheel, buffer pool
 src/ip/             IPv4/IPv6/ICMP/checksum
-src/tcp/            TCP state machine, input, output, recovery
-src/session/        transport session adapters
+src/tcp/            TCP state machine, input, output, recovery, congestion (AIMD/BBR/KCC), FQ-CoDel
+src/session/        transport session adapters (TcpSession)
 src/packetio/       null / TAP / AF_XDP / netmap / DPDK backends
 tests/unit/         unit tests (+ support harness)
 bench/              P0 measurement protocol and result format
@@ -61,10 +61,10 @@ bash scripts/build-tsan.sh
 | NETSTACK2-API-FREEZE-001 public API freeze (v0.2.0) | done |
 | P3A IP layer (IPv4/IPv6/ICMP/fragment reassembly) | done |
 | P3B TCP state machine (handshake/send/receive/close) | done |
-| P3C congestion control (AIMD/BBR/pacer/fragment wiring) | in progress |
-| P3U UDP flow and datagram session | planned |
-| P3Q FQ-CoDel / AQM | planned |
-| P4 OpenPPP2 integration | planned |
+| P3C congestion control (AIMD/BBR/KCC/pacer/FQ-CoDel/TcpSession) | in progress |
+| P3U UDP flow and datagram session | done |
+| P3I ICMP shard RX wiring + PMTU | done |
+| P4 OpenPPP2 integration | in progress |
 | P5–P7 high-perf I/O, platform spread, tuning | planned |
 
 See `docs/IMPLEMENTATION_GUIDE.md` for the file-level implementation plan and

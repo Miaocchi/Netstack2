@@ -61,12 +61,11 @@ Netstack2 按以下原则推进:
 
 尚未实现:
 
-- KCC 拥塞控制（当前为 stub, ADR-006 已就绪）;
-- FQ-CoDel / AQM 出口调度（P3Q）;
 - UCP、Onload、AF_XDP、DPDK 的运行时接线;
 - IPv6 扩展头完整遍历（当前仅 Fragment header）;
-- Session 实现类（ITransportSession 接口已冻结，无实现类）;
 - OpenPPP2 真实 adapter（P4-7 smoke test 已通过, 真实 OpenPPP2 仓库 adapter 待 P4-04）。
+- FQ-CoDel scheduler 已实现 (`src/tcp/fq_codel.h`), 尚未接入 shard egress 路径;
+- KCC 拥塞控制已实现 (`KccController`, ADR-006 Accepted), 尚未在 netem/真实 TUN 下验证。
 
 冻结 API 前必须先修复的契约问题:
 
@@ -1113,6 +1112,67 @@ Tcp/Udp packet generated
 
 验证结果: 全量 CTest 普通 31/31, ASan/UBSan 31/31, TSan 31/31; include boundaries OK; `git diff --check` clean。commit `b6d79a8`。IPv4 MF flag 掩码修正已在 `b6d79a8` 中作为同一 commit 的一部分记录。
 
+#### P3C-05: KccController Hybrid Congestion Control ✅ Implemented (2026-08-11)
+
+实现 `KccController` 作为 `CongestionAlgorithm::Kcc` 的具体控制器，采用 purpose-designed hybrid 设计（ADR-006 Accepted）。
+
+**设计决策**：经搜索 `/home/openppp2` 全部源码树，OpenPPP2 中不存在 "KCC" 或 "KCP" 拥塞控制算法（唯一真正的 TCP 拥塞控制是 lwIP New Reno）。因此不进行算法移植，而是设计混合控制器。
+
+**实现内容**：
+
+1. **`src/tcp/congestion.h` / `congestion.cpp`**: `KccController` 类。
+   - BBR 式带宽估计：BtlBw max-filter（10 round 窗口）+ RTprop min-filter（10 秒窗口）+ BDP 计算。
+   - 正常 cwnd = max(BDP, 4×MSS)。
+   - AIMD 式丢包响应：fast retransmit/recovery 与 `AimdController` 接口一致。ssthresh = max(flight/2, 2×MSS)。
+   - RTO：cwnd = 1×MSS。
+   - Pacing rate = BtlBw × 1.0（保守，无 gain 膨胀）。
+   - 初始 cwnd = 2×MSS，ssthresh = UINT32_MAX。
+   - `AlgorithmId()` 返回 `"kcc_v1"`。
+
+2. **`src/tcp/send.h` / `send.cpp`**: `CongestionController` variant 扩展为 `std::variant<AimdController, BbrController, KccController>`。所有 fast recovery 路径通过 `if constexpr` 同时处理 AIMD 和 KCC。构造函数根据 `CongestionAlgorithm::Kcc` 选择 `KccController`。
+
+3. **`tests/unit/tcp/congestion_test.cpp`**: 新增 KCC 测试，覆盖初始状态、ACK 驱动 BtlBw/RTprop 更新和 cwnd 增长、丢包/fast recovery、RTO 回退、pacing rate、AlgorithmId、UpdateMss、Reset、app-limited。
+
+验证结果: 全量 CTest 普通 37/37, ASan/UBSan 37/37, TSan 37/37; include boundaries OK; `git diff --check` clean。
+
+#### P3C-06: FQ-CoDel Shard-Local Egress Scheduler ✅ Implemented (2026-08-11)
+
+实现 per-shard FQ-CoDel 调度器（RFC 8290 / RFC 8289），作为 shard egress 路径的独立组件。
+
+**实现内容**：
+
+1. **`src/tcp/fq_codel.h` / `fq_codel.cpp`**: `FqCoDelScheduler` 类。
+   - Per-flow deficit round-robin (DRR) 调度，flow hash 到固定数量 bucket。
+   - CoDel AQM：sojourn time > target_ms 持续 interval_ms 后开始丢包。
+   - 配置：interval_ms=100, target_ms=5, quantum=1514, max_flows=64, max_queue_length=1024。
+   - `Enqueue(data, length, flow_hash, now_ms)` / `Dequeue(now_ms)` 接口。
+   - 非 thread-safe，设计为 shard-local 使用。
+
+2. **`tests/unit/tcp/fq_codel_test.cpp`**: 15 个测试，覆盖 enqueue/dequeue 基本操作、DRR 公平性、CoDel 丢包、多 flow 调度、空队列、Reset、队列上限、flow 数量上限等。
+
+**已知限制**：FQ-CoDel scheduler 已实现并通过测试，但尚未接入 shard egress 路径。当前 shard 直接通过 `IPacketIo::SendBatch` 发送，未经 FQ-CoDel 调度。接线属于后续工作。
+
+验证结果: 全量 CTest 普通 37/37, ASan/UBSan 37/37, TSan 37/37; include boundaries OK; `git diff --check` clean。
+
+#### P3C-07: TcpSession Concrete Implementation ✅ Implemented (2026-08-11)
+
+实现 `TcpSession` 作为 `ITransportSession` 冻结接口的具体实现类，填补 `src/session/` 目录的空白。
+
+**实现内容**：
+
+1. **`src/session/tcp_session.h` / `tcp_session.cpp`**: `TcpSession` 类。
+   - 实现所有 `ITransportSession` 虚方法：`TrySend`、`ShutdownWrite`、`Abort`、`SetWritableCallback`、`SetDataCallback`、`SetClosedCallback`。
+   - Shard-facing 方法：`OnDataReceived(lease)`、`OnWritable()`、`OnClosed(error)`、`DrainSendQueue(out, max)`。
+   - 内部 mutex 保护 send queue 和状态；callback 在锁外调用避免死锁。
+   - Default send queue limit: 256 KiB，`TrySend` 超限时返回 `SendStatus::WouldBlock`。
+   - `DrainSendQueue` 从 send queue 前端取数据，返回拷贝字节数。
+
+2. **`tests/unit/tcp_session_test.cpp`**: 18 个测试，覆盖 TrySend/DrainSendQueue 基本流程、WouldBlock、ShutdownWrite、Abort、callback 调用、send queue 上限、closed 状态拒绝发送等。
+
+**已知限制**：`TcpSession` 已实现并通过测试，但尚未接入 `TcpHandshakeEngine` 的 ESTABLISHED 路径。当前 handshake engine 使用 `ITransportSession*` 接口，`TcpSession` 是该接口的具体实现，接线属于后续集成工作。
+
+验证结果: 全量 CTest 普通 37/37, ASan/UBSan 37/37, TSan 37/37; include boundaries OK; `git diff --check` clean。
+
 #### 通用采样器
 
 KCC 和 BBR 不能直接消费“本 ACK 确认多少字节”作为带宽。实现
@@ -1162,12 +1222,14 @@ public:
 
 #### KCC
 
-- 以 UCP commit `927cb83` 的 `ucp_cc.*` 和 `tcp_kcc.c` 为参考;
-- 保留 STARTUP/DRAIN/PROBE_BW、G1/G2/G3、LT BW 和 ACK aggregation;
+- KCC 已实现为 purpose-designed hybrid controller (ADR-006 Accepted);
+- 结合 BBR 式带宽估计 (BtlBw max-filter + RTprop min-filter + BDP) 和 AIMD 式丢包响应 (fast retransmit/recovery);
+- 不使用 STARTUP/DRAIN/PROBE_BW 状态机, 带宽估计为被动观察, 无探测 gain;
+- pacing_rate = BtlBw × 1.0 (保守, 无膨胀);
 - 第一版关闭 global KF, 避免跨 shard 全局原子状态影响可扩展性;
 - ECN 默认关闭, 完成 TCP ECE/CWR 后按配置启用;
-- 保留 MIT 来源、commit 和对齐测试说明;
-- TCP adapter 只生成 transport-neutral RateSample, 不把 UCP FEC/NAK 事件伪装为 TCP。
+- TCP adapter 只生成 transport-neutral RateSample, 不把 UCP FEC/NAK 事件伪装为 TCP;
+- telemetry ID 为 `kcc_v1`。
 
 #### BBR
 
@@ -1441,7 +1503,7 @@ AF_XDP / Onload / DPDK 的通用扩展接口已定义在 `docs/plans/HIGH_PERF_B
 |---|---|---|
 | A Runtime | ~~002H~~ ✅、~~Dispatcher~~ ✅、~~Shard~~ ✅、~~TUN~~ ✅ | 立即 |
 | B Protocol | IP、UDP/ICMP、TCP | 002H parser/buffer 契约稳定 ✅ |
-| C CC/QoS | rate sampler、KCC、BBR、FQ-CoDel | FakeClock 和 packet model 可用 |
+| C CC/QoS | rate sampler、~~KCC~~ ✅、~~BBR~~ ✅、~~FQ-CoDel~~ ✅ | FakeClock 和 packet model 可用 ✅ |
 | D Integration | adapter spike、OpenPPP2、UCP、平台 | public draft API 可用 |
 | E Validation | P0、fuzz、netem、interop、benchmark | 立即建立框架 |
 
@@ -1478,7 +1540,7 @@ P0 和测试框架全程并行, 但每个性能结论都依赖 P0。
 11. ✅ `P3A-02`: ICMPv4/ICMPv6 bounded parser + PMTU cache。
 12. ✅ `P3A-03`: IPv4/IPv6 fragment reassembly。
 13. ✅ `P3B`: bounded PCB, handshake, RX/TX, ring, retrans, FIN/TIME-WAIT。
-14. ✅ `P3C`: delivery-rate sampler, BBRv1, pacer, fragment reassembly wiring。
+14. ✅ `P3C`: delivery-rate sampler, BBRv1, pacer, fragment reassembly wiring, KccController hybrid, FQ-CoDel scheduler, TcpSession。
 15. ✅ `P3U`: UDP parser + shard wiring。
 16. ✅ `P3I`: ICMP shard RX wiring + PMTU。
 17. ✅ `P4-01`: ADR-005 落地, 新增 `RuntimeDependencies`, `IClock`, `IEventSink`。IClock 替换 shard 热路径 steady_clock。

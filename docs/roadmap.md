@@ -24,7 +24,7 @@
 | P3B-2 | **Completed** | bounded receive ring、delayed ACK/SACK、Session partial/WouldBlock，TCP 40+23、全量 29/29 三套构建全绿 |
 | P3B-3 | **Completed** | retransmission queue + RTO、SACK scoreboard、data segment serialization、send buffer 接入 handshake engine 和 shard event loop，TCP 54+51、全量 30/30 三套构建全绿 |
 | P3B-4 | **Completed** | FIN/close/TIME-WAIT 状态机、CloseFlow/AbortFlow API、TIME-WAIT 容量驱逐，FIN 处理/half-close/TIME-WAIT 驱逐 bugfix，TCP handshake 74/74、全量 30/30 三套构建全绿。SACK scoreboard wire 接线仍属 P3C |
-| P3C | **In progress** | P3C-01 DeliveryRateSampler + CongestionController 接口 + AIMD 适配完成，commit `aa9332e`。P3C-02 BBRv1 状态机测试完成，commit `78332bc`，TCP congestion 43/43、全量 31/31 三套构建全绿。P3C-03 per-flow pacer 完成，commit `957682f`，TCP send 57/57、全量 31/31 三套构建全绿。P3C-04 fragment reassembly → TCP input wiring 完成，commit `b6d79a8`，全量 31/31 三套构建全绿。下一步: 完成 P3C 收尾（KCC 算法移植 / RuntimeDependencies 注入设计落地） |
+| P3C | **In progress** | P3C-01 DeliveryRateSampler + CongestionController 接口 + AIMD 适配完成，commit `aa9332e`。P3C-02 BBRv1 状态机测试完成，commit `78332bc`，TCP congestion 43/43、全量 31/31 三套构建全绿。P3C-03 per-flow pacer 完成，commit `957682f`，TCP send 57/57、全量 31/31 三套构建全绿。P3C-04 fragment reassembly → TCP input wiring 完成，commit `b6d79a8`，全量 31/31 三套构建全绿。P3C-05 KccController hybrid (BBR bandwidth estimation + AIMD loss response) 完成，ADR-006 Accepted，三套构建 37/37 全绿。下一步: FQ-CoDel 接入 shard egress 路径、netem/真实 TUN 下 KCC/BBR 验证 |
 | P4 | **Completed** | OpenPPP2 集成。P4-1 RuntimeDependencies 注入 + P4-3 IClock 替换（commit `97ab0c9`）。P4-2 ISessionFactory 被动监听（commit `0269184`）。P4-4 ITransportSession 回调接线。P4-5 IEventSink flow event triggers（`EmitFlowEvent()` + `MetricSnapshot`）。P4-6 consumer contract test 更新。P4-7 OpenPPP2 adapter smoke test：完整 TCP 生命周期集成测试（SYN→SYN-ACK→ACK→ESTABLISHED→data→FIN→Closed），线程安全 `EgressSnapshot()` (ADR-007)，35/35 三套构建全绿。详见 `docs/plans/P4_OPENPPP2_INTEGRATION_PLAN.md`。 |
 | P5A | Planned | Onload socket session 和通用 kernel-bypass session 接口。AF_XDP/DPDK 扩展接口设计已完成，见 `docs/plans/HIGH_PERF_BACKEND_EXTENSIONS.md`。 |
 | P5B | Planned | AF_XDP/DPDK 纯用户态 Packet I/O。 |
@@ -53,6 +53,9 @@
 | **P4-1** (RuntimeDependencies 注入 + IClock) | `97ab0c9` | 无 |
 | **P4-2** (ISessionFactory 被动监听) | `0269184` | 无 |
 | **P4-4** (ITransportSession 回调接线) | TBD | 无 |
+| P3C-05 (KccController hybrid CC) | TBD | 无 |
+| P3C-06 (FQ-CoDel scheduler) | TBD | 无 |
+| P3C-07 (TcpSession implementation) | TBD | 无 |
 
 规则:
 
@@ -272,7 +275,7 @@ P3A-01 IPv4/IPv6 parser + checksum ✅
         ↓
 P3B-4 FIN/close/TIME-WAIT ✅
         ↓
-P3C TCP 互操作与性能
+P3C TCP 互操作与性能 (KCC/BBR ✅, FQ-CoDel scheduler ✅, TcpSession ✅)
         ↓
 P4 OpenPPP2 集成(真实构建与运行时接线)
         ↓
