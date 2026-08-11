@@ -18,8 +18,29 @@ FqCoDelScheduler::FqCoDelScheduler(const FqCoDelConfig& config) noexcept
 
 FqCoDelScheduler::Flow* FqCoDelScheduler::FindOrCreateFlow(
     std::uint32_t flow_hash) noexcept {
-    const std::uint32_t slot = flow_hash % config_.max_flows;
-    return &flows_[slot];
+    if (flows_.empty()) {
+        return nullptr;
+    }
+
+    const std::uint32_t start_slot = flow_hash % flows_.size();
+    std::uint32_t slot = start_slot;
+
+    // Linear probing to find an existing flow or an empty slot.
+    for (std::uint32_t i = 0; i < flows_.size(); ++i) {
+        Flow& flow = flows_[slot];
+        if (flow.queue.empty() && flow.flow_hash == 0) {
+            // Empty slot — claim it for this flow.
+            flow.flow_hash = flow_hash;
+            return &flow;
+        }
+        if (flow.flow_hash == flow_hash) {
+            return &flow;
+        }
+        slot = (slot + 1) % flows_.size();
+    }
+
+    // Flow table is full.
+    return nullptr;
 }
 
 void FqCoDelScheduler::ActivateFlow(std::size_t idx) noexcept {
@@ -139,6 +160,7 @@ std::optional<FqCoDelPacket> FqCoDelScheduler::Dequeue(
         if (flow.queue.empty()) {
             flow.active = false;
             flow.deficit = 0;
+            flow.flow_hash = 0;
             active_list_.erase(active_list_.begin());
         } else {
             active_list_.erase(active_list_.begin());
@@ -148,7 +170,7 @@ std::optional<FqCoDelPacket> FqCoDelScheduler::Dequeue(
         FqCoDelPacket result;
         result.data = std::move(pkt.data);
         result.enqueue_time_ms = pkt.enqueue_time_ms;
-        result.flow_hash = idx; // slot index as flow identifier
+        result.flow_hash = flow.flow_hash;
         return result;
     }
 
@@ -168,6 +190,7 @@ void FqCoDelScheduler::Reset() noexcept {
         flow.queue.clear();
         flow.deficit = 0;
         flow.active = false;
+        flow.flow_hash = 0;
         flow.first_above_time = 0;
         flow.last_drop_time = 0;
         flow.dropping = false;

@@ -106,6 +106,7 @@ private:
         std::deque<QueuedPacket> queue;
         std::int64_t deficit = 0;
         bool active = false;
+        std::uint32_t flow_hash = 0; // 0 = slot unused
 
         // CoDel state
         std::uint64_t first_above_time = 0; // 0 = not above target
@@ -115,7 +116,7 @@ private:
     };
 
     FqCoDelConfig config_;
-    std::vector<Flow> flows_;                // indexed by flow_hash % max_flows
+    std::vector<Flow> flows_;                // indexed by flow_hash % max_flows with linear probing
     std::vector<std::uint32_t> active_list_; // indices into flows_
     std::size_t total_packets_ = 0;
 
