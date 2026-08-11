@@ -13,6 +13,26 @@ bool IsExtensionHeader(std::uint8_t nh) noexcept {
            nh == Ipv6ExtHeaderType::DestinationOptions;
 }
 
+/// Search parsed HopByHop options for a Jumbo Payload option (RFC 2675).
+/// If found, decode the 4-byte big-endian length into @p jumbo_len.
+/// @return true if the Jumbo option was found and decoded.
+bool FindJumboPayload(const Ipv6Option* opts, std::size_t count,
+                      std::uint32_t& jumbo_len) noexcept {
+    for (std::size_t i = 0; i < count; ++i) {
+        if (opts[i].type == Ipv6OptionType::JumboPayload) {
+            if (opts[i].length != 4 || opts[i].data == nullptr) {
+                return false; // malformed jumbo option
+            }
+            jumbo_len = (static_cast<std::uint32_t>(opts[i].data[0]) << 24) |
+                        (static_cast<std::uint32_t>(opts[i].data[1]) << 16) |
+                        (static_cast<std::uint32_t>(opts[i].data[2]) << 8) |
+                        static_cast<std::uint32_t>(opts[i].data[3]);
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
@@ -43,7 +63,7 @@ Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
         (static_cast<std::uint32_t>(vtf[2]) << 8) |
         static_cast<std::uint32_t>(vtf[3]);
 
-    // Payload length (2 bytes) — may be 0 for jumbograms (not handled here)
+    // Payload length (2 bytes) — 0 for jumbograms.
     cur.ReadU16(result.header.payload_length);
 
     // Next header
@@ -62,15 +82,49 @@ Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
     // Check that we have the full payload.
     std::size_t available_payload = len - 40; // bytes after fixed header
 
-    // If payload_length is set (non-zero), it specifies the length of everything
+    // If payload_length is non-zero, it specifies the length of everything
     // after the fixed header (extension headers + upper-layer payload).
-    // For jumbograms (payload_length == 0), we don't handle hop-by-hop jumbo
-    // option — treat 0 as "use available buffer length" for robustness.
+    // For jumbograms (payload_length == 0), the HopByHop JumboPayload option
+    // (RFC 2675) carries the real length. If the first extension header is
+    // HopByHop we parse it early to find the Jumbo option. If no Jumbo option
+    // is found we fall back to using the available buffer length.
     std::size_t total_after_fixed;
     if (result.header.payload_length == 0) {
-        // Jumbogram or truncated — use available bytes. This is acceptable
-        // for a parser: the caller may know the real length from the L2 frame.
-        total_after_fixed = available_payload;
+        // Check if the first extension header is HopByHop — then peek at its
+        // options to find a JumboPayload option.
+        std::uint32_t jumbo_len = 0;
+        bool jumbo_found = false;
+
+        if (result.header.next_header == Ipv6ExtHeaderType::HopByHop &&
+            available_payload >= 2) {
+            // Read the HopByHop header: next_header(1) + hdr_ext_len(1) + options.
+            std::uint8_t hbh_nh = data[40];
+            std::uint8_t hbh_ext_len = data[41];
+            std::size_t hbh_size;
+            if (CheckedMul<std::size_t>(
+                    static_cast<std::size_t>(hbh_ext_len) + 1, std::size_t{8}, hbh_size) &&
+                hbh_size >= 2 && hbh_size <= available_payload) {
+                // Parse options within the HopByHop body.
+                Ipv6Option tmp_opts[kIpv6MaxOptions];
+                std::size_t tmp_count = 0;
+                if (ParseIpv6Options(data + 40 + 2, hbh_size - 2,
+                                     tmp_opts, tmp_count)) {
+                    if (FindJumboPayload(tmp_opts, tmp_count, jumbo_len)) {
+                        jumbo_found = true;
+                    }
+                }
+            }
+            (void)hbh_nh; // consumed during the walk below
+        }
+
+        if (jumbo_found) {
+            result.jumbo_payload_present = true;
+            result.jumbo_payload_length = jumbo_len;
+            total_after_fixed = jumbo_len;
+        } else {
+            // No jumbo option — use available bytes.
+            total_after_fixed = available_payload;
+        }
     } else {
         total_after_fixed = result.header.payload_length;
     }
@@ -190,6 +244,42 @@ Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
             return result;
         }
 
+        // Structured parsing for non-Fragment extension headers.
+        // The option/routing data starts at offset+2 (after next_header + hdr_ext_len)
+        // and extends for ext_size-2 bytes.
+        if (current_nh == Ipv6ExtHeaderType::HopByHop) {
+            if (!ParseIpv6Options(data + offset + 2, ext_size - 2,
+                                  result.hopbyhop_options,
+                                  result.hopbyhop_option_count)) {
+                result.error = Ipv6ParseResult::Error::BadExtHeaderOption;
+                return result;
+            }
+            // Validate JumboPayload consistency (RFC 2675): the option is only
+            // valid when the fixed-header payload_length is 0.
+            std::uint32_t jlen = 0;
+            if (FindJumboPayload(result.hopbyhop_options,
+                                 result.hopbyhop_option_count, jlen)) {
+                if (result.header.payload_length != 0) {
+                    result.error = Ipv6ParseResult::Error::BadJumboPayload;
+                    return result;
+                }
+                // Jumbo was already detected during the pre-scan; values match.
+                result.jumbo_payload_present = true;
+                result.jumbo_payload_length = jlen;
+            }
+        } else if (current_nh == Ipv6ExtHeaderType::Routing) {
+            result.routing_header_present = true;
+            result.routing_header =
+                ParseIpv6RoutingHeader(data + offset + 2, ext_size - 2);
+        } else if (current_nh == Ipv6ExtHeaderType::DestinationOptions) {
+            if (!ParseIpv6Options(data + offset + 2, ext_size - 2,
+                                  result.dest_options,
+                                  result.dest_option_count)) {
+                result.error = Ipv6ParseResult::Error::BadExtHeaderOption;
+                return result;
+            }
+        }
+
         offset = ext_end;
         current_nh = ext_nh;
         result.ext_header_count++;
@@ -197,9 +287,17 @@ Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
 
     // current_nh is now the terminal upper-layer protocol.
     result.final_next_header = current_nh;
-    result.payload_offset = offset;
-    result.payload_length = (40 + total_after_fixed) - offset;
-    result.payload = data + offset;
+
+    // NoNextHeader (59) means there is no payload after the extension headers.
+    if (current_nh == Ipv6ExtHeaderType::NoNextHeader) {
+        result.payload_offset = offset;
+        result.payload_length = 0;
+        result.payload = nullptr;
+    } else {
+        result.payload_offset = offset;
+        result.payload_length = (40 + total_after_fixed) - offset;
+        result.payload = data + offset;
+    }
 
     return result;
 }

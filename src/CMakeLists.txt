@@ -19,6 +19,7 @@ add_library(tcpip2 STATIC
     ip/checksum.cpp
     ip/ipv4.cpp
     ip/ipv6.cpp
+    ip/extension_headers.cpp
     ip/icmpv4.cpp
     ip/icmpv6.cpp
     ip/pmtu.cpp

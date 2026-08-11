@@ -10,6 +10,7 @@
 #include <cstddef>
 
 #include <ip/checked.h>
+#include <ip/extension_headers.h>
 
 namespace tcpip2 {
 
@@ -20,7 +21,10 @@ struct Ipv6ExtHeaderType {
         Routing = 43,
         Fragment = 44,
         DestinationOptions = 60,
-        // Others are treated as terminal (upper-layer protocol).
+        NoNextHeader = 59,    // RFC 8200 — no payload follows
+        Esp = 50,             // Encapsulating Security Payload (terminal)
+        Ah = 51,              // Authentication Header (terminal)
+        Mobility = 135,       // Mobility Header (terminal)
     };
 };
 
@@ -48,6 +52,8 @@ struct Ipv6ParseResult {
         ExtHeaderLoop,       // extension header chain loops
         ExtHeaderTooMany,    // too many extension headers (>8)
         ExtHeaderTooLong,    // total extension header bytes exceed limit
+        BadExtHeaderOption,  // malformed TLV option in HopByHop/DestOptions
+        BadJumboPayload,     // Jumbo Payload option present with non-zero payload_length
     };
 
     Error error = Error::None;
@@ -65,6 +71,23 @@ struct Ipv6ParseResult {
     std::uint32_t fragment_identification = 0; // 32-bit identification
     const std::uint8_t* fragment_payload = nullptr;   // data after the Fragment header
     std::size_t fragment_payload_length = 0;
+
+    // HopByHop options (valid when ext_header_count > 0 and chain includes HopByHop).
+    Ipv6Option hopbyhop_options[kIpv6MaxOptions];
+    std::size_t hopbyhop_option_count = 0;
+
+    // Destination Options (valid when chain includes DestinationOptions).
+    Ipv6Option dest_options[kIpv6MaxOptions];
+    std::size_t dest_option_count = 0;
+
+    // Routing header (valid when routing_header_present == true).
+    bool routing_header_present = false;
+    Ipv6RoutingHeader routing_header;
+
+    // Jumbo Payload (RFC 2675) — present when the HopByHop JumboPayload option
+    // is found and the fixed-header payload_length is 0.
+    bool jumbo_payload_present = false;
+    std::uint32_t jumbo_payload_length = 0; // total bytes after the 40-byte fixed header
 };
 
 /// Maximum number of extension headers to walk before declaring a loop.
