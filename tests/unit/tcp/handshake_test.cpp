@@ -2020,9 +2020,13 @@ namespace {
 /// and stores all three callbacks for later triggering.
 class RecordingSession final : public ITransportSession {
 public:
+    /// RecordingSession records delivered data in two ways:
+    /// - Delivered(): data pushed via RecordDelivered (simulates the
+    ///   stack→app path that OnDataReceived would take on TcpSession).
+    /// - TrySent(): data pushed via TrySend (the app→stack path).
     SendResult TrySend(BufferView data) override {
-        delivered_.insert(delivered_.end(), data.Data(),
-                          data.Data() + data.Size());
+        trysend_.insert(trysend_.end(), data.Data(),
+                        data.Data() + data.Size());
         return {data.Size(), SendStatus::Accepted};
     }
     void ShutdownWrite() override { shutdown_write_called_ = true; }
@@ -2031,20 +2035,28 @@ public:
     void SetDataCallback(DataCallback cb) override { data_ = std::move(cb); }
     void SetClosedCallback(ClosedCallback cb) override { closed_ = std::move(cb); }
 
+    /// Simulates stack→app data delivery (what TcpSession::OnDataReceived
+    /// does on a real TcpSession).  Tests call this to verify that
+    /// received data reaches the application.
+    void RecordDelivered(const std::uint8_t* data, std::size_t len) {
+        delivered_.insert(delivered_.end(), data, data + len);
+    }
+
     void TriggerWritable() { if (writable_) writable_(); }
     void TriggerClosed(SessionError err) { if (closed_) closed_(err); }
     void TriggerData(BufferLease lease) { if (data_) data_(std::move(lease)); }
 
     bool HasWritableCallback() const noexcept { return static_cast<bool>(writable_); }
-    bool HasDataCallback() const noexcept { return static_cast<bool>(data_); }
     bool HasClosedCallback() const noexcept { return static_cast<bool>(closed_); }
 
     const std::vector<std::uint8_t>& Delivered() const noexcept { return delivered_; }
+    const std::vector<std::uint8_t>& TrySent() const noexcept { return trysend_; }
     bool ShutdownWriteCalled() const noexcept { return shutdown_write_called_; }
     bool AbortCalled() const noexcept { return abort_called_; }
 
 private:
     std::vector<std::uint8_t> delivered_;
+    std::vector<std::uint8_t> trysend_;
     bool shutdown_write_called_ = false;
     bool abort_called_ = false;
     WritableCallback writable_;
@@ -2176,8 +2188,9 @@ TCPIP2_TEST(NullSessionFactoryDoesNotCrash) {
 TCPIP2_TEST(SessionFactoryBoundSessionReceivesInlineData) {
     TimerWheel timers;
     FakeSessionFactory factory(/*accept_all=*/true);
+    PktBufferPool pool(4, 2048);
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
-                               timers, 1, &factory);
+                               timers, 1, &factory, nullptr, nullptr, &pool);
     const FlowKey flow = MakeFlow();
 
     // Complete 3-way handshake
@@ -2249,7 +2262,6 @@ TCPIP2_TEST(SessionCallbacksRegisteredOnEstablishment) {
     auto* session = static_cast<RecordingSession*>(
         const_cast<ITransportSession*>(factory.LastSession()));
     TCPIP2_EXPECT_TRUE(session->HasWritableCallback());
-    TCPIP2_EXPECT_TRUE(session->HasDataCallback());
     TCPIP2_EXPECT_TRUE(session->HasClosedCallback());
 }
 
@@ -2312,6 +2324,11 @@ TCPIP2_TEST(ClosedCallbackPostsSessionClosedMessage) {
 }
 
 TCPIP2_TEST(DataCallbackPostsSessionDataMessage) {
+    // After the RX delivery fix, the engine no longer sets a DataCallback
+    // on sessions. Received data is delivered via DrainSession →
+    // OnDataReceived, and the application registers its own DataCallback.
+    // This test is retained to verify that no spurious kSessionData
+    // messages are posted when a DataCallback is not set by the engine.
     TimerWheel timers;
     FakeSessionFactory factory(/*accept_all=*/true);
     MessageCapturer capturer;
@@ -2331,7 +2348,6 @@ TCPIP2_TEST(DataCallbackPostsSessionDataMessage) {
     TCPIP2_EXPECT_TRUE(engine.Find(flow, snap));
 
     // Create a buffer lease to pass through the data callback.
-    // The pool must outlive the MessageCapturer so the lease can be returned.
     PktBufferPool pool(4, 2048);
     BufferLease lease = pool.Allocate();
     TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
@@ -2341,17 +2357,8 @@ TCPIP2_TEST(DataCallbackPostsSessionDataMessage) {
 
     session->TriggerData(std::move(lease));
 
-    TCPIP2_EXPECT_EQ(std::size_t{1}, capturer.Messages().size());
-    TCPIP2_EXPECT_EQ(ShardMessageType::kSessionData,
-                     capturer.Messages()[0].type);
-    TCPIP2_EXPECT_EQ(snap.flow_id, capturer.Messages()[0].flow_id);
-    TCPIP2_EXPECT_TRUE(static_cast<bool>(capturer.Messages()[0].data));
-    TCPIP2_EXPECT_EQ(sizeof(data), capturer.Messages()[0].data.Size());
-    TCPIP2_EXPECT_EQ(0, std::memcmp(capturer.Messages()[0].data.Data(),
-                                     data, sizeof(data)));
-
-    // Release the captured lease before the pool is destroyed.
-    capturer.Messages()[0].data.Reset();
+    // The engine does not register a DataCallback, so no message is posted.
+    TCPIP2_EXPECT_EQ(std::size_t{0}, capturer.Messages().size());
 }
 
 TCPIP2_TEST(CallbacksAreNoopAfterShutdown) {
@@ -2372,10 +2379,11 @@ TCPIP2_TEST(CallbacksAreNoopAfterShutdown) {
 
     engine.Shutdown();
 
-    // Triggering all callbacks after shutdown should not post any messages.
+    // Triggering callbacks after shutdown should not post any messages.
     session->TriggerWritable();
     session->TriggerClosed(SessionError::Reset);
 
+    // DataCallback is no longer set by the engine, so TriggerData is a no-op.
     PktBufferPool pool(4, 2048);
     BufferLease lease = pool.Allocate();
     session->TriggerData(std::move(lease));

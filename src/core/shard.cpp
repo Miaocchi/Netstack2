@@ -139,7 +139,8 @@ bool StackShard::Start() noexcept {
             [this](ShardMessage&& msg) noexcept {
                 return control_inbox_.Push(std::move(msg));
             },
-            event_sink_);
+            event_sink_,
+            &pool_);
     } catch (...) {
         tcp_.reset();
         return false;

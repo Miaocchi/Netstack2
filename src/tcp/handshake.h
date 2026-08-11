@@ -12,6 +12,7 @@
 #include <memory>
 #include <vector>
 
+#include <tcpip2/buffer.h>
 #include <tcpip2/events.h>
 #include <tcpip2/session_factory.h>
 
@@ -159,7 +160,8 @@ public:
                        std::uint64_t generation_epoch = 1,
                        ISessionFactory* session_factory = nullptr,
                        PostMessageFn post_message = nullptr,
-                       IEventSink* event_sink = nullptr);
+                       IEventSink* event_sink = nullptr,
+                       PktBufferPool* pool = nullptr);
     ~TcpHandshakeEngine();
 
     TcpHandshakeEngine(const TcpHandshakeEngine&) = delete;
@@ -286,6 +288,7 @@ private:
     ISessionFactory* session_factory_ = nullptr;
     PostMessageFn post_message_fn_;
     IEventSink* event_sink_ = nullptr;
+    PktBufferPool* pool_ = nullptr;
     bool shutdown_ = false;
 };
 

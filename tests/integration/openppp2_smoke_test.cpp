@@ -37,6 +37,7 @@
 #include <tcpip2/transport_session.h>
 
 #include <core/runtime.h>
+#include <session/tcp_session.h>
 
 #include "PacketBuilder.h"
 #include "Test.h"
@@ -44,54 +45,54 @@
 using namespace tcpip2;
 
 // ---------------------------------------------------------------------------
-// FakeSession — ITransportSession that records delivered data
+// FakeSession — TcpSession subclass that records delivered data via the
+// DataCallback (the correct stack→app delivery path).
 // ---------------------------------------------------------------------------
 
-class FakeSession final : public ITransportSession {
+class FakeSession final : public TcpSession {
 public:
-    SendResult TrySend(BufferView data) override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        delivered_.insert(delivered_.end(), data.Data(), data.Data() + data.Size());
-        return {data.Size(), SendStatus::Accepted};
+    FakeSession() : TcpSession() {
+        SetDataCallback([this](BufferLease lease) {
+            std::lock_guard<std::mutex> lock(delivery_mutex_);
+            delivered_.insert(delivered_.end(),
+                              lease.Data(), lease.Data() + lease.Size());
+        });
     }
 
     void ShutdownWrite() override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(state_mutex_);
         shutdown_write_called_ = true;
+        TcpSession::ShutdownWrite();
     }
 
-    void Abort(SessionError) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+    void Abort(SessionError err) override {
+        std::lock_guard<std::mutex> lock(state_mutex_);
         abort_called_ = true;
+        TcpSession::Abort(err);
     }
-
-    void SetWritableCallback(WritableCallback cb) override { writable_ = std::move(cb); }
-    void SetDataCallback(DataCallback cb) override { data_ = std::move(cb); }
-    void SetClosedCallback(ClosedCallback cb) override { closed_ = std::move(cb); }
 
     std::vector<std::uint8_t> Delivered() const {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(delivery_mutex_);
         return delivered_;
     }
 
     bool ShutdownWriteCalled() const {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(state_mutex_);
         return shutdown_write_called_;
     }
 
     bool AbortCalled() const {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(state_mutex_);
         return abort_called_;
     }
 
 private:
-    mutable std::mutex mutex_;
+    mutable std::mutex delivery_mutex_;
     std::vector<std::uint8_t> delivered_;
+
+    mutable std::mutex state_mutex_;
     bool shutdown_write_called_ = false;
     bool abort_called_ = false;
-    WritableCallback writable_;
-    DataCallback data_;
-    ClosedCallback closed_;
 };
 
 // ---------------------------------------------------------------------------

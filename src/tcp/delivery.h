@@ -7,6 +7,7 @@
  */
 
 #include <cstddef>
+#include <functional>
 
 #include <tcpip2/transport_session.h>
 
@@ -31,8 +32,13 @@ struct TcpDeliveryResult {
     std::size_t calls = 0;
 };
 
+/// Function type called for each contiguous chunk of received TCP data.
+/// The callee must return how many bytes it accepted (0..data.Size())
+/// and a SendStatus indicating whether to continue, block, or stop.
+using DeliverFn = std::function<SendResult(BufferView)>;
+
 TcpDeliveryResult DrainTcpReceiveBuffer(TcpReceiveBuffer& receive,
-                                        ITransportSession& session,
+                                        const DeliverFn& deliver,
                                         std::size_t call_budget = 16) noexcept;
 
 } // namespace tcpip2

@@ -388,7 +388,10 @@ TCPIP2_TEST(SessionDeliveryHandlesPartialAcceptedAcrossRingWrap) {
         {1, SendStatus::Accepted},
         {3, SendStatus::Accepted},
     });
-    const auto delivered = DrainTcpReceiveBuffer(receive, session, 8);
+    DeliverFn deliver = [&session](BufferView data) -> SendResult {
+        return session.TrySend(data);
+    };
+    const auto delivered = DrainTcpReceiveBuffer(receive, deliver, 8);
     TCPIP2_EXPECT_EQ(TcpDeliveryStatus::Drained, delivered.status);
     TCPIP2_EXPECT_EQ(std::size_t{6}, delivered.accepted_bytes);
     TCPIP2_EXPECT_EQ(std::size_t{0}, receive.BytesHeld());
@@ -400,8 +403,11 @@ TCPIP2_TEST(SessionDeliveryConsumesPartialWouldBlockBeforeBlocking) {
     const std::array<std::uint8_t, 4> bytes{{1, 2, 3, 4}};
     receive.OnSegment(100, bytes.data(), bytes.size(), false);
     ScriptedSession session({{2, SendStatus::WouldBlock}});
+    DeliverFn deliver = [&session](BufferView data) -> SendResult {
+        return session.TrySend(data);
+    };
 
-    const auto delivered = DrainTcpReceiveBuffer(receive, session);
+    const auto delivered = DrainTcpReceiveBuffer(receive, deliver);
     TCPIP2_EXPECT_EQ(TcpDeliveryStatus::WouldBlock, delivered.status);
     TCPIP2_EXPECT_EQ(std::size_t{2}, delivered.accepted_bytes);
     TCPIP2_EXPECT_EQ(std::size_t{2}, receive.ReadyBytes());
@@ -413,17 +419,23 @@ TCPIP2_TEST(SessionDeliveryRejectsInvalidAndZeroProgressResults) {
     TcpReceiveBuffer invalid_receive(8, 100);
     invalid_receive.OnSegment(100, bytes.data(), bytes.size(), false);
     ScriptedSession invalid({{3, SendStatus::Accepted}});
+    DeliverFn invalid_deliver = [&invalid](BufferView data) -> SendResult {
+        return invalid.TrySend(data);
+    };
     TCPIP2_EXPECT_EQ(
         TcpDeliveryStatus::InvalidResult,
-        DrainTcpReceiveBuffer(invalid_receive, invalid).status);
+        DrainTcpReceiveBuffer(invalid_receive, invalid_deliver).status);
     TCPIP2_EXPECT_EQ(std::size_t{2}, invalid_receive.ReadyBytes());
 
     TcpReceiveBuffer stalled_receive(8, 100);
     stalled_receive.OnSegment(100, bytes.data(), bytes.size(), false);
     ScriptedSession stalled({{0, SendStatus::Accepted}});
+    DeliverFn stalled_deliver = [&stalled](BufferView data) -> SendResult {
+        return stalled.TrySend(data);
+    };
     TCPIP2_EXPECT_EQ(
         TcpDeliveryStatus::NoProgress,
-        DrainTcpReceiveBuffer(stalled_receive, stalled).status);
+        DrainTcpReceiveBuffer(stalled_receive, stalled_deliver).status);
     TCPIP2_EXPECT_EQ(std::size_t{0}, stalled_receive.AdvertisedWindow());
 }
 
@@ -432,16 +444,22 @@ TCPIP2_TEST(SessionDeliveryReportsTerminalStatusAfterAcceptedPrefix) {
     TcpReceiveBuffer closed_receive(8, 100);
     closed_receive.OnSegment(100, bytes.data(), bytes.size(), false);
     ScriptedSession closed({{1, SendStatus::Closed}});
-    const auto closed_result = DrainTcpReceiveBuffer(closed_receive, closed);
+    DeliverFn closed_deliver = [&closed](BufferView data) -> SendResult {
+        return closed.TrySend(data);
+    };
+    const auto closed_result = DrainTcpReceiveBuffer(closed_receive, closed_deliver);
     TCPIP2_EXPECT_EQ(TcpDeliveryStatus::Closed, closed_result.status);
     TCPIP2_EXPECT_EQ(std::size_t{1}, closed_result.accepted_bytes);
 
     TcpReceiveBuffer error_receive(8, 100);
     error_receive.OnSegment(100, bytes.data(), bytes.size(), false);
     ScriptedSession error({{1, SendStatus::Error}});
+    DeliverFn error_deliver = [&error](BufferView data) -> SendResult {
+        return error.TrySend(data);
+    };
     TCPIP2_EXPECT_EQ(
         TcpDeliveryStatus::Error,
-        DrainTcpReceiveBuffer(error_receive, error).status);
+        DrainTcpReceiveBuffer(error_receive, error_deliver).status);
 }
 
 TCPIP2_TEST(SessionDeliveryCallBudgetPreventsUnboundedLoop) {
@@ -454,10 +472,13 @@ TCPIP2_TEST(SessionDeliveryCallBudgetPreventsUnboundedLoop) {
         {1, SendStatus::Accepted},
         {1, SendStatus::Accepted},
     });
-    const auto first = DrainTcpReceiveBuffer(receive, session, 2);
+    DeliverFn deliver = [&session](BufferView data) -> SendResult {
+        return session.TrySend(data);
+    };
+    const auto first = DrainTcpReceiveBuffer(receive, deliver, 2);
     TCPIP2_EXPECT_EQ(TcpDeliveryStatus::BudgetExhausted, first.status);
     TCPIP2_EXPECT_EQ(std::size_t{2}, receive.ReadyBytes());
-    const auto second = DrainTcpReceiveBuffer(receive, session, 2);
+    const auto second = DrainTcpReceiveBuffer(receive, deliver, 2);
     TCPIP2_EXPECT_EQ(TcpDeliveryStatus::Drained, second.status);
 }
 
@@ -466,7 +487,10 @@ TCPIP2_TEST(SessionExceptionConvertsToDeliveryError) {
     const std::array<std::uint8_t, 2> bytes{{1, 2}};
     receive.OnSegment(100, bytes.data(), bytes.size(), false);
     ThrowingSession session;
-    const auto result = DrainTcpReceiveBuffer(receive, session);
+    DeliverFn deliver = [&session](BufferView data) -> SendResult {
+        return session.TrySend(data);
+    };
+    const auto result = DrainTcpReceiveBuffer(receive, deliver);
     TCPIP2_EXPECT_EQ(TcpDeliveryStatus::Error, result.status);
     TCPIP2_EXPECT_EQ(std::size_t{2}, receive.ReadyBytes());
     TCPIP2_EXPECT_TRUE(receive.Blocked());

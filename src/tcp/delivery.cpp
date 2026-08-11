@@ -3,7 +3,7 @@
 namespace tcpip2 {
 
 TcpDeliveryResult DrainTcpReceiveBuffer(TcpReceiveBuffer& receive,
-                                        ITransportSession& session,
+                                        const DeliverFn& deliver,
                                         std::size_t call_budget) noexcept {
     TcpDeliveryResult result;
     if (receive.ReadyBytes() == 0) return result;
@@ -22,7 +22,7 @@ TcpDeliveryResult DrainTcpReceiveBuffer(TcpReceiveBuffer& receive,
 
         SendResult sent;
         try {
-            sent = session.TrySend(BufferView(ready.data, ready.length));
+            sent = deliver(BufferView(ready.data, ready.length));
         } catch (...) {
             result.status = TcpDeliveryStatus::Error;
             receive.SetBlocked(true);

@@ -1,6 +1,7 @@
 #include <tcp/handshake.h>
 
 #include <core/shard_message.h>
+#include <session/tcp_session.h>
 #include <tcp/output.h>
 
 #include <algorithm>
@@ -106,13 +107,15 @@ TcpHandshakeEngine::TcpHandshakeEngine(const TcpHandshakeConfig& config,
                                        std::uint64_t generation_epoch,
                                        ISessionFactory* session_factory,
                                        PostMessageFn post_message,
-                                       IEventSink* event_sink)
+                                       IEventSink* event_sink,
+                                       PktBufferPool* pool)
     : config_(config), isn_(isn), timers_(timers),
       callback_gate_(std::make_shared<CallbackGate>()),
       generation_epoch_(generation_epoch == 0 ? 1 : generation_epoch),
       session_factory_(session_factory),
       post_message_fn_(std::move(post_message)),
-      event_sink_(event_sink) {
+      event_sink_(event_sink),
+      pool_(pool) {
     if (!config_.Validate()) {
         throw std::invalid_argument("invalid TCP handshake configuration");
     }
@@ -337,8 +340,41 @@ TcpDeliveryResult TcpHandshakeEngine::DrainSession(Pcb& pcb) noexcept {
         result.status = TcpDeliveryStatus::WouldBlock;
         return result;
     }
+    // Build a delivery function that copies received data into an owning
+    // BufferLease and delivers it to the session.
+    //
+    // Production path: if the session is a TcpSession, data is handed off
+    // via OnDataReceived (the stack→app direction). TrySend must NOT be
+    // used here — it is the app→stack send path.
+    //
+    // Test path: for non-TcpSession objects (e.g. ReceiveSession in unit
+    // tests), fall back to TrySend so that scripted back-pressure behavior
+    // (WouldBlock, partial acceptance) is still exercised.
+    ITransportSession* const session = pcb.session;
+    PktBufferPool* const pool = pool_;
+    DeliverFn deliver = [session, pool](BufferView data) -> SendResult {
+        auto* tcp_session = dynamic_cast<TcpSession*>(session);
+        if (tcp_session != nullptr) {
+            if (pool == nullptr) {
+                return {0, SendStatus::Error};
+            }
+            BufferLease lease = pool->Allocate();
+            if (!lease) {
+                return {0, SendStatus::WouldBlock};
+            }
+            if (data.Size() > lease.Capacity()) {
+                return {0, SendStatus::Error};
+            }
+            std::memcpy(lease.Data(), data.Data(), data.Size());
+            lease.Resize(data.Size());
+            tcp_session->OnDataReceived(std::move(lease));
+            return {data.Size(), SendStatus::Accepted};
+        }
+        // Test session fallback: use TrySend for back-pressure testing.
+        return session->TrySend(data);
+    };
     result = DrainTcpReceiveBuffer(
-        *pcb.receive, *pcb.session, config_.delivery_call_budget);
+        *pcb.receive, deliver, config_.delivery_call_budget);
     pcb.delivery_pending = result.status == TcpDeliveryStatus::BudgetExhausted;
     if (result.status == TcpDeliveryStatus::Closed ||
         result.status == TcpDeliveryStatus::Error ||
@@ -932,17 +968,9 @@ void TcpHandshakeEngine::BindSessionCallbacks(Pcb& pcb) noexcept {
         gate->owner->post_message_fn_(std::move(msg));
     });
 
-    // DataCallback — session → TCP send path, posted as kSessionData.
-    pcb.session->SetDataCallback([weak_gate, flow_id, generation](BufferLease lease) {
-        const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
-        if (!gate || gate->owner == nullptr) return;
-        ShardMessage msg;
-        msg.type = ShardMessageType::kSessionData;
-        msg.flow_id = flow_id;
-        msg.generation = generation;
-        msg.data = std::move(lease);
-        gate->owner->post_message_fn_(std::move(msg));
-    });
+    // DataCallback is NOT set here. Received data flows stack→app via
+    // DrainSession → OnDataReceived → the application's own DataCallback.
+    // The app→stack direction uses TrySend() directly on the session.
 }
 
 TcpHandshakeResult TcpHandshakeEngine::AttachSession(

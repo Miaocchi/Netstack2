@@ -39,7 +39,7 @@ namespace tcpip2 {
  *   Shard → OnWritable() → writable_callback_ → App
  *   Shard → OnClosed() → closed_callback_ → App
  */
-class TcpSession final : public ITransportSession {
+class TcpSession : public ITransportSession {
 public:
     /// Default send queue capacity before WouldBlock (256 KiB).
     static constexpr std::size_t kDefaultSendQueueLimit = 256 * 1024;
