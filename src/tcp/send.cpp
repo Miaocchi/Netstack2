@@ -72,9 +72,11 @@ TcpSendBuffer::TcpSendBuffer(std::uint32_t initial_sequence,
       persist_current_ms_(persist_base_ms),
       max_persist_probes_(max_persist_probes) {
     (void)window_scale;
-    // Replace default-constructed AIMD with BBR if requested.
+    // Replace default-constructed AIMD with BBR or KCC if requested.
     if (cc_algorithm == CongestionAlgorithm::Bbr) {
         controller_ = BbrController(mss);
+    } else if (cc_algorithm == CongestionAlgorithm::Kcc) {
+        controller_ = KccController(mss);
     }
     send_queue_.reserve(queue_limit);
 }
@@ -436,10 +438,13 @@ void TcpSendBuffer::OnSent(BufferRef owner, std::size_t payload_offset,
             ++retransmission_count_;
             if (first_timeout) {
                 const std::uint32_t flight = SaturatingUint32(in_flight_sequence_);
-                // Set ssthresh via controller (AIMD only; BBR ignores loss).
+                // Set ssthresh via controller (AIMD/KCC only; BBR ignores loss).
                 if (cc_algorithm_ == CongestionAlgorithm::Aimd) {
                     auto& aimd = std::get<AimdController>(controller_);
                     aimd.OnFastRecoveryEntry(flight);
+                } else if (cc_algorithm_ == CongestionAlgorithm::Kcc) {
+                    auto& kcc = std::get<KccController>(controller_);
+                    kcc.OnFastRecoveryEntry(flight);
                 }
             }
             // Controller RTO: reset cwnd to 1 MSS.
@@ -516,7 +521,8 @@ TcpSendAckResult TcpSendBuffer::OnAck(std::uint32_t acknowledgment,
         if (qualifying_duplicate) {
             ++dup_ack_count_;
             const bool in_fast_recovery = std::visit([](const auto& c) noexcept {
-                if constexpr (std::is_same_v<std::decay_t<decltype(c)>, AimdController>) {
+                if constexpr (std::is_same_v<std::decay_t<decltype(c)>, AimdController> ||
+                              std::is_same_v<std::decay_t<decltype(c)>, KccController>) {
                     return c.InFastRecovery();
                 }
                 return false;
@@ -525,6 +531,8 @@ TcpSendAckResult TcpSendBuffer::OnAck(std::uint32_t acknowledgment,
                 // Inflate cwnd by 1 MSS per dup ACK during recovery (RFC 5681).
                 if (cc_algorithm_ == CongestionAlgorithm::Aimd) {
                     std::get<AimdController>(controller_).OnDupAck();
+                } else if (cc_algorithm_ == CongestionAlgorithm::Kcc) {
+                    std::get<KccController>(controller_).OnDupAck();
                 }
             }
             if (dup_ack_count_ == 3 && !retransmit_queue_.empty() &&
@@ -533,6 +541,9 @@ TcpSendAckResult TcpSendBuffer::OnAck(std::uint32_t acknowledgment,
                 if (cc_algorithm_ == CongestionAlgorithm::Aimd) {
                     auto& aimd = std::get<AimdController>(controller_);
                     aimd.OnFastRecoveryEntry(flight);
+                } else if (cc_algorithm_ == CongestionAlgorithm::Kcc) {
+                    auto& kcc = std::get<KccController>(controller_);
+                    kcc.OnFastRecoveryEntry(flight);
                 }
                 fast_retransmit_pending_ = true;
                 result.fast_retransmit = true;
@@ -678,7 +689,8 @@ TcpSendAckResult TcpSendBuffer::OnAck(std::uint32_t acknowledgment,
     // Build RateSample and feed the controller.
     // Use the delivery state of the first ACKed record for the rate sample.
     const auto in_fast_recovery = std::visit([](const auto& c) noexcept {
-        if constexpr (std::is_same_v<std::decay_t<decltype(c)>, AimdController>) {
+        if constexpr (std::is_same_v<std::decay_t<decltype(c)>, AimdController> ||
+                      std::is_same_v<std::decay_t<decltype(c)>, KccController>) {
             return c.InFastRecovery();
         }
         return false;
@@ -699,6 +711,8 @@ TcpSendAckResult TcpSendBuffer::OnAck(std::uint32_t acknowledgment,
     if (in_fast_recovery) {
         if (cc_algorithm_ == CongestionAlgorithm::Aimd) {
             std::get<AimdController>(controller_).OnFastRecoveryExit();
+        } else if (cc_algorithm_ == CongestionAlgorithm::Kcc) {
+            std::get<KccController>(controller_).OnFastRecoveryExit();
         }
         fast_retransmit_pending_ = false;
     } else {
@@ -845,6 +859,8 @@ void TcpSendBuffer::UpdateMss(std::uint16_t mss) noexcept {
     mss_ = mss;
     if (cc_algorithm_ == CongestionAlgorithm::Aimd) {
         std::get<AimdController>(controller_).UpdateMss(mss, pristine);
+    } else if (cc_algorithm_ == CongestionAlgorithm::Kcc) {
+        std::get<KccController>(controller_).UpdateMss(mss, pristine);
     }
 }
 
@@ -915,7 +931,8 @@ std::size_t TcpSendBuffer::OnSack(const TcpSackBlockList& sack_blocks,
     // Trigger fast retransmit if 3+ distinct records are SACKed and
     // we are not already in fast recovery.
     const auto in_fast_recovery = std::visit([](const auto& c) noexcept {
-        if constexpr (std::is_same_v<std::decay_t<decltype(c)>, AimdController>) {
+        if constexpr (std::is_same_v<std::decay_t<decltype(c)>, AimdController> ||
+                      std::is_same_v<std::decay_t<decltype(c)>, KccController>) {
             return c.InFastRecovery();
         }
         return false;
@@ -924,6 +941,8 @@ std::size_t TcpSendBuffer::OnSack(const TcpSackBlockList& sack_blocks,
         const std::uint32_t flight = SaturatingUint32(in_flight_sequence_);
         if (cc_algorithm_ == CongestionAlgorithm::Aimd) {
             std::get<AimdController>(controller_).OnFastRecoveryEntry(flight);
+        } else if (cc_algorithm_ == CongestionAlgorithm::Kcc) {
+            std::get<KccController>(controller_).OnFastRecoveryEntry(flight);
         }
         fast_retransmit_pending_ = true;
     }
@@ -941,6 +960,9 @@ std::uint32_t TcpSendBuffer::Ssthresh() const noexcept {
     if (cc_algorithm_ == CongestionAlgorithm::Aimd) {
         return std::get<AimdController>(controller_).Ssthresh();
     }
+    if (cc_algorithm_ == CongestionAlgorithm::Kcc) {
+        return std::get<KccController>(controller_).Ssthresh();
+    }
     return 0;
 }
 
@@ -952,7 +974,8 @@ std::uint32_t TcpSendBuffer::PacingRate() const noexcept {
 
 bool TcpSendBuffer::InFastRecovery() const noexcept {
     return std::visit([](const auto& c) noexcept {
-        if constexpr (std::is_same_v<std::decay_t<decltype(c)>, AimdController>) {
+        if constexpr (std::is_same_v<std::decay_t<decltype(c)>, AimdController> ||
+                      std::is_same_v<std::decay_t<decltype(c)>, KccController>) {
             return c.InFastRecovery();
         }
         return false;

@@ -340,4 +340,167 @@ void BbrController::Reset() noexcept {
     round_started_ = false;
 }
 
+// ---------------------------------------------------------------------------
+// KccController
+// ---------------------------------------------------------------------------
+
+KccController::KccController(std::uint16_t mss) noexcept
+    : mss_(mss),
+      cwnd_(static_cast<std::uint32_t>(mss) * 2U),
+      ssthresh_(std::numeric_limits<std::uint32_t>::max()) {}
+
+void KccController::OnPacketSent(std::uint64_t /*bytes*/) noexcept {
+    // KCC does not track bytes_sent for round counting (unlike BBR).
+}
+
+void KccController::UpdateBtlBw(const RateSample& rs) noexcept {
+    if (rs.delivery_rate_bytes_per_sec == 0) return;
+    if (rs.app_limited) return;  // Don't update BtlBw on app-limited samples
+
+    if (rs.delivery_rate_bytes_per_sec > btlbw_) {
+        btlbw_ = rs.delivery_rate_bytes_per_sec;
+    }
+}
+
+void KccController::UpdateRTprop(const RateSample& rs) noexcept {
+    if (rs.rtt_ms == 0) return;
+    if (rtprop_ == 0 || rs.rtt_ms < rtprop_) {
+        rtprop_ = rs.rtt_ms;
+    }
+}
+
+std::uint64_t KccController::Bdp() const noexcept {
+    if (btlbw_ == 0 || rtprop_ == 0) return 0;
+    // BDP = btlbw (bytes/sec) * rtprop (ms) / 1000
+    if (btlbw_ > std::numeric_limits<std::uint64_t>::max() / rtprop_) {
+        return std::numeric_limits<std::uint64_t>::max() / 1000;
+    }
+    return (btlbw_ * rtprop_) / 1000;
+}
+
+void KccController::RecomputeCwnd() noexcept {
+    // cwnd = max(BDP, 4*MSS) in normal operation.
+    const std::uint64_t bdp = Bdp();
+    const std::uint64_t floor =
+        static_cast<std::uint64_t>(mss_) * 4U;
+    const std::uint64_t target = std::max(bdp, floor);
+    cwnd_ = target > std::numeric_limits<std::uint32_t>::max()
+                ? std::numeric_limits<std::uint32_t>::max()
+                : static_cast<std::uint32_t>(target);
+}
+
+void KccController::OnAck(const RateSample& rs) noexcept {
+    if (fast_recovery_) {
+        // During fast recovery, cwnd was already inflated; do not grow
+        // further on normal ACKs.  The exit happens via OnFastRecoveryExit().
+        return;
+    }
+
+    // Update bandwidth and RTT estimates.
+    UpdateBtlBw(rs);
+    UpdateRTprop(rs);
+
+    // Update pacing rate: BtlBw * 1.0 (conservative, no gain inflation).
+    pacing_rate_ = btlbw_;
+
+    // Slow start until BtlBw is known or ssthresh is hit.
+    if (btlbw_ == 0 || rtprop_ == 0) {
+        // BtlBw not yet known: slow start (increase by acked bytes, up to MSS).
+        if (cwnd_ < ssthresh_ && rs.acked_bytes > 0) {
+            const std::uint32_t increase = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(rs.acked_bytes, mss_));
+            cwnd_ = std::numeric_limits<std::uint32_t>::max() - cwnd_ < increase
+                        ? std::numeric_limits<std::uint32_t>::max()
+                        : cwnd_ + increase;
+        }
+        return;
+    }
+
+    // BDP is known: recompute cwnd from BDP.
+    if (cwnd_ < ssthresh_) {
+        // Still in slow start (below ssthresh): keep growing by acked bytes.
+        if (rs.acked_bytes > 0) {
+            const std::uint32_t increase = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(rs.acked_bytes, mss_));
+            cwnd_ = std::numeric_limits<std::uint32_t>::max() - cwnd_ < increase
+                        ? std::numeric_limits<std::uint32_t>::max()
+                        : cwnd_ + increase;
+        }
+    } else {
+        // Congestion avoidance: use BDP-based cwnd.
+        RecomputeCwnd();
+    }
+}
+
+void KccController::OnLoss(const LossEvent& /*ev*/) noexcept {
+    // Fast retransmit path: set ssthresh and recovery window.
+    // Called by TcpSendBuffer when dup_ack_count == 3.
+    // The flight size is provided via OnFastRecoveryEntry().
+}
+
+void KccController::OnFastRecoveryEntry(std::uint32_t flight) noexcept {
+    ssthresh_ = std::max<std::uint32_t>(flight / 2U,
+                                         static_cast<std::uint32_t>(mss_) * 2U);
+    const std::uint64_t recovery_window =
+        static_cast<std::uint64_t>(ssthresh_) +
+        static_cast<std::uint64_t>(mss_) * 3U;
+    cwnd_ = recovery_window > std::numeric_limits<std::uint32_t>::max()
+                ? std::numeric_limits<std::uint32_t>::max()
+                : static_cast<std::uint32_t>(recovery_window);
+    fast_recovery_ = true;
+}
+
+void KccController::OnDupAck() noexcept {
+    if (fast_recovery_) {
+        // Inflate cwnd by 1 MSS per dup ACK during recovery (RFC 5681).
+        const std::uint64_t inflated =
+            static_cast<std::uint64_t>(cwnd_) + mss_;
+        cwnd_ = inflated > std::numeric_limits<std::uint32_t>::max()
+                    ? std::numeric_limits<std::uint32_t>::max()
+                    : static_cast<std::uint32_t>(inflated);
+    }
+}
+
+void KccController::OnFastRecoveryExit() noexcept {
+    cwnd_ = ssthresh_;
+    fast_recovery_ = false;
+}
+
+void KccController::OnRto() noexcept {
+    // RTO: cwnd = 1 MSS, exit fast recovery if active.
+    cwnd_ = mss_;
+    fast_recovery_ = false;
+}
+
+std::uint32_t KccController::CongestionWindow() const noexcept {
+    return cwnd_;
+}
+
+std::uint32_t KccController::PacingRate() const noexcept {
+    return static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(pacing_rate_, std::numeric_limits<std::uint32_t>::max()));
+}
+
+void KccController::UpdateMss(std::uint16_t mss, bool pristine) noexcept {
+    if (mss == 0 || mss == mss_) return;
+    const std::uint16_t old_mss = mss_;
+    mss_ = mss;
+    if (pristine) {
+        cwnd_ = static_cast<std::uint32_t>(mss_) * 2U;
+    } else if (mss_ < old_mss) {
+        const std::uint64_t scaled =
+            static_cast<std::uint64_t>(cwnd_) * mss_ / old_mss;
+        cwnd_ = std::max<std::uint32_t>(mss_, static_cast<std::uint32_t>(scaled));
+    }
+}
+
+void KccController::Reset() noexcept {
+    btlbw_ = 0;
+    rtprop_ = 0;
+    cwnd_ = static_cast<std::uint32_t>(mss_) * 2U;
+    ssthresh_ = std::numeric_limits<std::uint32_t>::max();
+    fast_recovery_ = false;
+    pacing_rate_ = 0;
+}
+
 } // namespace tcpip2

@@ -39,6 +39,16 @@ std::unique_ptr<TcpSendBuffer> MakeBbr(
         CongestionAlgorithm::Bbr);
 }
 
+/// Helper: create a TcpSendBuffer with KCC.
+std::unique_ptr<TcpSendBuffer> MakeKcc(
+    std::uint32_t initial_seq = 1000,
+    std::uint16_t mss = 1460) {
+    return std::make_unique<TcpSendBuffer>(
+        initial_seq, mss, 0, 64 * 1024, 64 * 1024,
+        1000, 200, 60000, 500, 60000, 3, 3,
+        CongestionAlgorithm::Kcc);
+}
+
 /// Helper pool + send utility (mirrors send_test.cpp's SendHelper).
 struct TestEnv {
     PktBufferPool pool;
@@ -677,6 +687,341 @@ TCPIP2_TEST(BbrStartupPacingRateUsesStartupGain) {
     // STARTUP pacing = btlbw * 738/256 = 1000000 * 2.886... ≈ 2882812
     TCPIP2_EXPECT_TRUE(c.PacingRate() >= 2882000U);
     TCPIP2_EXPECT_TRUE(c.PacingRate() <= 2883000U);
+}
+
+// ---------------------------------------------------------------------------
+// KccController tests
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(KccInitialCwndIsTwoMss) {
+    KccController c(1460);
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 2920U);
+    TCPIP2_EXPECT_EQ(c.Ssthresh(), 0xFFFFFFFFU);
+    TCPIP2_EXPECT_EQ(c.PacingRate(), 0U);  // no BtlBw yet
+    TCPIP2_EXPECT_EQ(c.BtlBw(), 0ULL);
+    TCPIP2_EXPECT_EQ(c.RTprop(), 0ULL);
+    TCPIP2_EXPECT_FALSE(c.InFastRecovery());
+}
+
+TCPIP2_TEST(KccAlgorithmIdIsKccV1) {
+    TCPIP2_EXPECT_EQ(std::string(KccController::AlgorithmId()), "kcc_v1");
+}
+
+TCPIP2_TEST(KccUpdatesBtlBwFromNonAppLimitedSample) {
+    KccController c(1460);
+    RateSample rs = MakeBbrSample(100, 1000000, 10);
+    c.OnAck(rs);
+    TCPIP2_EXPECT_EQ(c.BtlBw(), 1000000ULL);
+}
+
+TCPIP2_TEST(KccAppLimitedDoesNotUpdateBtlBw) {
+    KccController c(1460);
+    RateSample rs = MakeBbrSample(100, 5000000, 10, 1460, true);
+    c.OnAck(rs);
+    TCPIP2_EXPECT_EQ(c.BtlBw(), 0ULL);
+}
+
+TCPIP2_TEST(KccBtlBwIsMaxFilter) {
+    KccController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    c.OnAck(MakeBbrSample(110, 800000, 10));   // lower
+    c.OnAck(MakeBbrSample(120, 1200000, 10));  // higher
+    c.OnAck(MakeBbrSample(130, 900000, 10));   // lower
+    TCPIP2_EXPECT_EQ(c.BtlBw(), 1200000ULL);
+}
+
+TCPIP2_TEST(KccUpdatesRTpropMinFilter) {
+    KccController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 50));
+    c.OnAck(MakeBbrSample(110, 1000000, 30));
+    c.OnAck(MakeBbrSample(120, 1000000, 40));  // higher than min
+    TCPIP2_EXPECT_EQ(c.RTprop(), 30ULL);
+}
+
+TCPIP2_TEST(KccRTpropIgnoresZeroRtt) {
+    KccController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 50));
+    c.OnAck(MakeBbrSample(110, 1000000, 0));  // should be ignored
+    TCPIP2_EXPECT_EQ(c.RTprop(), 50ULL);
+}
+
+TCPIP2_TEST(KccPacingRateNonZeroAfterBtlBwKnown) {
+    KccController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    // KCC pacing = BtlBw * 1.0 (conservative, no gain)
+    TCPIP2_EXPECT_EQ(c.PacingRate(), 1000000U);
+}
+
+TCPIP2_TEST(KccSlowStartBeforeBtlBwKnown) {
+    KccController c(1460);
+    // Before BtlBw is known, KCC slow starts (cwnd += acked, up to MSS).
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 2920U);
+    RateSample rs1 = MakeBbrSample(100, 0, 0, 1460);  // no rate/rtt yet
+    c.OnAck(rs1);
+    // cwnd += min(1460, 1460) = 1460 → 4380
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 4380U);
+}
+
+TCPIP2_TEST(KccCwndIsBdpBasedAfterBtlBwKnown) {
+    KccController c(1460);
+    // btlbw=1M bytes/s, rtprop=10ms → BDP = 10000 bytes.
+    // After BtlBw known and cwnd >= ssthresh (UINT32_MAX initially,
+    // so still in slow start), cwnd keeps growing by acked bytes.
+    // But once cwnd >= ssthresh, RecomputeCwnd sets cwnd = max(BDP, 4*MSS).
+    // Since ssthresh starts at UINT32_MAX, cwnd will never reach it in
+    // normal slow start. So we need to trigger fast recovery to set
+    // ssthresh, then exit, to see BDP-based cwnd.
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    // Still in slow start (cwnd < ssthresh = UINT32_MAX).
+    // cwnd grew by min(1460, 1460) = 1460 → 4380
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 4380U);
+
+    // Enter fast recovery: ssthresh = max(flight/2, 2*MSS).
+    // Use flight = 10000 → ssthresh = 5000.
+    c.OnFastRecoveryEntry(10000);
+    TCPIP2_EXPECT_EQ(c.Ssthresh(), 5000U);
+    // cwnd = ssthresh + 3*MSS = 5000 + 4380 = 9380
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 9380U);
+    TCPIP2_EXPECT_TRUE(c.InFastRecovery());
+
+    // Exit fast recovery: cwnd = ssthresh = 5000.
+    c.OnFastRecoveryExit();
+    TCPIP2_EXPECT_FALSE(c.InFastRecovery());
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 5000U);
+
+    // Now cwnd (5000) < ssthresh (5000)? No, 5000 == 5000, so not < ssthresh.
+    // Actually cwnd == ssthresh, so the condition cwnd_ < ssthresh_ is false.
+    // RecomputeCwnd: cwnd = max(BDP=10000, 4*1460=5840) = 10000.
+    RateSample rs = MakeBbrSample(110, 1000000, 10);
+    c.OnAck(rs);
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 10000U);
+}
+
+TCPIP2_TEST(KccCwndFloorIsFourMss) {
+    KccController c(1460);
+    // Very small BDP → cwnd should be floored at 4*MSS.
+    // btlbw=100, rtprop=1ms → BDP = 0.1 → 0.
+    // After entering and exiting fast recovery to get below ssthresh:
+    c.OnAck(MakeBbrSample(100, 100, 1));
+    c.OnFastRecoveryEntry(10000);  // ssthresh = 5000
+    c.OnFastRecoveryExit();         // cwnd = 5000
+
+    // Now OnAck: cwnd (5000) == ssthresh (5000), not < ssthresh.
+    // RecomputeCwnd: max(0, 5840) = 5840.
+    c.OnAck(MakeBbrSample(110, 100, 1));
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 5840U);
+}
+
+TCPIP2_TEST(KccFastRecoveryInflatesCwndPerDupAck) {
+    KccController c(1460);
+    c.OnFastRecoveryEntry(10000);
+    // ssthresh = max(5000, 2920) = 5000
+    // cwnd = 5000 + 3*1460 = 9380
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 9380U);
+
+    c.OnDupAck();
+    // cwnd = 9380 + 1460 = 10840
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 10840U);
+
+    c.OnDupAck();
+    // cwnd = 10840 + 1460 = 12300
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 12300U);
+}
+
+TCPIP2_TEST(KccFastRecoveryExitSetsCwndToSsthresh) {
+    KccController c(1460);
+    c.OnFastRecoveryEntry(10000);
+    c.OnDupAck();
+    c.OnDupAck();
+    TCPIP2_EXPECT_TRUE(c.InFastRecovery());
+
+    c.OnFastRecoveryExit();
+    TCPIP2_EXPECT_FALSE(c.InFastRecovery());
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), c.Ssthresh());
+}
+
+TCPIP2_TEST(KccRtoResetsCwndToOneMss) {
+    KccController c(1460);
+    // Grow cwnd.
+    RateSample rs = MakeBbrSample(100, 1000000, 10);
+    c.OnAck(rs);
+    TCPIP2_EXPECT_TRUE(c.CongestionWindow() > 2920U);
+
+    c.OnRto();
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 1460U);
+    TCPIP2_EXPECT_FALSE(c.InFastRecovery());
+}
+
+TCPIP2_TEST(KccResetRestoresInitialState) {
+    KccController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    c.OnFastRecoveryEntry(10000);
+    c.OnRto();
+    c.Reset();
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 2920U);
+    TCPIP2_EXPECT_EQ(c.Ssthresh(), 0xFFFFFFFFU);
+    TCPIP2_EXPECT_FALSE(c.InFastRecovery());
+    TCPIP2_EXPECT_EQ(c.BtlBw(), 0ULL);
+    TCPIP2_EXPECT_EQ(c.RTprop(), 0ULL);
+    TCPIP2_EXPECT_EQ(c.PacingRate(), 0U);
+}
+
+TCPIP2_TEST(KccUpdateMssScalesCwndWhenPristine) {
+    KccController c(1460);
+    // cwnd = 2*1460 = 2920, pristine = true → cwnd = 2*1000 = 2000
+    c.UpdateMss(1000, true);
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 2000U);
+}
+
+TCPIP2_TEST(KccUpdateMssScalesCwndWhenShrinking) {
+    KccController c(1000);
+    // Grow cwnd to 5000 via fast recovery exit.
+    c.OnFastRecoveryEntry(10000);
+    c.OnFastRecoveryExit();
+    // cwnd = ssthresh = 5000, mss = 1000
+
+    // Shrink MSS to 800.
+    c.UpdateMss(800, false);
+    // scaled = 5000 * 800 / 1000 = 4000, max(800, 4000) = 4000
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 4000U);
+}
+
+TCPIP2_TEST(KccOnPacketSentDoesNotCrash) {
+    KccController c(1460);
+    c.OnPacketSent(1460);
+    c.OnPacketSent(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    TCPIP2_EXPECT_TRUE(c.CongestionWindow() > 0U);
+}
+
+TCPIP2_TEST(KccOnLossIsNoOp) {
+    KccController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 10));
+    std::uint32_t cwnd_before = c.CongestionWindow();
+
+    LossEvent ev;
+    ev.lost_bytes = 1000;
+    ev.inflight_bytes = 5000;
+    c.OnLoss(ev);
+
+    // KCC OnLoss is a no-op; loss response is via OnFastRecoveryEntry.
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), cwnd_before);
+}
+
+// ---------------------------------------------------------------------------
+// TcpSendBuffer + KCC integration
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(SendBufferKccAlgorithm) {
+    auto send = MakeKcc();
+    TCPIP2_EXPECT_EQ(send->Algorithm(), CongestionAlgorithm::Kcc);
+    // KCC initial cwnd = 2 * MSS = 2920
+    TCPIP2_EXPECT_EQ(send->CongestionWindow(), 2920U);
+    // KCC pacing rate is 0 until first BtlBw estimate.
+    TCPIP2_EXPECT_EQ(send->PacingRate(), 0U);
+}
+
+TCPIP2_TEST(SendBufferKccSsthreshAccessor) {
+    auto send = MakeKcc();
+    // KCC ssthresh starts at UINT32_MAX.
+    TCPIP2_EXPECT_EQ(send->Ssthresh(), 0xFFFFFFFFU);
+}
+
+TCPIP2_TEST(SendBufferKccSlowStartThroughSendBuffer) {
+    TestEnv env;
+    auto send = MakeKcc();
+
+    std::vector<std::uint8_t> data(10000, 'x');
+    send->Enqueue(data.data(), data.size());
+
+    // Send one segment.
+    auto seg = send->NextSegment(65535, env.now_ms);
+    TCPIP2_EXPECT_TRUE(seg.has_segment);
+    TCPIP2_EXPECT_EQ(seg.payload_length, 1460U);
+    env.SendSegment(*send, seg);
+
+    TCPIP2_EXPECT_EQ(send->CongestionWindow(), 2920U);
+
+    // ACK it.
+    env.now_ms += 100;
+    auto ack_result = send->OnAck(1000 + 1460, 65535, env.now_ms);
+    TCPIP2_EXPECT_FALSE(ack_result.duplicate);
+
+    // cwnd should have grown by 1460 in slow start (KCC slow starts
+    // before BtlBw is known).
+    TCPIP2_EXPECT_EQ(send->CongestionWindow(), 4380U);
+}
+
+TCPIP2_TEST(SendBufferKccFastRetransmitViaDupAck) {
+    TestEnv env;
+    auto send = MakeKcc();
+
+    std::vector<std::uint8_t> data(20000, 'x');
+    send->Enqueue(data.data(), data.size());
+
+    // Send 2 segments (cwnd = 2*MSS = 2920).
+    for (int i = 0; i < 2; ++i) {
+        auto seg = send->NextSegment(65535, env.now_ms);
+        TCPIP2_EXPECT_TRUE(seg.has_segment);
+        env.SendSegment(*send, seg);
+    }
+
+    // ACK the first segment to grow cwnd.
+    env.now_ms += 10;
+    send->OnAck(1000 + 1460, 65535, env.now_ms);
+
+    // Send segment 3.
+    auto seg3 = send->NextSegment(65535, env.now_ms);
+    TCPIP2_EXPECT_TRUE(seg3.has_segment);
+    env.SendSegment(*send, seg3);
+
+    // Send segment 4 if possible.
+    auto seg4 = send->NextSegment(65535, env.now_ms);
+    if (seg4.has_segment) {
+        env.SendSegment(*send, seg4);
+    }
+
+    // Send 3 duplicate ACKs.
+    for (int i = 0; i < 3; ++i) {
+        auto r = send->OnAck(2460, 65535, env.now_ms + 10 + i, true);
+        if (i == 2) {
+            TCPIP2_EXPECT_TRUE(r.fast_retransmit);
+        }
+    }
+
+    TCPIP2_EXPECT_TRUE(send->InFastRecovery());
+}
+
+TCPIP2_TEST(SendBufferKccCloseResetsController) {
+    TestEnv env;
+    auto send = MakeKcc();
+
+    std::vector<std::uint8_t> data(10000, 'x');
+    send->Enqueue(data.data(), data.size());
+    auto seg = send->NextSegment(65535, env.now_ms);
+    env.SendSegment(*send, seg);
+
+    // Trigger RTO.
+    env.now_ms += 2000;
+    auto rto_seg = send->NextSegment(65535, env.now_ms);
+    TCPIP2_EXPECT_TRUE(rto_seg.is_retransmission);
+    env.SendSegment(*send, rto_seg);
+
+    // cwnd should be 1 MSS after RTO.
+    TCPIP2_EXPECT_EQ(send->CongestionWindow(), 1460U);
+
+    // After more RTOs, buffer closes and controller resets.
+    for (int i = 0; i < 5; ++i) {
+        env.now_ms += 10000;
+        auto s = send->NextSegment(65535, env.now_ms);
+        if (s.has_segment) {
+            env.SendSegment(*send, s);
+        }
+    }
+
+    if (send->IsClosed()) {
+        TCPIP2_EXPECT_EQ(send->CongestionWindow(), 2920U);
+    }
 }
 
 TCPIP2_TEST_MAIN()

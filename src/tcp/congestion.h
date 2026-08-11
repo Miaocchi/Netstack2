@@ -8,7 +8,7 @@
  * The congestion-control leg of TcpSendBuffer is delegated to a
  * controller selected at connection-creation time.  The interface is
  * designed so that the hot path can use std::variant<AimdController,
- * BbrController> without per-ACK virtual dispatch.
+ * BbrController, KccController> without per-ACK virtual dispatch.
  *
  * This is a private header used only by src/tcp/ — not part of the
  * frozen public API.
@@ -25,7 +25,7 @@ namespace tcpip2 {
 enum class CongestionAlgorithm {
     Aimd,   ///< RFC 5681 baseline (default, no pacing).
     Bbr,    ///< BBRv1 (with pacing).
-    Kcc,    ///< UCP KCC (stub — not yet implemented).
+    Kcc,    ///< KCC hybrid (BBR bandwidth estimation + AIMD loss response).
 };
 
 /// Information about a loss event passed to the controller.
@@ -154,6 +154,71 @@ private:
     std::uint64_t round_start_bytes_ = 0;
     std::uint64_t delivered_at_round_start_ = 0;
     bool round_started_ = false;
+};
+
+/// KCC hybrid congestion controller.
+///
+/// Combines BBR-style bandwidth estimation (BtlBw max-filter + RTprop
+/// min-filter for BDP estimation) with AIMD-style loss response (fast
+/// retransmit/recovery).  In normal operation cwnd = max(BDP, 4*MSS);
+/// on loss, ssthresh = max(flight/2, 2*MSS) and cwnd = ssthresh + 3*MSS
+/// (fast recovery); on RTO, cwnd = 1*MSS.  Pacing rate = BtlBw * 1.0
+/// (no gain inflation, conservative).
+///
+/// Telemetry ID is "kcc_v1".
+class KccController {
+public:
+    KccController(std::uint16_t mss) noexcept;
+
+    void OnPacketSent(std::uint64_t bytes) noexcept;
+    void OnAck(const RateSample& rs) noexcept;
+    void OnLoss(const LossEvent& ev) noexcept;
+    void OnRto() noexcept;
+
+    std::uint32_t CongestionWindow() const noexcept;
+    std::uint32_t Ssthresh() const noexcept { return ssthresh_; }
+    std::uint32_t PacingRate() const noexcept;
+
+    /// Telemetry string (always "kcc_v1").
+    static const char* AlgorithmId() noexcept { return "kcc_v1"; }
+
+    /// Called by TcpSendBuffer when entering fast recovery.
+    void OnFastRecoveryEntry(std::uint32_t flight) noexcept;
+    /// Called by TcpSendBuffer for each dup-ACK during recovery (inflate).
+    void OnDupAck() noexcept;
+    /// Called when exiting fast recovery (set cwnd = ssthresh).
+    void OnFastRecoveryExit() noexcept;
+    bool InFastRecovery() const noexcept { return fast_recovery_; }
+
+    /// Update MSS (called when path MTU changes).
+    void UpdateMss(std::uint16_t mss, bool pristine) noexcept;
+
+    /// Reset to initial state.
+    void Reset() noexcept;
+
+    // KCC state for testing/telemetry.
+    std::uint64_t BtlBw() const noexcept { return btlbw_; }
+    std::uint64_t RTprop() const noexcept { return rtprop_; }
+
+private:
+    void UpdateBtlBw(const RateSample& rs) noexcept;
+    void UpdateRTprop(const RateSample& rs) noexcept;
+    std::uint64_t Bdp() const noexcept;
+    void RecomputeCwnd() noexcept;
+
+    std::uint16_t mss_;
+
+    // Estimated bottleneck bandwidth (bytes/sec) and min RTT (ms).
+    std::uint64_t btlbw_ = 0;
+    std::uint64_t rtprop_ = 0;  // 0 means "unknown"
+
+    // Congestion window and ssthresh.
+    std::uint32_t cwnd_;
+    std::uint32_t ssthresh_;
+    bool fast_recovery_ = false;
+
+    // Pacing rate (bytes/sec), derived from BtlBw.
+    std::uint64_t pacing_rate_ = 0;
 };
 
 } // namespace tcpip2

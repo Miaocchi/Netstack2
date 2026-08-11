@@ -276,9 +276,9 @@ private:
     std::uint32_t snd_nxt_;    ///< Next sequence to assign.
     std::uint32_t snd_max_;    ///< Highest sequence ever sent (+1).
 
-    // Congestion control (pluggable: AIMD or BBRv1)
+    // Congestion control (pluggable: AIMD, BBRv1, or KCC hybrid)
     CongestionAlgorithm cc_algorithm_;
-    std::variant<AimdController, BbrController> controller_;
+    std::variant<AimdController, BbrController, KccController> controller_;
     DeliveryRateSampler sampler_;
     std::uint16_t mss_;        ///< Maximum segment size.
 
