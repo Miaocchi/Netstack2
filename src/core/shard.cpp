@@ -790,7 +790,7 @@ bool StackShard::EnqueueTcpResponse(const TcpResponse& response) noexcept {
         return false;
     }
     lease.Resize(output.packet_length);
-    if (!fq_codel_.Enqueue(lease.Data(), lease.Size(),
+    if (!fq_codel_.Enqueue(std::move(lease),
                             static_cast<std::uint32_t>(FlowHash(response.flow) >> 32),
                             clock_->NowMs())) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
@@ -808,10 +808,9 @@ void StackShard::PumpTcpSendPaths(std::uint64_t now_ms) noexcept {
     for (auto& lease : tcp_tx_) {
         if (!lease) continue;
         const std::uint32_t flow_hash = HashTxLease(lease.Data(), lease.Size());
-        if (!fq_codel_.Enqueue(lease.Data(), lease.Size(), flow_hash, now_ms)) {
+        if (!fq_codel_.Enqueue(std::move(lease), flow_hash, now_ms)) {
             packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         }
-        lease.Reset();
     }
     tcp_tx_.clear();
 }
@@ -836,7 +835,7 @@ void StackShard::DrainEgressLanes() noexcept {
             (static_cast<std::size_t>(envelope.flow_hash) % tx_queues_.size()) ==
                 envelope.queue_id;
         if (!valid_queue || !envelope.lease ||
-            !fq_codel_.Enqueue(envelope.lease.Data(), envelope.lease.Size(),
+            !fq_codel_.Enqueue(std::move(envelope.lease),
                                 envelope.flow_hash, envelope.enqueue_time_ms)) {
             packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         }
@@ -844,7 +843,7 @@ void StackShard::DrainEgressLanes() noexcept {
     }
 }
 
-bool StackShard::RouteEgressPacket(const FqCoDelPacket& packet) noexcept {
+bool StackShard::RouteEgressPacket(FqCoDelPacket& packet) noexcept {
     if (packet.Empty()) return false;
 
     // Legacy standalone shards have one directly owned queue. Runtime-configured
@@ -863,14 +862,7 @@ bool StackShard::RouteEgressPacket(const FqCoDelPacket& packet) noexcept {
         }
     }
 
-    BufferLease lease = pool_.Allocate();
-    if (!lease) return false;
-    if (packet.Size() > lease.Capacity()) {
-        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
-        return true;
-    }
-    std::memcpy(lease.Data(), packet.Data(), packet.Size());
-    lease.Resize(packet.Size());
+    BufferLease lease = std::move(packet.lease);
 
     if (target_shard != shard_id_) {
         if (target_shard >= outbound_egress_lanes_.size() ||
@@ -887,6 +879,8 @@ bool StackShard::RouteEgressPacket(const FqCoDelPacket& packet) noexcept {
         envelope.flow_hash = packet.flow_hash;
         envelope.enqueue_time_ms = packet.enqueue_time_ms;
         if (!outbound_egress_lanes_[target_shard]->Push(std::move(envelope))) {
+            // Lane full — reclaim the lease so the caller can re-enqueue.
+            packet.lease = std::move(envelope.lease);
             return false;
         }
         redirect_targets_[target_shard]->Wake();
@@ -902,6 +896,9 @@ bool StackShard::RouteEgressPacket(const FqCoDelPacket& packet) noexcept {
     std::size_t sent = queue->SendBatch(&lease, 1, error);
     if (sent > 1) sent = 1;
     if (sent == 1) return true;
+    // SendBatch would block — the lease was not consumed. Restore it so the
+    // caller can re-enqueue the packet with its original timestamp.
+    packet.lease = std::move(lease);
     return false;
 }
 
@@ -915,7 +912,7 @@ void StackShard::FlushTcpTx() noexcept {
         auto pkt = fq_codel_.Dequeue(clock_->NowMs());
         if (!pkt) break;
         if (!RouteEgressPacket(*pkt)) {
-            if (!fq_codel_.Enqueue(pkt->Data(), pkt->Size(), pkt->flow_hash,
+            if (!fq_codel_.Enqueue(std::move(pkt->lease), pkt->flow_hash,
                                    pkt->enqueue_time_ms)) {
                 packets_dropped_.fetch_add(1, std::memory_order_relaxed);
             }

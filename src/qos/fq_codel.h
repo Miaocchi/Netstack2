@@ -2,18 +2,22 @@
 
 /**
  * @file fq_codel.h
- * @brief FQ-CoDel shard-local egress scheduler.
+ * @brief FQ-CoDel shard-local egress scheduler (generic, not TCP-specific).
  * @license GPL-3.0
  *
  * Private internal component: provides per-flow fair queuing with the
  * CoDel controlled-delay AQM algorithm (RFC 8290 / RFC 8289).  This is
- * used by the TCP egress path to schedule packets across active flows
+ * used by the shard egress path to schedule packets across active flows
  * on a shard, preventing slow/bursty flows from starving others.
  *
  * The scheduler is NOT thread-safe.  It is intended to be used from a
  * single shard thread only, matching the shard-local execution model.
  *
- * This is a private header used only by src/tcp/ — not part of the
+ * The scheduler owns BufferLease objects directly — no per-packet heap
+ * allocation or memcpy on the hot path.  Callers move a BufferLease in
+ * on Enqueue and receive it back on Dequeue.
+ *
+ * This is a private header used only by src/qos/ — not part of the
  * frozen public API.
  */
 
@@ -22,6 +26,8 @@
 #include <deque>
 #include <optional>
 #include <vector>
+
+#include <tcpip2/buffer.h>
 
 namespace tcpip2 {
 
@@ -40,23 +46,24 @@ struct FqCoDelConfig {
 };
 
 /**
- * A packet dequeued from the scheduler.  Owns its byte buffer so the
- * caller can safely read the data until the packet is destroyed.
+ * A packet dequeued from the scheduler.  Owns its BufferLease so the
+ * caller can safely use the data until the packet is destroyed or the
+ * lease is moved out.
  */
 struct FqCoDelPacket {
-    std::vector<std::uint8_t> data;
+    BufferLease lease;
     std::uint64_t enqueue_time_ms = 0;
     std::uint32_t flow_hash = 0;
 
-    const std::uint8_t* Data() const noexcept { return data.data(); }
-    std::size_t Size() const noexcept { return data.size(); }
-    bool Empty() const noexcept { return data.empty(); }
+    const std::uint8_t* Data() const noexcept { return lease.Data(); }
+    std::size_t Size() const noexcept { return lease.Size(); }
+    bool Empty() const noexcept { return !lease; }
 };
 
 /**
  * FQ-CoDel scheduler: per-flow deficit round-robin with CoDel AQM.
  *
- * Usage: call Enqueue() to add packets tagged with a flow hash, and
+ * Usage: call Enqueue() to add a packet tagged with a flow hash, and
  * Dequeue() to pull the next scheduled packet.  CoDel drops packets
  * whose sojourn time (time spent in the queue) exceeds @p target_ms
  * for longer than @p interval_ms.
@@ -70,17 +77,19 @@ public:
     FqCoDelScheduler& operator=(const FqCoDelScheduler&) = delete;
 
     /**
-     * Enqueue @p length bytes from @p data on the flow identified by
-     * @p flow_hash.  Returns false if the flow table is full, the per-flow
-     * queue is full, or the input is invalid.
+     * Enqueue @p lease on the flow identified by @p flow_hash.  The
+     * scheduler takes ownership of the lease on success.  Returns false if
+     * the flow table is full, the per-flow queue is full, or the lease is
+     * empty; on failure the lease is released (buffer returned to pool).
      */
-    bool Enqueue(const std::uint8_t* data, std::size_t length,
-                 std::uint32_t flow_hash, std::uint64_t now_ms) noexcept;
+    bool Enqueue(BufferLease lease, std::uint32_t flow_hash,
+                 std::uint64_t now_ms) noexcept;
 
     /**
      * Dequeue the next packet according to deficit round-robin order,
-     * applying CoDel AQM.  Packets dropped by CoDel are skipped silently.
-     * Returns std::nullopt when the scheduler is empty.
+     * applying CoDel AQM.  Packets dropped by CoDel are skipped silently
+     * (their leases are released).  Returns std::nullopt when the
+     * scheduler is empty.
      */
     std::optional<FqCoDelPacket> Dequeue(std::uint64_t now_ms) noexcept;
 
@@ -98,7 +107,7 @@ public:
 
 private:
     struct QueuedPacket {
-        std::vector<std::uint8_t> data;
+        BufferLease lease;
         std::uint64_t enqueue_time_ms = 0;
     };
 
@@ -113,6 +122,13 @@ private:
         std::uint64_t last_drop_time = 0;  // 0 = never dropped
         bool dropping = false;
         std::uint32_t drop_count = 0;
+
+        Flow() noexcept = default;
+        Flow(const Flow&) = delete;
+        Flow& operator=(const Flow&) = delete;
+        Flow(Flow&&) noexcept = default;
+        Flow& operator=(Flow&&) noexcept = default;
+        ~Flow() = default;
     };
 
     FqCoDelConfig config_;

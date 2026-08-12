@@ -64,7 +64,7 @@ Netstack2 按以下原则推进:
 - UCP、Onload、AF_XDP、DPDK 的运行时接线;
 - IPv6 扩展头完整遍历（当前仅 Fragment header）;
 - OpenPPP2 真实 adapter（P4-7 smoke test 已通过, 真实 OpenPPP2 仓库 adapter 待 P4-04）。
-- FQ-CoDel scheduler 已实现 (`src/tcp/fq_codel.h`), 已接入 shard egress 路径 (`StackShard::FlushTcpTx`);
+- FQ-CoDel scheduler 已实现 (`src/qos/fq_codel.h`), 已接入 shard egress 路径 (`StackShard::FlushTcpTx`);
 - HybridBdpAimd 拥塞控制已实现 (`HybridBdpAimdController`, ADR-006 Accepted), 尚未在 netem/真实 TUN 下验证。
 
 冻结 API 前必须先修复的契约问题:
@@ -1149,14 +1149,14 @@ Tcp/Udp packet generated
 
 **实现内容**：
 
-1. **`src/tcp/fq_codel.h` / `fq_codel.cpp`**: `FqCoDelScheduler` 类。
+1. **`src/qos/fq_codel.h` / `fq_codel.cpp`**: `FqCoDelScheduler` 类。
    - Per-flow deficit round-robin (DRR) 调度，flow hash 到固定数量 bucket。
    - CoDel AQM：sojourn time > target_ms 持续 interval_ms 后开始丢包。
    - 配置：interval_ms=100, target_ms=5, quantum=1514, max_flows=64, max_queue_length=1024。
-   - `Enqueue(data, length, flow_hash, now_ms)` / `Dequeue(now_ms)` 接口。
+   - `Enqueue(BufferLease, flow_hash, now_ms)` / `Dequeue(now_ms)` 接口（scheduler 直接持有 `BufferLease`，零拷贝）。
    - 非 thread-safe，设计为 shard-local 使用。
 
-2. **`tests/unit/tcp/fq_codel_test.cpp`**: 15 个测试，覆盖 enqueue/dequeue 基本操作、DRR 公平性、CoDel 丢包、多 flow 调度、空队列、Reset、队列上限、flow 数量上限等。
+2. **`tests/unit/qos/fq_codel_test.cpp`**: 15 个测试，覆盖 enqueue/dequeue 基本操作、DRR 公平性、CoDel 丢包、多 flow 调度、空队列、Reset、队列上限、flow 数量上限等。
 
 **已知限制**：FQ-CoDel scheduler 已实现、通过测试，并已接入 shard egress 路径（`StackShard::EnqueueTcpResponse`、`PumpTcpSendPaths`、`FlushTcpTx`）。当前接线为 per-shard instance，WouldBlock/partial-send 时重新入队剩余包。尚未在 netem/真实 TUN 下验证端到端公平性和延迟。
 

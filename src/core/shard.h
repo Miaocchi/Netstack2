@@ -41,9 +41,8 @@
 #include <ip/icmpv4.h>
 #include <ip/icmpv6.h>
 #include <ip/pmtu.h>
+#include <qos/fq_codel.h>
 #include <udp/input.h>
-
-#include <tcp/fq_codel.h>
 #include <tcp/handshake.h>
 
 namespace tcpip2 {
@@ -164,7 +163,7 @@ private:
     bool RedirectPacket(std::size_t target_shard, PacketEnvelope&& envelope) noexcept;
     bool EnqueueTcpResponse(const TcpResponse& response) noexcept;
     void DrainEgressLanes() noexcept;
-    bool RouteEgressPacket(const FqCoDelPacket& packet) noexcept;
+    bool RouteEgressPacket(FqCoDelPacket& packet) noexcept;
     void FlushTcpTx() noexcept;
     void PumpTcpSendPaths(std::uint64_t now_ms) noexcept;
 

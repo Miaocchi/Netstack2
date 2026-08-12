@@ -35,7 +35,7 @@ add_library(tcpip2 STATIC
     tcp/send.cpp
     tcp/rate_sampler.cpp
     tcp/congestion.cpp
-    tcp/fq_codel.cpp
+    qos/fq_codel.cpp
     udp/udp.cpp
     udp/input.cpp
     session/tcp_session.cpp

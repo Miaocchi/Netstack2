@@ -6,17 +6,29 @@
 
 #include "Test.h"
 
-#include <tcp/fq_codel.h>
+#include <qos/fq_codel.h>
+#include <tcpip2/buffer.h>
 
-#include <algorithm>
 #include <cstring>
 #include <vector>
 
 namespace {
 
-/// Build a payload of the given size filled with a repeating byte pattern.
-std::vector<std::uint8_t> MakePayload(std::uint8_t fill, std::size_t size) {
-    return std::vector<std::uint8_t>(size, fill);
+/// Pool used by every test. Slot count and capacity are generous so that
+/// none of the tests hits pool exhaustion.
+tcpip2::PktBufferPool& TestPool() {
+    static tcpip2::PktBufferPool pool(256, 2048);
+    return pool;
+}
+
+/// Allocate a BufferLease filled with @p fill, length @p size.
+tcpip2::BufferLease MakeLease(std::uint8_t fill, std::size_t size) {
+    auto lease = TestPool().Allocate();
+    if (lease) {
+        std::memset(lease.Data(), fill, size);
+        lease.Resize(size);
+    }
+    return lease;
 }
 
 } // namespace
@@ -34,8 +46,8 @@ TCPIP2_TEST(FqCoDelSingleFlowFifoOrdering) {
 
     // Enqueue 5 packets with distinct payloads.
     for (std::uint8_t i = 0; i < 5; ++i) {
-        auto payload = MakePayload(i, 64);
-        TCPIP2_EXPECT_TRUE(sched.Enqueue(payload.data(), payload.size(), flow, 0));
+        auto lease = MakeLease(i, 64);
+        TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(lease), flow, 0));
     }
     TCPIP2_EXPECT_EQ(sched.QueueLength(), static_cast<std::size_t>(5));
     TCPIP2_EXPECT_FALSE(sched.Empty());
@@ -46,7 +58,7 @@ TCPIP2_TEST(FqCoDelSingleFlowFifoOrdering) {
         TCPIP2_EXPECT_TRUE(pkt.has_value());
         if (pkt) {
             TCPIP2_EXPECT_EQ(pkt->Size(), static_cast<std::size_t>(64));
-            TCPIP2_EXPECT_EQ(pkt->data[0], i);
+            TCPIP2_EXPECT_EQ(pkt->Data()[0], i);
         }
     }
     TCPIP2_EXPECT_TRUE(sched.Empty());
@@ -55,8 +67,8 @@ TCPIP2_TEST(FqCoDelSingleFlowFifoOrdering) {
 TCPIP2_TEST(FqCoDelDequeuedPacketPreservesFlowHash) {
     tcpip2::FqCoDelScheduler sched;
     const std::uint32_t flow_hash = 0x93ab47d1u;
-    const auto payload = MakePayload(0x42, 32);
-    TCPIP2_EXPECT_TRUE(sched.Enqueue(payload.data(), payload.size(), flow_hash, 0));
+    auto lease = MakeLease(0x42, 32);
+    TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(lease), flow_hash, 0));
 
     const auto packet = sched.Dequeue(1);
     TCPIP2_EXPECT_TRUE(packet.has_value());
@@ -75,10 +87,10 @@ TCPIP2_TEST(FqCoDelMultipleFlowRoundRobin) {
     const std::uint32_t flow_b = 20;
 
     for (int i = 0; i < 3; ++i) {
-        auto pa = MakePayload(static_cast<std::uint8_t>('A' + i), 50);
-        auto pb = MakePayload(static_cast<std::uint8_t>('a' + i), 50);
-        TCPIP2_EXPECT_TRUE(sched.Enqueue(pa.data(), pa.size(), flow_a, 0));
-        TCPIP2_EXPECT_TRUE(sched.Enqueue(pb.data(), pb.size(), flow_b, 0));
+        auto pa = MakeLease(static_cast<std::uint8_t>('A' + i), 50);
+        auto pb = MakeLease(static_cast<std::uint8_t>('a' + i), 50);
+        TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(pa), flow_a, 0));
+        TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(pb), flow_b, 0));
     }
 
     TCPIP2_EXPECT_EQ(sched.ActiveFlowCount(), static_cast<std::size_t>(2));
@@ -91,7 +103,7 @@ TCPIP2_TEST(FqCoDelMultipleFlowRoundRobin) {
         auto pkt = sched.Dequeue(1);
         TCPIP2_EXPECT_TRUE(pkt.has_value());
         if (pkt) {
-            first_byte.push_back(pkt->data[0]);
+            first_byte.push_back(pkt->Data()[0]);
         }
     }
 
@@ -116,8 +128,8 @@ TCPIP2_TEST(FqCoDelCoDelDropsHighSojourn) {
 
     // Enqueue 20 packets at t=0.
     for (int i = 0; i < 20; ++i) {
-        auto payload = MakePayload(static_cast<std::uint8_t>(i), 32);
-        TCPIP2_EXPECT_TRUE(sched.Enqueue(payload.data(), payload.size(), flow, 0));
+        auto lease = MakeLease(static_cast<std::uint8_t>(i), 32);
+        TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(lease), flow, 0));
     }
 
     // Dequeue at t=100 — sojourn=100ms, far above target=5ms.
@@ -147,8 +159,8 @@ TCPIP2_TEST(FqCoDelNoDropsWhenLowSojourn) {
     const std::uint32_t flow = 99;
 
     for (int i = 0; i < 10; ++i) {
-        auto payload = MakePayload(static_cast<std::uint8_t>(i), 32);
-        TCPIP2_EXPECT_TRUE(sched.Enqueue(payload.data(), payload.size(), flow,
+        auto lease = MakeLease(static_cast<std::uint8_t>(i), 32);
+        TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(lease), flow,
                                          static_cast<std::uint64_t>(i)));
     }
 
@@ -165,8 +177,8 @@ TCPIP2_TEST(FqCoDelResetClearsState) {
 
     const std::uint32_t flow = 7;
     for (int i = 0; i < 5; ++i) {
-        auto payload = MakePayload(static_cast<std::uint8_t>(i), 64);
-        TCPIP2_EXPECT_TRUE(sched.Enqueue(payload.data(), payload.size(), flow, 0));
+        auto lease = MakeLease(static_cast<std::uint8_t>(i), 64);
+        TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(lease), flow, 0));
     }
     TCPIP2_EXPECT_FALSE(sched.Empty());
 
@@ -176,8 +188,8 @@ TCPIP2_TEST(FqCoDelResetClearsState) {
     TCPIP2_EXPECT_EQ(sched.ActiveFlowCount(), static_cast<std::size_t>(0));
 
     // Scheduler should still work after reset.
-    auto payload = MakePayload(0xFF, 64);
-    TCPIP2_EXPECT_TRUE(sched.Enqueue(payload.data(), payload.size(), flow, 0));
+    auto lease = MakeLease(0xFF, 64);
+    TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(lease), flow, 0));
     TCPIP2_EXPECT_FALSE(sched.Empty());
     auto pkt = sched.Dequeue(1);
     TCPIP2_EXPECT_TRUE(pkt.has_value());
@@ -189,17 +201,16 @@ TCPIP2_TEST(FqCoDelQueueLengthTracking) {
     const std::uint32_t flow1 = 100;
     const std::uint32_t flow2 = 200;
 
-    auto p1 = MakePayload(1, 100);
-    auto p2 = MakePayload(2, 200);
-    auto p3 = MakePayload(3, 50);
-
-    TCPIP2_EXPECT_TRUE(sched.Enqueue(p1.data(), p1.size(), flow1, 0));
+    auto p1 = MakeLease(1, 100);
+    TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(p1), flow1, 0));
     TCPIP2_EXPECT_EQ(sched.QueueLength(), static_cast<std::size_t>(1));
 
-    TCPIP2_EXPECT_TRUE(sched.Enqueue(p2.data(), p2.size(), flow2, 0));
+    auto p2 = MakeLease(2, 200);
+    TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(p2), flow2, 0));
     TCPIP2_EXPECT_EQ(sched.QueueLength(), static_cast<std::size_t>(2));
 
-    TCPIP2_EXPECT_TRUE(sched.Enqueue(p3.data(), p3.size(), flow1, 0));
+    auto p3 = MakeLease(3, 50);
+    TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(p3), flow1, 0));
     TCPIP2_EXPECT_EQ(sched.QueueLength(), static_cast<std::size_t>(3));
 
     // Dequeue one.
@@ -215,21 +226,20 @@ TCPIP2_TEST(FqCoDelMaxQueueLengthRejects) {
 
     const std::uint32_t flow = 300;
     for (int i = 0; i < 3; ++i) {
-        auto payload = MakePayload(static_cast<std::uint8_t>(i), 32);
-        TCPIP2_EXPECT_TRUE(sched.Enqueue(payload.data(), payload.size(), flow, 0));
+        auto lease = MakeLease(static_cast<std::uint8_t>(i), 32);
+        TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(lease), flow, 0));
     }
 
     // Fourth packet should be rejected.
-    auto payload = MakePayload(99, 32);
-    TCPIP2_EXPECT_FALSE(sched.Enqueue(payload.data(), payload.size(), flow, 0));
+    auto lease = MakeLease(99, 32);
+    TCPIP2_EXPECT_FALSE(sched.Enqueue(std::move(lease), flow, 0));
     TCPIP2_EXPECT_EQ(sched.QueueLength(), static_cast<std::size_t>(3));
 }
 
-TCPIP2_TEST(FqCoDelRejectsNullAndZeroLength) {
+TCPIP2_TEST(FqCoDelRejectsEmptyLease) {
     tcpip2::FqCoDelScheduler sched;
-    TCPIP2_EXPECT_FALSE(sched.Enqueue(nullptr, 100, 1, 0));
-    auto payload = MakePayload(1, 32);
-    TCPIP2_EXPECT_FALSE(sched.Enqueue(payload.data(), 0, 1, 0));
+    tcpip2::BufferLease empty; // not allocated
+    TCPIP2_EXPECT_FALSE(sched.Enqueue(std::move(empty), 1, 0));
 }
 
 TCPIP2_TEST(FqCoDelDequeueEmptyReturnsNullopt) {
@@ -245,8 +255,8 @@ TCPIP2_TEST(FqCoDelLargePacketRequiresMultipleRounds) {
 
     const std::uint32_t flow = 500;
     // Packet larger than quantum: 200 bytes, quantum=64.
-    auto payload = MakePayload(0xAA, 200);
-    TCPIP2_EXPECT_TRUE(sched.Enqueue(payload.data(), payload.size(), flow, 0));
+    auto lease = MakeLease(0xAA, 200);
+    TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(lease), flow, 0));
 
     // With a single flow, the scheduler accumulates deficit across rounds
     // until it has enough to dequeue the packet. The first Dequeue call
@@ -269,8 +279,8 @@ TCPIP2_TEST(FqCoDelCoDelExitDroppingOnLowSojourn) {
     // Enqueue 20 packets at t=0, dequeue starting at t=100 with advancing
     // time to trigger CoDel drops.
     for (int i = 0; i < 20; ++i) {
-        auto payload = MakePayload(static_cast<std::uint8_t>(i), 32);
-        TCPIP2_EXPECT_TRUE(sched.Enqueue(payload.data(), payload.size(), flow, 0));
+        auto lease = MakeLease(static_cast<std::uint8_t>(i), 32);
+        TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(lease), flow, 0));
     }
 
     std::size_t first_round = 0;
@@ -288,8 +298,8 @@ TCPIP2_TEST(FqCoDelCoDelExitDroppingOnLowSojourn) {
     // Enqueue 5 more at t=500, dequeue at t=501 (sojourn=1 < target=5).
     // No drops should occur even if CoDel was previously in dropping state.
     for (int i = 0; i < 5; ++i) {
-        auto payload = MakePayload(static_cast<std::uint8_t>(10 + i), 32);
-        TCPIP2_EXPECT_TRUE(sched.Enqueue(payload.data(), payload.size(), flow, 500));
+        auto lease = MakeLease(static_cast<std::uint8_t>(10 + i), 32);
+        TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(lease), flow, 500));
     }
 
     std::size_t second_round = 0;
@@ -307,17 +317,17 @@ TCPIP2_TEST(FqCoDelActiveFlowCount) {
     tcpip2::FqCoDelScheduler sched;
     TCPIP2_EXPECT_EQ(sched.ActiveFlowCount(), static_cast<std::size_t>(0));
 
-    auto p1 = MakePayload(1, 100);
-    sched.Enqueue(p1.data(), p1.size(), 1, 0);
+    auto p1 = MakeLease(1, 100);
+    sched.Enqueue(std::move(p1), 1, 0);
     TCPIP2_EXPECT_EQ(sched.ActiveFlowCount(), static_cast<std::size_t>(1));
 
-    auto p2 = MakePayload(2, 100);
-    sched.Enqueue(p2.data(), p2.size(), 2, 0);
+    auto p2 = MakeLease(2, 100);
+    sched.Enqueue(std::move(p2), 2, 0);
     TCPIP2_EXPECT_EQ(sched.ActiveFlowCount(), static_cast<std::size_t>(2));
 
     // Same flow — should not increase count.
-    auto p3 = MakePayload(3, 100);
-    sched.Enqueue(p3.data(), p3.size(), 1, 0);
+    auto p3 = MakeLease(3, 100);
+    sched.Enqueue(std::move(p3), 1, 0);
     TCPIP2_EXPECT_EQ(sched.ActiveFlowCount(), static_cast<std::size_t>(2));
 }
 
@@ -326,18 +336,18 @@ TCPIP2_TEST(FqCoDelDifferentFlowsCanEnqueueBeyondSingleFlowLimit) {
     config.max_queue_length = 2;
     tcpip2::FqCoDelScheduler sched(config);
 
-    auto p1 = MakePayload(1, 100);
-    TCPIP2_EXPECT_TRUE(sched.Enqueue(p1.data(), p1.size(), 1, 0));
-    auto p2 = MakePayload(2, 100);
-    TCPIP2_EXPECT_TRUE(sched.Enqueue(p2.data(), p2.size(), 1, 0));
-    auto p3 = MakePayload(3, 100);
-    TCPIP2_EXPECT_FALSE(sched.Enqueue(p3.data(), p3.size(), 1, 0)); // flow 1 full
+    auto p1 = MakeLease(1, 100);
+    TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(p1), 1, 0));
+    auto p2 = MakeLease(2, 100);
+    TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(p2), 1, 0));
+    auto p3 = MakeLease(3, 100);
+    TCPIP2_EXPECT_FALSE(sched.Enqueue(std::move(p3), 1, 0)); // flow 1 full
 
     // Flow 2 should still be able to enqueue.
-    auto p4 = MakePayload(4, 100);
-    TCPIP2_EXPECT_TRUE(sched.Enqueue(p4.data(), p4.size(), 2, 0));
-    auto p5 = MakePayload(5, 100);
-    TCPIP2_EXPECT_TRUE(sched.Enqueue(p5.data(), p5.size(), 2, 0));
+    auto p4 = MakeLease(4, 100);
+    TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(p4), 2, 0));
+    auto p5 = MakeLease(5, 100);
+    TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(p5), 2, 0));
 }
 
 TCPIP2_TEST(FqCoDelMixedSizesFairByBytes) {
@@ -347,13 +357,13 @@ TCPIP2_TEST(FqCoDelMixedSizesFairByBytes) {
 
     // Flow A: 5 x 200-byte packets = 1000 bytes total.
     for (int i = 0; i < 5; ++i) {
-        auto p = MakePayload(0xA0, 200);
-        sched.Enqueue(p.data(), p.size(), 100, 0);
+        auto p = MakeLease(0xA0, 200);
+        sched.Enqueue(std::move(p), 100, 0);
     }
     // Flow B: 5 x 200-byte packets = 1000 bytes total.
     for (int i = 0; i < 5; ++i) {
-        auto p = MakePayload(0xB0, 200);
-        sched.Enqueue(p.data(), p.size(), 200, 0);
+        auto p = MakeLease(0xB0, 200);
+        sched.Enqueue(std::move(p), 200, 0);
     }
 
     // Dequeue all 10 packets.
@@ -361,7 +371,7 @@ TCPIP2_TEST(FqCoDelMixedSizesFairByBytes) {
     for (int i = 0; i < 10; ++i) {
         auto pkt = sched.Dequeue(1);
         if (!pkt) break;
-        if (pkt->data[0] == 0xA0) ++flow_a;
+        if (pkt->Data()[0] == 0xA0) ++flow_a;
         else ++flow_b;
     }
 

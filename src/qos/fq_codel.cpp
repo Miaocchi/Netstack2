@@ -4,16 +4,19 @@
  * @license GPL-3.0
  */
 
-#include "tcp/fq_codel.h"
-
-#include <algorithm>
-#include <cstring>
+#include "qos/fq_codel.h"
 
 namespace tcpip2 {
 
 FqCoDelScheduler::FqCoDelScheduler(const FqCoDelConfig& config) noexcept
     : config_(config) {
-    flows_.resize(config_.max_flows);
+    // reserve + emplace_back avoids vector reallocation (which would require
+    // Flow to be nothrow_move_constructible — undesirable given Flow holds a
+    // deque of move-only QueuedPacket/BufferLease objects).
+    flows_.reserve(config_.max_flows);
+    for (std::uint32_t i = 0; i < config_.max_flows; ++i) {
+        flows_.emplace_back();
+    }
 }
 
 FqCoDelScheduler::Flow* FqCoDelScheduler::FindOrCreateFlow(
@@ -49,10 +52,9 @@ void FqCoDelScheduler::ActivateFlow(std::size_t idx) noexcept {
     active_list_.push_back(static_cast<std::uint32_t>(idx));
 }
 
-bool FqCoDelScheduler::Enqueue(const std::uint8_t* data, std::size_t length,
-                                std::uint32_t flow_hash,
+bool FqCoDelScheduler::Enqueue(BufferLease lease, std::uint32_t flow_hash,
                                 std::uint64_t now_ms) noexcept {
-    if (data == nullptr || length == 0) {
+    if (!lease) {
         return false;
     }
 
@@ -65,8 +67,7 @@ bool FqCoDelScheduler::Enqueue(const std::uint8_t* data, std::size_t length,
     }
 
     QueuedPacket pkt;
-    pkt.data.resize(length);
-    std::memcpy(pkt.data.data(), data, length);
+    pkt.lease = std::move(lease);
     pkt.enqueue_time_ms = now_ms;
 
     flow->queue.push_back(std::move(pkt));
@@ -131,7 +132,7 @@ std::optional<FqCoDelPacket> FqCoDelScheduler::Dequeue(
         // Credit deficit for this round.
         flow.deficit += static_cast<std::int64_t>(config_.quantum);
 
-        const std::size_t pkt_size = flow.queue.front().data.size();
+        const std::size_t pkt_size = flow.queue.front().lease.Size();
 
         if (static_cast<std::size_t>(flow.deficit) < pkt_size) {
             // Not enough deficit — move to back of round-robin list.
@@ -146,13 +147,13 @@ std::optional<FqCoDelPacket> FqCoDelScheduler::Dequeue(
         QueuedPacket pkt = std::move(flow.queue.front());
         flow.queue.pop_front();
         --total_packets_;
-        flow.deficit -= static_cast<std::int64_t>(pkt.data.size());
+        flow.deficit -= static_cast<std::int64_t>(pkt.lease.Size());
 
         const std::uint64_t sojourn = (now_ms >= pkt.enqueue_time_ms)
             ? (now_ms - pkt.enqueue_time_ms) : 0;
 
         if (CodelShouldDrop(flow, sojourn, now_ms)) {
-            // Drop the packet — continue to the next.
+            // Drop the packet — lease is released by QueuedPacket destructor.
             continue;
         }
 
@@ -170,7 +171,7 @@ std::optional<FqCoDelPacket> FqCoDelScheduler::Dequeue(
         }
 
         FqCoDelPacket result;
-        result.data = std::move(pkt.data);
+        result.lease = std::move(pkt.lease);
         result.enqueue_time_ms = pkt.enqueue_time_ms;
         result.flow_hash = flow_hash;
         return result;
