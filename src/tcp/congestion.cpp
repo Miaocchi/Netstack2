@@ -360,35 +360,77 @@ void BbrController::Reset() noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// KccController
+// HybridBdpAimdController
 // ---------------------------------------------------------------------------
 
-KccController::KccController(std::uint16_t mss) noexcept
+HybridBdpAimdController::HybridBdpAimdController(std::uint16_t mss) noexcept
     : mss_(mss),
       cwnd_(static_cast<std::uint32_t>(mss) * 2U),
-      ssthresh_(std::numeric_limits<std::uint32_t>::max()) {}
+      ssthresh_(std::numeric_limits<std::uint32_t>::max()),
+      round_target_bytes_(static_cast<std::uint64_t>(mss) * 2U) {}
 
-void KccController::OnPacketSent(std::uint64_t /*bytes*/) noexcept {
-    // KCC does not track bytes_sent for round counting (unlike BBR).
+void HybridBdpAimdController::OnPacketSent(std::uint64_t /*bytes*/) noexcept {
+    // Round detection is ACK-based (see OnAck), so send-side bookkeeping is
+    // not required.  This hook is kept for interface symmetry with BBR.
 }
 
-void KccController::UpdateBtlBw(const RateSample& rs) noexcept {
+void HybridBdpAimdController::EndRound() noexcept {
+    // Fold the current round's max bandwidth into the windowed max filter and
+    // recompute BtlBw as the max over the last ~kBtlBwWindowRounds rounds.
+    round_btlbw_window_[round_btlbw_pos_] = round_btlbw_current_;
+    round_btlbw_pos_ = (round_btlbw_pos_ + 1U) % kBtlBwWindowRounds;
+    if (round_btlbw_count_ < kBtlBwWindowRounds) ++round_btlbw_count_;
+
+    round_btlbw_current_ = 0;
+
+    std::uint64_t max_bw = 0;
+    for (std::uint8_t i = 0; i < round_btlbw_count_; ++i) {
+        max_bw = std::max(max_bw, round_btlbw_window_[i]);
+    }
+    btlbw_ = max_bw;
+
+    round_start_delivered_ = delivered_;
+    // The next round's target is the cwnd observed during the round just
+    // completed (BBR-style: a round is one window's worth of delivery).
+    round_target_bytes_ = cwnd_;
+}
+
+void HybridBdpAimdController::UpdateBtlBw(const RateSample& rs) noexcept {
     if (rs.delivery_rate_bytes_per_sec == 0) return;
     if (rs.app_limited) return;  // Don't update BtlBw on app-limited samples
 
-    if (rs.delivery_rate_bytes_per_sec > btlbw_) {
-        btlbw_ = rs.delivery_rate_bytes_per_sec;
+    // Accumulate into the current (in-progress) round's max.
+    if (rs.delivery_rate_bytes_per_sec > round_btlbw_current_) {
+        round_btlbw_current_ = rs.delivery_rate_bytes_per_sec;
     }
 }
 
-void KccController::UpdateRTprop(const RateSample& rs) noexcept {
+void HybridBdpAimdController::UpdateRTprop(const RateSample& rs) noexcept {
     if (rs.rtt_ms == 0) return;
-    if (rtprop_ == 0 || rs.rtt_ms < rtprop_) {
-        rtprop_ = rs.rtt_ms;
+
+    // Timestamped min filter: drop samples older than kRtpropWindowMs so the
+    // estimate re-measures after a path change.
+    const std::uint64_t now = rs.now_ms;
+    const std::uint8_t pos = rtprop_pos_;
+    rtprop_pos_ = (rtprop_pos_ + 1U) % kRtpropSampleCount;
+    if (rtprop_count_ < kRtpropSampleCount) ++rtprop_count_;
+    rtprop_samples_[pos] = RtpropSample{rs.rtt_ms, now};
+
+    std::uint64_t min_rtt = 0;
+    std::uint64_t min_time = 0;
+    for (std::uint8_t i = 0; i < rtprop_count_; ++i) {
+        const RtpropSample& s = rtprop_samples_[i];
+        if (now - s.time_ms > kRtpropWindowMs) continue;  // expired
+        if (min_rtt == 0 || s.rtt_ms < min_rtt) {
+            min_rtt = s.rtt_ms;
+            min_time = s.time_ms;
+        }
     }
+    rtprop_ = min_rtt;
+    rtprop_stamp_ms_ = min_time;
 }
 
-std::uint64_t KccController::Bdp() const noexcept {
+std::uint64_t HybridBdpAimdController::Bdp() const noexcept {
     if (btlbw_ == 0 || rtprop_ == 0) return 0;
     // BDP = btlbw (bytes/sec) * rtprop (ms) / 1000
     if (btlbw_ > std::numeric_limits<std::uint64_t>::max() / rtprop_) {
@@ -397,7 +439,7 @@ std::uint64_t KccController::Bdp() const noexcept {
     return (btlbw_ * rtprop_) / 1000;
 }
 
-void KccController::RecomputeCwnd() noexcept {
+void HybridBdpAimdController::RecomputeCwnd() noexcept {
     // cwnd = max(BDP, 4*MSS) in normal operation.
     const std::uint64_t bdp = Bdp();
     const std::uint64_t floor =
@@ -408,36 +450,36 @@ void KccController::RecomputeCwnd() noexcept {
                 : static_cast<std::uint32_t>(target);
 }
 
-void KccController::OnAck(const RateSample& rs) noexcept {
+void HybridBdpAimdController::OnAck(const RateSample& rs) noexcept {
     if (fast_recovery_) {
         // During fast recovery, cwnd was already inflated; do not grow
         // further on normal ACKs.  The exit happens via OnFastRecoveryExit().
         return;
     }
 
+    if (!round_started_) {
+        round_started_ = true;
+        round_start_delivered_ = delivered_;
+        round_target_bytes_ = cwnd_;
+    }
+
     // Update bandwidth and RTT estimates.
     UpdateBtlBw(rs);
     UpdateRTprop(rs);
 
+    delivered_ += rs.acked_bytes;
+
+    // Close the round once ~cwnd bytes have been acknowledged since it began,
+    // folding the round's max bandwidth into the windowed filter.
+    if (delivered_ - round_start_delivered_ >= round_target_bytes_) {
+        EndRound();
+    }
+
     // Update pacing rate: BtlBw * 1.0 (conservative, no gain inflation).
     pacing_rate_ = btlbw_;
 
-    // Slow start until BtlBw is known or ssthresh is hit.
     if (btlbw_ == 0 || rtprop_ == 0) {
         // BtlBw not yet known: slow start (increase by acked bytes, up to MSS).
-        if (cwnd_ < ssthresh_ && rs.acked_bytes > 0) {
-            const std::uint32_t increase = static_cast<std::uint32_t>(
-                std::min<std::uint64_t>(rs.acked_bytes, mss_));
-            cwnd_ = std::numeric_limits<std::uint32_t>::max() - cwnd_ < increase
-                        ? std::numeric_limits<std::uint32_t>::max()
-                        : cwnd_ + increase;
-        }
-        return;
-    }
-
-    // BDP is known: recompute cwnd from BDP.
-    if (cwnd_ < ssthresh_) {
-        // Still in slow start (below ssthresh): keep growing by acked bytes.
         if (rs.acked_bytes > 0) {
             const std::uint32_t increase = static_cast<std::uint32_t>(
                 std::min<std::uint64_t>(rs.acked_bytes, mss_));
@@ -446,18 +488,18 @@ void KccController::OnAck(const RateSample& rs) noexcept {
                         : cwnd_ + increase;
         }
     } else {
-        // Congestion avoidance: use BDP-based cwnd.
+        // BDP is known: cwnd = max(BDP, 4*MSS).
         RecomputeCwnd();
     }
 }
 
-void KccController::OnLoss(const LossEvent& /*ev*/) noexcept {
+void HybridBdpAimdController::OnLoss(const LossEvent& /*ev*/) noexcept {
     // Fast retransmit path: set ssthresh and recovery window.
     // Called by TcpSendBuffer when dup_ack_count == 3.
     // The flight size is provided via OnFastRecoveryEntry().
 }
 
-void KccController::OnFastRecoveryEntry(std::uint32_t flight) noexcept {
+void HybridBdpAimdController::OnFastRecoveryEntry(std::uint32_t flight) noexcept {
     ssthresh_ = std::max<std::uint32_t>(flight / 2U,
                                          static_cast<std::uint32_t>(mss_) * 2U);
     const std::uint64_t recovery_window =
@@ -469,7 +511,7 @@ void KccController::OnFastRecoveryEntry(std::uint32_t flight) noexcept {
     fast_recovery_ = true;
 }
 
-void KccController::OnDupAck() noexcept {
+void HybridBdpAimdController::OnDupAck() noexcept {
     if (fast_recovery_) {
         // Inflate cwnd by 1 MSS per dup ACK during recovery (RFC 5681).
         const std::uint64_t inflated =
@@ -480,27 +522,43 @@ void KccController::OnDupAck() noexcept {
     }
 }
 
-void KccController::OnFastRecoveryExit() noexcept {
+void HybridBdpAimdController::OnFastRecoveryExit() noexcept {
     cwnd_ = ssthresh_;
     fast_recovery_ = false;
 }
 
-void KccController::OnRto() noexcept {
-    // RTO: cwnd = 1 MSS, exit fast recovery if active.
+void HybridBdpAimdController::OnRto() noexcept {
+    // RTO: cwnd = 1 MSS, exit fast recovery, and invalidate the estimates so
+    // the flow re-measures the path.
     cwnd_ = mss_;
     fast_recovery_ = false;
+    pacing_rate_ = 0;
+    btlbw_ = 0;
+    round_btlbw_current_ = 0;
+    round_btlbw_pos_ = 0;
+    round_btlbw_count_ = 0;
+    for (auto& v : round_btlbw_window_) v = 0;
+    rtprop_ = 0;
+    rtprop_stamp_ms_ = 0;
+    rtprop_pos_ = 0;
+    rtprop_count_ = 0;
+    for (auto& s : rtprop_samples_) s = RtpropSample{};
+    delivered_ = 0;
+    round_start_delivered_ = 0;
+    round_target_bytes_ = static_cast<std::uint64_t>(mss_) * 2U;
+    round_started_ = false;
 }
 
-std::uint32_t KccController::CongestionWindow() const noexcept {
+std::uint32_t HybridBdpAimdController::CongestionWindow() const noexcept {
     return cwnd_;
 }
 
-std::uint32_t KccController::PacingRate() const noexcept {
+std::uint32_t HybridBdpAimdController::PacingRate() const noexcept {
     return static_cast<std::uint32_t>(
         std::min<std::uint64_t>(pacing_rate_, std::numeric_limits<std::uint32_t>::max()));
 }
 
-void KccController::UpdateMss(std::uint16_t mss, bool pristine) noexcept {
+void HybridBdpAimdController::UpdateMss(std::uint16_t mss, bool pristine) noexcept {
     if (mss == 0 || mss == mss_) return;
     const std::uint16_t old_mss = mss_;
     mss_ = mss;
@@ -511,15 +569,28 @@ void KccController::UpdateMss(std::uint16_t mss, bool pristine) noexcept {
             static_cast<std::uint64_t>(cwnd_) * mss_ / old_mss;
         cwnd_ = std::max<std::uint32_t>(mss_, static_cast<std::uint32_t>(scaled));
     }
+    round_target_bytes_ = cwnd_;
 }
 
-void KccController::Reset() noexcept {
+void HybridBdpAimdController::Reset() noexcept {
     btlbw_ = 0;
+    round_btlbw_current_ = 0;
+    round_btlbw_pos_ = 0;
+    round_btlbw_count_ = 0;
+    for (auto& v : round_btlbw_window_) v = 0;
     rtprop_ = 0;
+    rtprop_stamp_ms_ = 0;
+    rtprop_pos_ = 0;
+    rtprop_count_ = 0;
+    for (auto& s : rtprop_samples_) s = RtpropSample{};
     cwnd_ = static_cast<std::uint32_t>(mss_) * 2U;
     ssthresh_ = std::numeric_limits<std::uint32_t>::max();
     fast_recovery_ = false;
     pacing_rate_ = 0;
+    delivered_ = 0;
+    round_start_delivered_ = 0;
+    round_target_bytes_ = static_cast<std::uint64_t>(mss_) * 2U;
+    round_started_ = false;
 }
 
 } // namespace tcpip2

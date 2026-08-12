@@ -2,11 +2,11 @@
 
 /**
  * @file rate_sampler.h
- * @brief Delivery-rate sampler for BBR/KCC congestion controllers.
+ * @brief Delivery-rate sampler for BBR/hybrid congestion controllers.
  * @license GPL-3.0
  *
  * Tracks per-packet delivery information so that ACKs can produce
- * RateSample values consumable by BBR or KCC controllers.  The model
+ * RateSample values consumable by BBR or hybrid controllers.  The model
  * follows the Linux TCP delivery-rate estimator: every in-flight
  * segment is stamped with the total-delivered counter and timestamp at
  * send time; when a cumulative ACK covers a segment, the difference in

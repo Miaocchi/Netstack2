@@ -23,7 +23,7 @@ Netstack2 按以下原则推进:
    操作同一 TCP/UDP/UCP 流。
 3. 第一条可交付数据路径是 L3 TUN, 先完成 IPv4/IPv6、UDP/ICMP 和 TCP 代理终结,
    再扩展 AF_XDP、DPDK、Wintun、utun 和 Android VpnService。
-4. TCP 拥塞控制使用统一 delivery-rate sampler, 提供 KCC 和 BBR 可切换实现。
+4. TCP 拥塞控制使用统一 delivery-rate sampler, 提供 hybrid (HybridBdpAimd) 和 BBR 可切换实现。
    算法在创建连接时确定, 已建立连接不热切换。
 5. 出口调度采用 per-shard FQ-CoDel: DRR 公平队列 + CoDel AQM + ECN 优先标记。
    拥塞控制、pacing、FQ 和 AQM 是四个独立层, 不合并为一个类。
@@ -36,7 +36,7 @@ Netstack2 按以下原则推进:
 9. 公共 API 冻结前必须完成一个 OpenPPP2 compile-only adapter spike。当前 API
    尚缺 Session 创建、目标地址、路由决策、Packet I/O capabilities 和完整关闭契约,
    不能按原路线直接冻结。
-10. 仿真结果只验证算法确定性, 不作为吞吐结论。KCC、BBR、FQ/AQM 最终必须通过
+10. 仿真结果只验证算法确定性, 不作为吞吐结论。hybrid、BBR、FQ/AQM 最终必须通过
     Linux netem、真实 TUN 和真实 NIC 测试。
 
 ## 2. 当前事实与差距
@@ -65,7 +65,7 @@ Netstack2 按以下原则推进:
 - IPv6 扩展头完整遍历（当前仅 Fragment header）;
 - OpenPPP2 真实 adapter（P4-7 smoke test 已通过, 真实 OpenPPP2 仓库 adapter 待 P4-04）。
 - FQ-CoDel scheduler 已实现 (`src/tcp/fq_codel.h`), 已接入 shard egress 路径 (`StackShard::FlushTcpTx`);
-- KCC 拥塞控制已实现 (`KccController`, ADR-006 Accepted), 尚未在 netem/真实 TUN 下验证。
+- HybridBdpAimd 拥塞控制已实现 (`HybridBdpAimdController`, ADR-006 Accepted), 尚未在 netem/真实 TUN 下验证。
 
 冻结 API 前必须先修复的契约问题:
 
@@ -139,7 +139,7 @@ per-connection thread。
 - ICMPv4/ICMPv6 必要控制报文和 PMTU;
 - UDP flow tracking、datagram 转发和超时回收;
 - 完整 TCP 基础状态机、重组、重传、窗口和常用 options;
-- KCC/BBR per-flow 选择和 pacing;
+- hybrid/BBR per-flow 选择和 pacing;
 - per-shard FQ-CoDel 与 ECN;
 - Linux TUN 单队列和多队列;
 - OpenPPP2 Linux opt-in 集成和 lwIP fallback;
@@ -162,7 +162,7 @@ per-connection thread。
 - 不在 BPF 程序里重写完整 TCP/IP 或有状态 NAT;
 - 不承诺所有平台绝对零拷贝, 目标是 copy-minimized;
 - 不做已建立 TCP flow 的 shard migration;
-- 不做已建立 TCP flow 的 KCC/BBR 热切换;
+- 不做已建立 TCP flow 的 hybrid/BBR 热切换;
 - 不把标准 UDP datagram 强制变成可靠有序 UCP stream。
 
 ## 4. 目标数据路径
@@ -186,7 +186,7 @@ VpnService / utun / Wintun / TUN
 
 - kernel/Onload socket 使用实际 socket 的拥塞控制;
 - UCP Session 使用 UCP KCC;
-- DPDK 全用户态 active TCP 使用 Netstack2 KCC/BBR。
+- DPDK 全用户态 active TCP 使用 Netstack2 hybrid/BBR。
 
 不要在同一真实瓶颈上无条件叠加两个互不知情的拥塞控制器。
 
@@ -442,7 +442,7 @@ OpenPPP2 的 fake-IP、Direct/Proxy 路由、DNS、QUIC policy 和 VPN transmiss
 建议新增:
 
 ```cpp
-enum class TcpCongestionAlgorithm { Kcc, Bbr };
+enum class TcpCongestionAlgorithm { HybridBdpAimd, Bbr };
 enum class AqmAlgorithm { None, CoDel };
 
 struct QosConfig {
@@ -458,7 +458,7 @@ struct QosConfig {
 配置分三类:
 
 - immutable: shard_count、queue mapping、pool layout、flow hash seed;
-- new-flow only: KCC/BBR、TCP options、per-flow limits;
+- new-flow only: hybrid/BBR、TCP options、per-flow limits;
 - live atomic: telemetry interval 和日志级别。
 
 ### 6.5 可观测性
@@ -470,7 +470,7 @@ struct QosConfig {
 - queue depth、redirect、WouldBlock、completion latency;
 - active TCP/UDP flows 和各 TCP state;
 - RTT、RTO、retransmit、SACK、cwnd、pacing rate、delivery rate;
-- KCC/BBR mode;
+- hybrid/BBR mode;
 - FQ active flows、CoDel drop、ECN mark、sojourn P50/P99;
 - pool free/outstanding/return queue;
 - Session backpressure 和 pending bytes。
@@ -525,7 +525,7 @@ src/tcp/
 
 src/cc/
   controller.h
-  kcc.cpp
+  hybrid_bdp_aimd.cpp
   bbr.cpp
   pacer.cpp
 
@@ -1034,12 +1034,12 @@ Tcp/Udp packet generated
 - 1% loss、100 ms RTT、重排和 duplicate 下无数据错误;
 - 连续 24 小时 soak 无 flow/buffer/timer 泄漏。
 
-### P3C: KCC 和 BBR 可切换拥塞控制
+### P3C: hybrid 和 BBR 可切换拥塞控制
 
 #### P3C-01: DeliveryRateSampler + CongestionController 接口 + AIMD 适配 ✅ Implemented (2026-08-10)
 
 - `src/tcp/rate_sampler.h` / `rate_sampler.cpp`: `DeliveryRateSampler` 类，per-packet `PacketDeliveryState` 跟踪 delivered_bytes/time/first_sent_time/app_limited/retransmitted。ACK 时生成 `RateSample`（delivery_rate_bytes_per_sec、rtt_ms、interval_ms、inflight_bytes）。重传包不产生 delivery rate（ambiguous ACK）。app-limited 标记传播到 RateSample。
-- `src/tcp/congestion.h` / `congestion.cpp`: `CongestionAlgorithm` enum（Aimd/Bbr/Kcc）、`AimdController`（RFC 5681 slow start/CA/fast recovery/RTO）、`BbrController`（BBRv1 STARTUP/DRAIN/PROBE_BW/PROBE_RTT 状态机，telemetry ID "bbr_v1"）。热路径使用 `std::variant<AimdController, BbrController>` + `std::visit`，避免每 ACK 虚调用。
+- `src/tcp/congestion.h` / `congestion.cpp`: `CongestionAlgorithm` enum（Aimd/Bbr/HybridBdpAimd）、`AimdController`（RFC 5681 slow start/CA/fast recovery/RTO）、`BbrController`（BBRv1 STARTUP/DRAIN/PROBE_BW/PROBE_RTT 状态机，telemetry ID "bbr_v1"）。热路径使用 `std::variant<AimdController, BbrController, HybridBdpAimdController>` + `std::visit`，避免每 ACK 虚调用。
 - `src/tcp/send.h` / `send.cpp`: `SendRecord` 增加 `PacketDeliveryState delivery` 字段。`TcpSendBuffer` 持有 `std::variant<AimdController, BbrController> controller_` 和 `DeliveryRateSampler sampler_`，替代裸 `cwnd_`/`ssthresh_`/`fast_recovery_`。AIMD 逻辑（slow start、CA、fast recovery inflate/exit、RTO cwnd=1*MSS）全部委托给 `AimdController`。`UsableWindow()`、`CongestionWindow()`、`Ssthresh()`、`PacingRate()`、`InFastRecovery()` 委托给 controller。`TcpSendConfig` 和 `TcpHandshakeConfig` 增加 `CongestionAlgorithm cc_algorithm` 字段（默认 AIMD）。
 - `tests/unit/tcp/congestion_test.cpp`: 21 tests，覆盖 DeliveryRateSampler（初始状态、stamp、delivery rate 计算、重传不产生 rate、app-limited 传播、reset）、AimdController（初始 cwnd、slow start、CA、fast recovery inflate/exit、RTO、reset、UpdateMss）、TcpSendBuffer 集成（AIMD/BBR 算法选择、slow start 通过 send buffer、fast retransmit via dup ACK、close resets controller、ssthresh accessor）。
 
@@ -1120,28 +1120,28 @@ Tcp/Udp packet generated
 
 验证结果: 全量 CTest 普通 31/31, ASan/UBSan 31/31, TSan 31/31; include boundaries OK; `git diff --check` clean。commit `b6d79a8`。IPv4 MF flag 掩码修正已在 `b6d79a8` 中作为同一 commit 的一部分记录。
 
-#### P3C-05: KccController Hybrid Congestion Control ✅ Implemented (2026-08-11)
+#### P3C-05: HybridBdpAimd Hybrid Congestion Control ✅ Implemented (2026-08-11)
 
-实现 `KccController` 作为 `CongestionAlgorithm::Kcc` 的具体控制器，采用 purpose-designed hybrid 设计（ADR-006 Accepted）。
+实现 `HybridBdpAimdController` 作为 `CongestionAlgorithm::HybridBdpAimd` 的具体控制器，采用 purpose-designed hybrid 设计（ADR-006 Accepted）。
 
-**设计决策**：经搜索 `/home/openppp2` 全部源码树，OpenPPP2 中不存在 "KCC" 或 "KCP" 拥塞控制算法（唯一真正的 TCP 拥塞控制是 lwIP New Reno）。因此不进行算法移植，而是设计混合控制器。
+**设计决策**：经搜索 `/home/openppp2` 全部源码树，OpenPPP2 中不存在 "KCC" 或 "KCP" 拥塞控制算法（唯一真正的 TCP 拥塞控制是 lwIP New Reno）。因此不进行算法移植，而是设计混合控制器，并命名为 `HybridBdpAimd`（原名 `KccController`，因与 UCP "KCC" 语义不一致而更名）。
 
 **实现内容**：
 
-1. **`src/tcp/congestion.h` / `congestion.cpp`**: `KccController` 类。
-   - BBR 式带宽估计：BtlBw max-filter（10 round 窗口）+ RTprop min-filter（10 秒窗口）+ BDP 计算。
-   - 正常 cwnd = max(BDP, 4×MSS)。
+1. **`src/tcp/congestion.h` / `congestion.cpp`**: `HybridBdpAimdController` 类。
+   - BBR 式带宽估计：BtlBw **有限窗口 max-filter**（10-slot round 窗口，round 内取 max、结束时折叠进窗口，历史峰值可衰减）+ RTprop **timestamped min-filter**（最近 16 个样本、10 秒过期）+ BDP 计算。
+   - 正常 cwnd = max(BDP, 4×MSS)，BtlBw/RTprop 均已知时立即生效（不受 ssthresh 门控）。
    - AIMD 式丢包响应：fast retransmit/recovery 与 `AimdController` 接口一致。ssthresh = max(flight/2, 2×MSS)。
-   - RTO：cwnd = 1×MSS。
+   - RTO：cwnd = 1×MSS，并清空 BtlBw/RTprop 估计与过滤器，令流重新测量。
    - Pacing rate = BtlBw × 1.0（保守，无 gain 膨胀）。
    - 初始 cwnd = 2×MSS，ssthresh = UINT32_MAX。
-   - `AlgorithmId()` 返回 `"kcc_v1"`。
+   - `AlgorithmId()` 返回 `"hybrid_bdp_aimd_v1"`。
 
-2. **`src/tcp/send.h` / `send.cpp`**: `CongestionController` variant 扩展为 `std::variant<AimdController, BbrController, KccController>`。所有 fast recovery 路径通过 `if constexpr` 同时处理 AIMD 和 KCC。构造函数根据 `CongestionAlgorithm::Kcc` 选择 `KccController`。
+2. **`src/tcp/send.h` / `send.cpp`**: `CongestionController` variant 扩展为 `std::variant<AimdController, BbrController, HybridBdpAimdController>`。所有 fast recovery 路径通过 `if constexpr` 同时处理 AIMD 和 hybrid。构造函数根据 `CongestionAlgorithm::HybridBdpAimd` 选择 `HybridBdpAimdController`。
 
-3. **`tests/unit/tcp/congestion_test.cpp`**: 新增 KCC 测试，覆盖初始状态、ACK 驱动 BtlBw/RTprop 更新和 cwnd 增长、丢包/fast recovery、RTO 回退、pacing rate、AlgorithmId、UpdateMss、Reset、app-limited。
+3. **`tests/unit/tcp/congestion_test.cpp`**: 新增 hybrid 测试，覆盖初始状态、ACK 驱动 BtlBw/RTprop 更新和 cwnd 增长、丢包/fast recovery、RTO 回退、pacing rate、AlgorithmId、UpdateMss、Reset、app-limited、有限窗口滤波衰减、RTprop 样本过期重测。
 
-验证结果: 全量 CTest 普通 37/37, ASan/UBSan 37/37, TSan 37/37; include boundaries OK; `git diff --check` clean。
+验证结果: 全量 CTest 普通 39/39, ASan/UBSan 39/39, TSan 39/39; include boundaries OK; `git diff --check` clean。
 
 #### P3C-06: FQ-CoDel Shard-Local Egress Scheduler ✅ Implemented (2026-08-11)
 
@@ -1183,7 +1183,7 @@ Tcp/Udp packet generated
 
 #### 通用采样器
 
-KCC 和 BBR 不能直接消费“本 ACK 确认多少字节”作为带宽。实现
+hybrid 和 BBR 不能直接消费“本 ACK 确认多少字节”作为带宽。实现
 `DeliveryRateSampler`, 每个首次发送 segment 记录:
 
 - delivered bytes at send;
@@ -1225,19 +1225,21 @@ public:
 };
 ```
 
-热路径建议使用 tagged union/`std::variant<KccController, BbrController>`, 避免每 ACK
+热路径建议使用 tagged union/`std::variant<HybridBdpAimdController, BbrController>`, 避免每 ACK
 虚调用。算法选择在 flow 创建时固定。
 
-#### KCC
+#### HybridBdpAimd
 
-- KCC 已实现为 purpose-designed hybrid controller (ADR-006 Accepted);
-- 结合 BBR 式带宽估计 (BtlBw max-filter + RTprop min-filter + BDP) 和 AIMD 式丢包响应 (fast retransmit/recovery);
+- 已实现为 purpose-designed hybrid controller (ADR-006 Accepted), 原名 `KccController`,
+  因与 UCP "KCC" 语义不一致而更名;
+- 结合 BBR 式带宽估计 (有限窗口 BtlBw max-filter + 带过期 RTprop min-filter + BDP)
+  和 AIMD 式丢包响应 (fast retransmit/recovery);
 - 不使用 STARTUP/DRAIN/PROBE_BW 状态机, 带宽估计为被动观察, 无探测 gain;
 - pacing_rate = BtlBw × 1.0 (保守, 无膨胀);
 - 第一版关闭 global KF, 避免跨 shard 全局原子状态影响可扩展性;
 - ECN 默认关闭, 完成 TCP ECE/CWR 后按配置启用;
 - TCP adapter 只生成 transport-neutral RateSample, 不把 UCP FEC/NAK 事件伪装为 TCP;
-- telemetry ID 为 `kcc_v1`。
+- telemetry ID 为 `hybrid_bdp_aimd_v1`。
 
 #### BBR
 
@@ -1249,7 +1251,7 @@ public:
 
 #### 切换语义
 
-| 场景 | KCC/BBR 由谁执行 |
+| 场景 | hybrid/BBR 由谁执行 |
 |---|---|
 | Netstack2 直接通过 DPDK/AF_XDP 发 TCP | Netstack2 controller |
 | TUN 侧被代理的本地 TCP 腿 | Netstack2 以 Session 背压为主, 不代表公网 CC |
@@ -1258,7 +1260,7 @@ public:
 | Windows/iOS kernel socket | OS 提供的算法, 无法承诺 KCC/BBR |
 | UCP over UDP | UCP KCC |
 
-不支持请求 KCC/BBR 却静默使用其他算法。必须返回 capability/fallback reason。
+不支持请求 hybrid/BBR 却静默使用其他算法。必须返回 capability/fallback reason。
 
 测试矩阵:
 
@@ -1281,7 +1283,7 @@ public:
 
 ```text
 --stack=lwip|netstack2|native
---tcp-cc=kcc|bbr
+--tcp-cc=hybrid_bdp_aimd|bbr
 --aqm=none|codel
 --fq=true|false
 --netstack-shards=N
@@ -1335,7 +1337,7 @@ rollback 只针对新连接/新实例, 不尝试把已建立 PCB 从 Netstack2 �
 
 分两步:
 
-1. 算法复用 (Netstack2 内部): 将 KCC 拥塞控制算法按 MIT 许可移植到 Netstack2 `src/tcp/congestion.cpp`, 不引入 UCP 的 packet codec 和线程。`CongestionAlgorithm::Kcc` 选择器启用 `KccController`, 与 `AimdController`/`BbrController` 共享 `DeliveryRateSampler`。详见 `docs/adr/006-kcc-congestion-control.md`。
+1. 算法复用 (Netstack2 内部): 调研结论（ADR-006）为 OpenPPP2 本地不存在 UCP KCC 可移植实现，因此 `HybridBdpAimdController` 被设计为 purpose-designed hybrid，不移植 UCP packet codec 和线程。`CongestionAlgorithm::HybridBdpAimd` 选择器启用 `HybridBdpAimdController`, 与 `AimdController`/`BbrController` 共享 `DeliveryRateSampler`。详见 `docs/adr/006-kcc-congestion-control.md`。
 2. 协议接入: 在 OpenPPP2 增加 UCP dependency 和 adapter, 作为可选择 carrier。
 
 UCP 协议接入前必须解决 per-connection thread:
@@ -1385,7 +1387,7 @@ DPDK 顺序:
 4. NUMA-local pool;
 5. L2 route/ARP/NDP;
 6. UDP active output;
-7. TCP active open + KCC/BBR;
+7. TCP active open + hybrid/BBR;
 8. RSS symmetric key 与 FlowKey golden tests。
 
 ### P6: Android/iOS/Windows
@@ -1471,7 +1473,7 @@ git diff --check
 上述数值必须绑定机器和场景。未达到时保留原始数据, 不通过删样本或放宽统计口径
 宣称成功。
 
-### 9.4 KCC/BBR 验收
+### 9.4 hybrid/BBR 验收
 
 - 所有状态转换有 deterministic test;
 - 与参考实现的 gain/cwnd/pacing golden vectors 对齐;
@@ -1480,7 +1482,7 @@ git diff --check
 - 10% loss/300 ms 下连接保持且内存有界;
 - 共享 bottleneck 下记录 Jain fairness;
 - ECN 开关关闭时完全不改变 non-ECN 行为;
-- KCC 与 BBR 的结果分别报告, 不只报告胜出的算法。
+- hybrid 与 BBR 的结果分别报告, 不只报告胜出的算法。
 
 ## 10. 当前优先级与执行顺序
 
@@ -1514,7 +1516,7 @@ AF_XDP / Onload / DPDK 的通用扩展接口已定义在 `docs/plans/HIGH_PERF_B
 |---|---|---|
 | A Runtime | ~~002H~~ ✅、~~Dispatcher~~ ✅、~~Shard~~ ✅、~~TUN~~ ✅ | 立即 |
 | B Protocol | IP、UDP/ICMP、TCP | 002H parser/buffer 契约稳定 ✅ |
-| C CC/QoS | rate sampler、~~KCC~~ ✅、~~BBR~~ ✅、~~FQ-CoDel~~ ✅ | FakeClock 和 packet model 可用 ✅ |
+| C CC/QoS | rate sampler、~~hybrid~~ ✅、~~BBR~~ ✅、~~FQ-CoDel~~ ✅ | FakeClock 和 packet model 可用 ✅ |
 | D Integration | adapter spike、OpenPPP2、UCP、平台 | public draft API 可用 |
 | E Validation | P0、fuzz、netem、interop、benchmark | 立即建立框架 |
 
@@ -1551,7 +1553,7 @@ P0 和测试框架全程并行, 但每个性能结论都依赖 P0。
 11. ✅ `P3A-02`: ICMPv4/ICMPv6 bounded parser + PMTU cache。
 12. ✅ `P3A-03`: IPv4/IPv6 fragment reassembly。
 13. ✅ `P3B`: bounded PCB, handshake, RX/TX, ring, retrans, FIN/TIME-WAIT。
-14. ✅ `P3C`: delivery-rate sampler, BBRv1, pacer, fragment reassembly wiring, KccController hybrid, FQ-CoDel scheduler, TcpSession。
+14. ✅ `P3C`: delivery-rate sampler, BBRv1, pacer, fragment reassembly wiring, HybridBdpAimd hybrid, FQ-CoDel scheduler, TcpSession。
 15. ✅ `P3U`: UDP parser + shard wiring。
 16. ✅ `P3I`: ICMP shard RX wiring + PMTU。
 17. ✅ `P4-01`: ADR-005 落地, 新增 `RuntimeDependencies`, `IClock`, `IEventSink`。IClock 替换 shard 热路径 steady_clock。
@@ -1577,7 +1579,7 @@ P0 和测试框架全程并行, 但每个性能结论都依赖 P0。
 | callback 晚到 | flow UAF | FlowId + generation |
 | timer O(N) | 大连接数 CPU 飙升 | 分层 timer wheel/到期 slot only |
 | mobile busy polling | 发热耗电 | event mode + adaptive polling |
-| KCC 全局 KF | 跨 shard 竞争和流间污染 | 第一版关闭, 后续 per-shard cohort |
+| hybrid 全局 KF | 跨 shard 竞争和流间污染 | 第一版关闭, 后续 per-shard cohort |
 | license/provenance 丢失 | 合规风险 | pin commit, 保留 MIT notice 和来源 |
 
 ## 13. 工程规则
@@ -1598,7 +1600,7 @@ P0 和测试框架全程并行, 但每个性能结论都依赖 P0。
 Netstack2 可以替换 OpenPPP2 lwIP 默认路径, 需要同时满足:
 
 - IPv4/IPv6 TCP、UDP、ICMP 功能门禁通过;
-- KCC/BBR 可在新 flow 创建时选择并报告实际算法;
+- hybrid/BBR 可在新 flow 创建时选择并报告实际算法;
 - FQ-CoDel/ECN 工作且内存有界;
 - Linux TUN multiqueue 多 shard 扩展达到性能门禁;
 - OpenPPP2 route/DNS/fake-IP/PMTU/VPN protect 行为无回归;

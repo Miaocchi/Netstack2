@@ -18,13 +18,14 @@ using namespace tcpip2;
 // Netem-style congestion-control validation test.
 //
 // Simulates a virtual link with configurable RTT, random loss, and jitter
-// on top of a TcpSendBuffer driven by KCC, BBR, or AIMD.  The test exercises
+// on top of a TcpSendBuffer driven by the hybrid (HybridBdpAimd), BBR, or AIMD
+// controllers.  The test exercises
 // the full send → ACK loop: data is enqueued, segments are pulled via
 // NextSegment(), a virtual link delays/drops them, surviving segments are
 // acknowledged, and the send buffer reacts with cwnd/pacing changes.
 //
 // This addresses the unmet validation gate called out in:
-//   - docs/roadmap.md:  "netem/真实 TUN 下 KCC/BBR 验证"
+//   - docs/roadmap.md:  "netem/真实 TUN 下 hybrid/BBR 验证"
 //   - docs/adr/006-kcc-congestion-control.md §8:
 //       "不同 RTT/丢包矩阵下的稳定性测试（需要 netem/真实 TUN）"
 //
@@ -287,15 +288,15 @@ struct NetemSimulator {
 // Test cases
 // ---------------------------------------------------------------------------
 
-// ---- KCC under stable low-RTT link (baseline, no loss) ----
+// ---- hybrid (HybridBdpAimd) under stable low-RTT link (baseline, no loss) ----
 
-TCPIP2_TEST(NetemKccStableLinkNoLoss) {
-    auto send = MakeSendBuffer(CongestionAlgorithm::Kcc);
+TCPIP2_TEST(NetemHybridStableLinkNoLoss) {
+    auto send = MakeSendBuffer(CongestionAlgorithm::HybridBdpAimd);
     std::vector<std::uint8_t> data(200000, 'x');
     send->Enqueue(data.data(), data.size());
 
     VirtualLink link(50, 0, 0.0);  // 50ms RTT, no jitter, no loss
-    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::Kcc);
+    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd);
     sim.Run(data.size());
 
     // Connection should not have closed spuriously.
@@ -311,15 +312,15 @@ TCPIP2_TEST(NetemKccStableLinkNoLoss) {
     TCPIP2_EXPECT_TRUE(sim.total_rto_count <= 2);
 }
 
-// ---- KCC under moderate loss (1%) ----
+// ---- hybrid under moderate loss (1%) ----
 
-TCPIP2_TEST(NetemKccModerateLoss) {
-    auto send = MakeSendBuffer(CongestionAlgorithm::Kcc);
+TCPIP2_TEST(NetemHybridModerateLoss) {
+    auto send = MakeSendBuffer(CongestionAlgorithm::HybridBdpAimd);
     std::vector<std::uint8_t> data(200000, 'x');
     send->Enqueue(data.data(), data.size());
 
     VirtualLink link(100, 0, 0.01);  // 100ms RTT, 1% loss
-    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::Kcc);
+    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd);
     sim.Run(data.size());
 
     // Under 1% loss, the connection must survive.
@@ -333,15 +334,15 @@ TCPIP2_TEST(NetemKccModerateLoss) {
     TCPIP2_EXPECT_TRUE(sim.total_rto_count <= NetemSimulator::kMaxRtoCount);
 }
 
-// ---- KCC under higher loss (5%) — stress ----
+// ---- hybrid under higher loss (5%) — stress ----
 
-TCPIP2_TEST(NetemKccHighLoss) {
-    auto send = MakeSendBuffer(CongestionAlgorithm::Kcc);
+TCPIP2_TEST(NetemHybridHighLoss) {
+    auto send = MakeSendBuffer(CongestionAlgorithm::HybridBdpAimd);
     std::vector<std::uint8_t> data(200000, 'x');
     send->Enqueue(data.data(), data.size());
 
     VirtualLink link(100, 0, 0.05);  // 100ms RTT, 5% loss
-    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::Kcc);
+    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd);
     sim.Run(data.size());
 
     // At 5% loss with max 3 retransmissions, the connection may close.
@@ -357,15 +358,15 @@ TCPIP2_TEST(NetemKccHighLoss) {
     TCPIP2_EXPECT_TRUE(send->CongestionWindow() <= NetemSimulator::kMaxCwnd);
 }
 
-// ---- KCC under jitter (reordering) ----
+// ---- hybrid under jitter (reordering) ----
 
-TCPIP2_TEST(NetemKccJitterReordering) {
-    auto send = MakeSendBuffer(CongestionAlgorithm::Kcc);
+TCPIP2_TEST(NetemHybridJitterReordering) {
+    auto send = MakeSendBuffer(CongestionAlgorithm::HybridBdpAimd);
     std::vector<std::uint8_t> data(200000, 'x');
     send->Enqueue(data.data(), data.size());
 
     VirtualLink link(100, 30, 0.0);  // 100ms RTT, 30ms jitter, no loss
-    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::Kcc);
+    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd);
     sim.Run(data.size());
 
     // Jitter should not cause connection closure.
@@ -449,15 +450,15 @@ TCPIP2_TEST(NetemAimdModerateLoss) {
     TCPIP2_EXPECT_TRUE(sim.total_rto_count <= NetemSimulator::kMaxRtoCount);
 }
 
-// ---- High RTT link (200ms) with KCC ----
+// ---- High RTT link (200ms) with hybrid ----
 
-TCPIP2_TEST(NetemKccHighRtt) {
-    auto send = MakeSendBuffer(CongestionAlgorithm::Kcc);
+TCPIP2_TEST(NetemHybridHighRtt) {
+    auto send = MakeSendBuffer(CongestionAlgorithm::HybridBdpAimd);
     std::vector<std::uint8_t> data(200000, 'x');
     send->Enqueue(data.data(), data.size());
 
     VirtualLink link(200, 0, 0.0);  // 200ms RTT
-    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::Kcc,
+    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd,
                        8000);  // more steps for high RTT
     sim.Run(data.size());
 
@@ -466,15 +467,15 @@ TCPIP2_TEST(NetemKccHighRtt) {
     TCPIP2_EXPECT_TRUE(send->CongestionWindow() > 2920U);
 }
 
-// ---- Combined: loss + jitter + moderate RTT with KCC ----
+// ---- Combined: loss + jitter + moderate RTT with hybrid ----
 
-TCPIP2_TEST(NetemKccLossAndJitter) {
-    auto send = MakeSendBuffer(CongestionAlgorithm::Kcc);
+TCPIP2_TEST(NetemHybridLossAndJitter) {
+    auto send = MakeSendBuffer(CongestionAlgorithm::HybridBdpAimd);
     std::vector<std::uint8_t> data(300000, 'x');
     send->Enqueue(data.data(), data.size());
 
     VirtualLink link(80, 20, 0.02);  // 80ms RTT, 20ms jitter, 2% loss
-    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::Kcc,
+    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd,
                        8000);
     sim.Run(data.size());
 
@@ -556,23 +557,23 @@ TCPIP2_TEST(NetemAimdLossAndJitter) {
     TCPIP2_EXPECT_TRUE(sim.total_rto_count <= NetemSimulator::kMaxRtoCount);
 }
 
-// ---- KCC: verify cwnd converges toward BDP under stable conditions ----
+// ---- hybrid: verify cwnd converges toward BDP under stable conditions ----
 
-TCPIP2_TEST(NetemKccCwndConvergesTowardBdp) {
-    auto send = MakeSendBuffer(CongestionAlgorithm::Kcc);
+TCPIP2_TEST(NetemHybridCwndConvergesTowardBdp) {
+    auto send = MakeSendBuffer(CongestionAlgorithm::HybridBdpAimd);
     std::vector<std::uint8_t> data(500000, 'x');
     send->Enqueue(data.data(), data.size());
 
     // 50ms RTT, no loss, no jitter — deterministic link.
     // With ~1 MSS per ms delivery rate, BDP ≈ 50 * 1460 = 73000 bytes.
     VirtualLink link(50, 0, 0.0);
-    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::Kcc,
+    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd,
                        10000);
     sim.Run(data.size());
 
     TCPIP2_EXPECT_FALSE(send->IsClosed());
 
-    // After convergence, KCC cwnd should be around BDP (bounded by
+    // After convergence, hybrid cwnd should be around BDP (bounded by
     // max(BDP, 4*MSS)). We verify cwnd is in a reasonable range:
     // at least 4*MSS and at most a generous multiple of BDP.
     std::uint32_t cwnd = send->CongestionWindow();

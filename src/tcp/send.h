@@ -75,7 +75,7 @@ struct TcpSendAckResult {
  *   - In-flight retransmission queue (wire -> ACK)
  *   - RFC 6298 RTO with Karn's rule and exponential backoff
  *   - Pluggable congestion control (AIMD or BBRv1) via controller
- *   - Delivery-rate sampling for BBR/KCC
+ *   - Delivery-rate sampling for BBR/hybrid
  *   - Zero-window persist timer
  *   - FIN scheduling
  *
@@ -276,9 +276,9 @@ private:
     std::uint32_t snd_nxt_;    ///< Next sequence to assign.
     std::uint32_t snd_max_;    ///< Highest sequence ever sent (+1).
 
-    // Congestion control (pluggable: AIMD, BBRv1, or KCC hybrid)
+    // Congestion control (pluggable: AIMD, BBRv1, or Hybrid BDP-AIMD)
     CongestionAlgorithm cc_algorithm_;
-    std::variant<AimdController, BbrController, KccController> controller_;
+    std::variant<AimdController, BbrController, HybridBdpAimdController> controller_;
     DeliveryRateSampler sampler_;
     std::uint16_t mss_;        ///< Maximum segment size.
 

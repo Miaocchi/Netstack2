@@ -25,7 +25,7 @@
 | P3B-2 | **Completed** | bounded receive ring、delayed ACK/SACK、Session partial/WouldBlock，TCP 40+23、全量 29/29 三套构建全绿 |
 | P3B-3 | **Completed** | retransmission queue + RTO、SACK scoreboard、data segment serialization、send buffer 接入 handshake engine 和 shard event loop，TCP 54+51、全量 30/30 三套构建全绿 |
 | P3B-4 | **Completed** | FIN/close/TIME-WAIT 状态机、CloseFlow/AbortFlow API、TIME-WAIT 容量驱逐，FIN 处理/half-close/TIME-WAIT 驱逐 bugfix，TCP handshake 74/74、全量 30/30 三套构建全绿。SACK scoreboard wire 接线仍属 P3C |
-| P3C | **In progress** | P3C-01 DeliveryRateSampler + CongestionController 接口 + AIMD 适配完成，commit `aa9332e`。P3C-02 BBRv1 状态机测试完成，commit `78332bc`，TCP congestion 43/43、全量 31/31 三套构建全绿。P3C-03 per-flow pacer 完成，commit `957682f`，TCP send 57/57、全量 31/31 三套构建全绿。P3C-04 fragment reassembly → TCP input wiring 完成，commit `b6d79a8`，全量 31/31 三套构建全绿。P3C-05 KccController hybrid (BBR bandwidth estimation + AIMD loss response) 完成，ADR-006 Accepted，三套构建 37/37 全绿。P3C-06 FQ-CoDel scheduler 完成，commit `3644da2`。P3C-07 TcpSession 实现，commit `9a515a9`。P3C-08 BBR STARTUP/DRAIN 退出逻辑修正，commit `419c3db`。P3C-09 FQ-CoDel 流表线性探测修复 + shard egress 接线，commit `d9c002d`/`61bd611`。P3C-10 TcpSession 可写回调修复，commit `b2ba037`。P3C-11 TCP RX delivery 方向修正：从 `TrySend`（app→stack）改为 `OnDataReceived`（stack→app），commit `eb08e3d`，三套构建 39/39 全绿。下一步: netem/真实 TUN 下 KCC/BBR 验证、TcpSession 接入 handshake ESTABLISHED 路径 |
+| P3C | **In progress** | P3C-01 DeliveryRateSampler + CongestionController 接口 + AIMD 适配完成，commit `aa9332e`。P3C-02 BBRv1 状态机测试完成，commit `78332bc`，TCP congestion 43/43、全量 31/31 三套构建全绿。P3C-03 per-flow pacer 完成，commit `957682f`，TCP send 57/57、全量 31/31 三套构建全绿。P3C-04 fragment reassembly → TCP input wiring 完成，commit `b6d79a8`，全量 31/31 三套构建全绿。P3C-05 HybridBdpAimd hybrid (BBR-style bandwidth estimation + AIMD loss response) 完成，ADR-006 Accepted，三套构建 37/37 全绿。P3C-06 FQ-CoDel scheduler 完成，commit `3644da2`。P3C-07 TcpSession 实现，commit `9a515a9`。P3C-08 BBR STARTUP/DRAIN 退出逻辑修正，commit `419c3db`。P3C-09 FQ-CoDel 流表线性探测修复 + shard egress 接线，commit `d9c002d`/`61bd611`。P3C-10 TcpSession 可写回调修复，commit `b2ba037`。P3C-11 TCP RX delivery 方向修正：从 `TrySend`（app→stack）改为 `OnDataReceived`（stack→app），commit `eb08e3d`，三套构建 39/39 全绿。下一步: netem/真实 TUN 下 hybrid/BBR 验证、TcpSession 接入 handshake ESTABLISHED 路径 |
 | P4 | **In progress** | API spike complete, real integration pending。P4-1 RuntimeDependencies 注入 + P4-3 IClock 替换（commit `97ab0c9`）。P4-2 ISessionFactory 被动监听（commit `0269184`）。P4-4 ITransportSession 回调接线。P4-5 IEventSink flow event triggers（`EmitFlowEvent()` + `MetricSnapshot`）。P4-6 consumer contract test 更新。P4-7 OpenPPP2 adapter smoke test：完整 TCP 生命周期集成测试（SYN→SYN-ACK→ACK→ESTABLISHED→data→FIN→Closed），线程安全 `EgressSnapshot()` (ADR-007)。自 ADR-008 起 v0.3.0 契约，smoke 已按新 DataCallback/StopResult 契约更新（commit `c66e0ad` 三套构建 39/39）。真实 OpenPPP2 构建与 lwIP 回退集成仍 pending，详见 `docs/plans/P4_OPENPPP2_INTEGRATION_PLAN.md`。 |
 | P5A | Planned | Onload socket session 和通用 kernel-bypass session 接口。AF_XDP/DPDK 扩展接口设计已完成，见 `docs/plans/HIGH_PERF_BACKEND_EXTENSIONS.md`。 |
 | P5B | Planned | AF_XDP/DPDK 纯用户态 Packet I/O。 |
@@ -55,7 +55,7 @@
 | **P4-1** (RuntimeDependencies 注入 + IClock) | `97ab0c9` | 无 |
 | **P4-2** (ISessionFactory 被动监听) | `0269184` | 无 |
 | **P4-4** (ITransportSession 回调接线) | TBD | 无 |
-| P3C-05 (KccController hybrid CC) | `7de8bbd` | 无 |
+| P3C-05 (HybridBdpAimd hybrid CC) | `7de8bbd` | 无 |
 | P3C-06 (FQ-CoDel scheduler) | `3644da2` | 无 |
 | P3C-07 (TcpSession implementation) | `9a515a9` | 无 |
 | P3C-08 (BBR STARTUP/DRAIN fix) | `419c3db` | 无 |
@@ -281,7 +281,7 @@ P3A-01 IPv4/IPv6 parser + checksum ✅
         ↓
 P3B-4 FIN/close/TIME-WAIT ✅
         ↓
-P3C TCP 互操作与性能 (KCC/BBR ✅, FQ-CoDel scheduler ✅ + shard egress wiring ✅, TcpSession ✅, BBR fix ✅)
+P3C TCP 互操作与性能 (hybrid/BBR ✅, FQ-CoDel scheduler ✅ + shard egress wiring ✅, TcpSession ✅, BBR fix ✅)
         ↓
 P4 OpenPPP2 集成(真实构建与运行时接线)
         ↓

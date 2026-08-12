@@ -8,7 +8,7 @@
  * The congestion-control leg of TcpSendBuffer is delegated to a
  * controller selected at connection-creation time.  The interface is
  * designed so that the hot path can use std::variant<AimdController,
- * BbrController, KccController> without per-ACK virtual dispatch.
+ * BbrController, HybridBdpAimdController> without per-ACK virtual dispatch.
  *
  * This is a private header used only by src/tcp/ — not part of the
  * frozen public API.
@@ -23,9 +23,9 @@ namespace tcpip2 {
 
 /// Algorithm selection (set at flow creation, immutable thereafter).
 enum class CongestionAlgorithm {
-    Aimd,   ///< RFC 5681 baseline (default, no pacing).
-    Bbr,    ///< BBRv1 (with pacing).
-    Kcc,    ///< KCC hybrid (BBR bandwidth estimation + AIMD loss response).
+    Aimd,            ///< RFC 5681 baseline (default, no pacing).
+    Bbr,             ///< BBRv1 (with pacing).
+    HybridBdpAimd,   ///< Hybrid: BDP-based (BBR-style) cwnd with AIMD loss response.
 };
 
 /// Information about a loss event passed to the controller.
@@ -155,19 +155,22 @@ private:
     bool round_started_ = false;
 };
 
-/// KCC hybrid congestion controller.
+/// Hybrid BDP-based AIMD congestion controller.
 ///
-/// Combines BBR-style bandwidth estimation (BtlBw max-filter + RTprop
-/// min-filter for BDP estimation) with AIMD-style loss response (fast
-/// retransmit/recovery).  In normal operation cwnd = max(BDP, 4*MSS);
-/// on loss, ssthresh = max(flight/2, 2*MSS) and cwnd = ssthresh + 3*MSS
-/// (fast recovery); on RTO, cwnd = 1*MSS.  Pacing rate = BtlBw * 1.0
-/// (no gain inflation, conservative).
+/// Combines BBR-style bandwidth estimation with an AIMD-style loss response.
+/// BtlBw is a finite max filter over the last ~10 rounds (windowed max, so
+/// stale peaks eventually decay); RTprop is a timestamped min filter over a
+/// 10-second window (samples expire, so the estimate re-measures after path
+/// changes).  In normal operation cwnd = max(BDP, 4*MSS); on loss,
+/// ssthresh = max(flight/2, 2*MSS) and cwnd = ssthresh + 3*MSS (fast
+/// recovery); on RTO, cwnd = 1*MSS and the estimates are invalidated so the
+/// flow re-measures.  Pacing rate = BtlBw * 1.0 (no gain inflation,
+/// conservative).
 ///
-/// Telemetry ID is "kcc_v1".
-class KccController {
+/// Telemetry ID is "hybrid_bdp_aimd_v1".
+class HybridBdpAimdController {
 public:
-    KccController(std::uint16_t mss) noexcept;
+    HybridBdpAimdController(std::uint16_t mss) noexcept;
 
     void OnPacketSent(std::uint64_t bytes) noexcept;
     void OnAck(const RateSample& rs) noexcept;
@@ -178,8 +181,8 @@ public:
     std::uint32_t Ssthresh() const noexcept { return ssthresh_; }
     std::uint32_t PacingRate() const noexcept;
 
-    /// Telemetry string (always "kcc_v1").
-    static const char* AlgorithmId() noexcept { return "kcc_v1"; }
+    /// Telemetry string (always "hybrid_bdp_aimd_v1").
+    static const char* AlgorithmId() noexcept { return "hybrid_bdp_aimd_v1"; }
 
     /// Called by TcpSendBuffer when entering fast recovery.
     void OnFastRecoveryEntry(std::uint32_t flight) noexcept;
@@ -195,21 +198,53 @@ public:
     /// Reset to initial state.
     void Reset() noexcept;
 
-    // KCC state for testing/telemetry.
+    // Hybrid state for testing/telemetry.
     std::uint64_t BtlBw() const noexcept { return btlbw_; }
     std::uint64_t RTprop() const noexcept { return rtprop_; }
 
 private:
     void UpdateBtlBw(const RateSample& rs) noexcept;
+    /// Advance to the next filter round: fold the current round's max
+    /// bandwidth into the windowed max filter and recompute BtlBw.
+    void EndRound() noexcept;
     void UpdateRTprop(const RateSample& rs) noexcept;
     std::uint64_t Bdp() const noexcept;
     void RecomputeCwnd() noexcept;
 
     std::uint16_t mss_;
 
-    // Estimated bottleneck bandwidth (bytes/sec) and min RTT (ms).
+    // Estimated bottleneck bandwidth (bytes/sec): windowed max over the
+    // last ~kBtlBwWindowRounds rounds.  round_btlbw_current_ holds the max
+    // bandwidth sample within the current (in-progress) round.
     std::uint64_t btlbw_ = 0;
-    std::uint64_t rtprop_ = 0;  // 0 means "unknown"
+    static constexpr std::uint8_t kBtlBwWindowRounds = 10;
+    std::uint64_t round_btlbw_window_[kBtlBwWindowRounds] = {};
+    std::uint8_t round_btlbw_pos_ = 0;
+    std::uint8_t round_btlbw_count_ = 0;
+    std::uint64_t round_btlbw_current_ = 0;
+
+    // Round tracking: a round completes once ~cwnd bytes have been newly
+    // acknowledged since the round started (acked-based proxy for BBR's
+    // delivered counter — works even when OnPacketSent is not called).
+    std::uint64_t delivered_ = 0;
+    std::uint64_t round_start_delivered_ = 0;
+    std::uint64_t round_target_bytes_ = 0;
+    bool round_started_ = false;
+
+    // Estimated min RTT (ms): timestamped min filter over the last
+    // kRtpropSampleCount samples; samples older than kRtpropWindowMs expire
+    // so the estimate refreshes after path changes.  0 means "unknown".
+    std::uint64_t rtprop_ = 0;
+    std::uint64_t rtprop_stamp_ms_ = 0;
+    static constexpr std::uint64_t kRtpropWindowMs = 10000;
+    static constexpr std::uint8_t kRtpropSampleCount = 16;
+    struct RtpropSample {
+        std::uint64_t rtt_ms;
+        std::uint64_t time_ms;
+    };
+    RtpropSample rtprop_samples_[kRtpropSampleCount] = {};
+    std::uint8_t rtprop_count_ = 0;
+    std::uint8_t rtprop_pos_ = 0;
 
     // Congestion window and ssthresh.
     std::uint32_t cwnd_;
