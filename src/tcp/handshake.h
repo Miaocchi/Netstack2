@@ -32,6 +32,13 @@
 
 namespace tcpip2 {
 
+/// Worst-case wire overhead subtracted from a TX pool slot to derive the
+/// maximum TCP payload a single segment may carry. IPv6 fixed header (40)
+/// plus the maximum TCP header with options (60). Any segment larger than
+/// (pool_slot_capacity - kIpTcpMaxHeaderOverhead) could never be built from
+/// one pool buffer and would otherwise loop in the send path forever.
+constexpr std::size_t kIpTcpMaxHeaderOverhead = 40 + 60;
+
 enum class TcpState {
     SynReceived,
     Established,
@@ -63,6 +70,12 @@ struct TcpHandshakeConfig {
     std::size_t pending_response_limit = 256;
     std::uint16_t local_mss = 1460;
     std::uint16_t path_mtu = 1500;
+    /// Upper bound (bytes) on a single TCP segment's payload imposed by the
+    /// TX pool slot capacity. Derived by the runtime from
+    /// (pool_slot_capacity - kIpTcpMaxHeaderOverhead). 0 = no limit known.
+    /// The send MSS and the advertised MSS are clamped to this value so a
+    /// segment always fits in one pool buffer (prevents infinite build retry).
+    std::uint16_t tx_payload_limit = 0;
     std::uint32_t receive_window = 65536;
     bool enable_window_scale = true;
     bool enable_sack = true;
@@ -85,6 +98,10 @@ struct TcpHandshakeConfig {
 
     std::size_t max_timewait_entries = 4096;
     std::uint32_t timewait_ms = 120000;
+    /// TCP idle keepalive interval. Plumbed from the public config (R4); the
+    /// engine does not yet schedule keepalive probes, but the value must be
+    /// carried so the config field has a production read point.
+    std::uint64_t keepalive_ms = 7200000;
 
     CongestionAlgorithm cc_algorithm = CongestionAlgorithm::Aimd;
 
@@ -207,6 +224,11 @@ public:
     void CloseFlow(FlowId flow_id, std::uint64_t generation) noexcept;
     void AbortFlow(FlowId flow_id, std::uint64_t generation) noexcept;
 
+    /// PMTU discovery: the path to @p peer shrank to @p pmtu bytes. Every
+    /// established flow that sends to @p peer lowers its send MSS so the next
+    /// segment it emits fits the new path MTU (RFC 1191 / RFC 8201).
+    void OnPathMtuLowered(const IpAddress& peer, std::uint32_t pmtu) noexcept;
+
     bool Find(const FlowKey& incoming_flow, TcpPcbSnapshot& out) const noexcept;
     bool PopPendingResponse(TcpResponse& out) noexcept;
     void DeferResponse(const TcpResponse& response) noexcept {
@@ -307,6 +329,10 @@ private:
     };
 
     std::size_t FindIndex(const FlowKey& incoming_flow) const noexcept;
+    /// Max send payload allowed by local config and the TX pool capacity,
+    /// independent of the peer's advertised MSS. @p fixed_header_bytes is
+    /// IP+TCP header weight for the family (40 IPv4 / 60 IPv6).
+    std::uint16_t LocalSendCap(std::uint16_t fixed_header_bytes) const noexcept;
     std::size_t ListenerHalfOpenCount(const FlowKey& incoming_flow) const noexcept;
     TcpResponse BuildSynAck(Pcb& pcb, std::uint64_t now_ms) noexcept;
     TcpResponse BuildAck(Pcb& pcb, std::uint64_t now_ms) noexcept;

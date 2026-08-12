@@ -461,6 +461,7 @@ TCPIP2_TEST(RuntimeWiresPublicTcpConfiguration) {
     config.rto_initial_ms = 750;
     config.persist_timeout_ms = 300;
     config.time_wait_ms = 45000;
+    config.keepalive_ms = 90000;
 
     NullPacketIo io(1);
     Runtime rt;
@@ -473,6 +474,9 @@ TCPIP2_TEST(RuntimeWiresPublicTcpConfiguration) {
     TCPIP2_EXPECT_EQ(std::uint64_t{300}, tcp.persist_timer_max_ms);
     TCPIP2_EXPECT_EQ(std::uint64_t{300}, tcp.persist_timer_base_ms);
     TCPIP2_EXPECT_EQ(std::uint32_t{45000}, tcp.timewait_ms);
+    TCPIP2_EXPECT_EQ(std::uint64_t{90000}, tcp.keepalive_ms);
+    // pool_slot_capacity(2048) - kIpTcpMaxHeaderOverhead(100) = 1948
+    TCPIP2_EXPECT_EQ(std::uint16_t{1948}, tcp.tx_payload_limit);
     rt.Stop();
 }
 

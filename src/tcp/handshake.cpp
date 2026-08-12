@@ -96,8 +96,53 @@ bool TcpHandshakeConfig::Validate() const noexcept {
         max_retransmissions == 0 || max_persist_probes == 0) {
         return false;
     }
-    if (max_timewait_entries == 0 || timewait_ms == 0) return false;
+    if (max_timewait_entries == 0 || timewait_ms == 0 || keepalive_ms == 0) {
+        return false;
+    }
     return true;
+}
+
+std::uint16_t TcpHandshakeEngine::LocalSendCap(
+    std::uint16_t fixed_header_bytes) const noexcept {
+    std::uint16_t cap = config_.local_mss;
+    if (config_.path_mtu > fixed_header_bytes) {
+        cap = std::min<std::uint16_t>(
+            cap, static_cast<std::uint16_t>(config_.path_mtu - fixed_header_bytes));
+    }
+    if (config_.tx_payload_limit != 0) {
+        cap = std::min<std::uint16_t>(cap, config_.tx_payload_limit);
+    }
+    return cap;
+}
+
+void TcpHandshakeEngine::OnPathMtuLowered(const IpAddress& peer,
+                                          std::uint32_t pmtu) noexcept {
+    // Send-side header weight for the peer's family.
+    const std::uint16_t fixed_header_bytes = peer.IsIpv4() ? 40 : 60;
+    if (pmtu <= fixed_header_bytes) {
+        return; // Path MTU too small to carry any TCP payload.
+    }
+    const std::uint16_t pmtu_mss = static_cast<std::uint16_t>(
+        std::min<std::uint32_t>(pmtu - fixed_header_bytes, UINT16_MAX));
+
+    for (Pcb& pcb : pcbs_) {
+        if (!pcb.send) continue;
+        // A flow sends to its incoming_flow source (the peer), so only flows
+        // whose peer address matches the shrunken path are affected.
+        if (pcb.incoming_flow.source != peer) continue;
+
+        std::uint16_t new_mss = pcb.options.peer_mss;
+        if (new_mss > pmtu_mss) new_mss = pmtu_mss;
+        // Re-apply the local caps in case the negotiated MSS predates them.
+        if (new_mss > config_.local_mss) new_mss = config_.local_mss;
+        if (config_.tx_payload_limit != 0 && new_mss > config_.tx_payload_limit) {
+            new_mss = config_.tx_payload_limit;
+        }
+        // Lowering mss_ makes every subsequent segment (from the unsent queue
+        // and the retransmission queue) respect the smaller MSS; the congestion
+        // controller window is rescaled by UpdateMss as well.
+        pcb.send->UpdateMss(new_mss);
+    }
 }
 
 TcpHandshakeEngine::TcpHandshakeEngine(const TcpHandshakeConfig& config,
@@ -854,9 +899,18 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
     pcb.flow_id = FlowId{next_flow_id_++};
 
     const TcpSynOptions& offered = parsed_options.options;
-    pcb.options.peer_mss = offered.mss_present
-        ? offered.mss
-        : (segment.flow.source.IsIpv4() ? std::uint16_t{536} : std::uint16_t{1220});
+    const bool is_ipv4 = segment.flow.source.IsIpv4();
+    const std::uint16_t fixed_header_bytes = is_ipv4 ? 40 : 60;
+    // The send MSS is the peer's advertised MSS clamped to what our local
+    // configuration and TX pool capacity can actually carry. Without the pool
+    // term a hostile peer could advertise an MSS larger than one pool buffer,
+    // leaving the send path unable to ever build the segment.
+    const std::uint16_t send_cap = LocalSendCap(fixed_header_bytes);
+    pcb.options.peer_mss = std::min<std::uint16_t>(
+        offered.mss_present
+            ? offered.mss
+            : (is_ipv4 ? std::uint16_t{536} : std::uint16_t{1220}),
+        send_cap);
     pcb.options.window_scale = config_.enable_window_scale && offered.window_scale_present;
     if (pcb.options.window_scale) {
         pcb.options.send_window_scale = offered.window_scale;
@@ -867,10 +921,7 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
     pcb.options.peer_timestamp = offered.timestamp_value;
 
     pcb.response_options.mss_present = true;
-    const std::uint16_t fixed_header_bytes = segment.flow.source.IsIpv4() ? 40 : 60;
-    pcb.response_options.mss = std::min<std::uint16_t>(
-        config_.local_mss,
-        static_cast<std::uint16_t>(config_.path_mtu - fixed_header_bytes));
+    pcb.response_options.mss = send_cap;
     pcb.response_options.window_scale_present = pcb.options.window_scale;
     pcb.response_options.window_scale = pcb.options.receive_window_scale;
     pcb.response_options.sack_permitted = pcb.options.sack_permitted;

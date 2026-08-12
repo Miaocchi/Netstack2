@@ -732,6 +732,10 @@ void StackShard::HandleIcmp(const std::uint8_t* packet, std::size_t length,
         const Icmpv4ParseResult icmp = ParseIcmpv4(ip.payload, ip.header.payload_length);
         if (icmp.error != Icmpv4ParseError::None) return;
 
+        // Verify ICMPv4 checksum before acting. ICMPv4 does not use a
+        // pseudo-header (seed == 0). A corrupted message must not lower PMTU.
+        if (!icmp.checksum_ok) return;
+
         if (icmp.header.type == Icmpv4Type::DestinationUnreachable &&
             icmp.header.code == Icmpv4DestUnreachableCode::FragmentationNeeded) {
             // Extract original dst_ip from the quoted IPv4 header (bytes 16-19).
@@ -741,6 +745,9 @@ void StackShard::HandleIcmp(const std::uint8_t* packet, std::size_t length,
             }
             const std::uint8_t* orig_dst = icmp.header.quoted_payload + 16;
             pmtu_cache_.LowerFromIcmp(orig_dst, 4, icmp.header.mtu, now_ms);
+            NotifyTcpPmtuLowered(
+                IpAddress::Ipv4(orig_dst[0], orig_dst[1], orig_dst[2], orig_dst[3]),
+                now_ms);
         }
         // TimeExceeded and ParameterProblem: no PMTU action for now.
     } else if (version == 6) {
@@ -765,8 +772,18 @@ void StackShard::HandleIcmp(const std::uint8_t* packet, std::size_t length,
             }
             const std::uint8_t* orig_dst = icmp.header.quoted_payload + 24;
             pmtu_cache_.LowerFromIcmp(orig_dst, 6, icmp.header.mtu, now_ms);
+            NotifyTcpPmtuLowered(IpAddress::Ipv6(orig_dst), now_ms);
         }
     }
+}
+
+void StackShard::NotifyTcpPmtuLowered(const IpAddress& peer,
+                                      std::uint64_t now_ms) noexcept {
+    if (!tcp_) return;
+    const PmtuLookupResult r = pmtu_cache_.Lookup(peer.Bytes(),
+                                                  peer.IsIpv4() ? 4 : 6, now_ms);
+    if (!r.found) return;
+    tcp_->OnPathMtuLowered(peer, r.pmtu);
 }
 
 bool StackShard::EnqueueTcpResponse(const TcpResponse& response) noexcept {

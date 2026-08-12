@@ -157,6 +157,9 @@ private:
                          std::uint64_t now_ms) noexcept;
     void HandleIcmp(const std::uint8_t* packet, std::size_t length,
                     std::uint64_t now_ms) noexcept;
+    /// After an ICMP error lowered the cached PMTU for @p peer, tell the TCP
+    /// engine so established flows to that peer reduce their send MSS.
+    void NotifyTcpPmtuLowered(const IpAddress& peer, std::uint64_t now_ms) noexcept;
     void HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept;
     void HandleReassembledUdp(const IpAddress& source, const IpAddress& destination,
                                BufferLease&& lease) noexcept;

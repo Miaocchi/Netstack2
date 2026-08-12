@@ -53,6 +53,13 @@ TcpHandshakeConfig MakeTcpConfig(const NetstackConfig& config) noexcept {
     tcp.persist_timer_max_ms = config.persist_timeout_ms;
     tcp.persist_timer_base_ms = std::min<std::uint64_t>(500, config.persist_timeout_ms);
     tcp.timewait_ms = static_cast<std::uint32_t>(config.time_wait_ms);
+    tcp.keepalive_ms = config.keepalive_ms;
+    // Segment payload the TX pool can always carry; 0 if the pool slot is
+    // too small to bound meaningfully.
+    if (config.pool_slot_capacity > kIpTcpMaxHeaderOverhead) {
+        const std::size_t cap = config.pool_slot_capacity - kIpTcpMaxHeaderOverhead;
+        tcp.tx_payload_limit = cap < UINT16_MAX ? static_cast<std::uint16_t>(cap) : UINT16_MAX;
+    }
     return tcp;
 }
 

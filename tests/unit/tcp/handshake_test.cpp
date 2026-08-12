@@ -2735,4 +2735,108 @@ TCPIP2_TEST(AbortFlowEmitsResetEvent) {
     TCPIP2_EXPECT_TRUE((rsp.flags & TcpFlag::Rst) != 0);
 }
 
+// A peer advertising a huge MSS (e.g. 65535) must not be honored verbatim.
+// The send MSS and the advertised MSS are clamped to the local configuration
+// and the TX pool payload capacity, otherwise the send path could never build
+// a segment that fits a single pool buffer and would retry forever.
+TCPIP2_TEST(HostilePeerMssClampedByPoolPayloadLimit) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.tx_payload_limit = 500; // pool can only carry 500-byte TCP payloads
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    // MSS option (kind=2, len=4) advertising the maximum 65535.
+    const std::vector<std::uint8_t> hostile_mss = {2, 4, 0xff, 0xff};
+
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, TcpFlag::Syn, hostile_mss), 5000);
+    TCPIP2_EXPECT_EQ(TcpHandshakeError::None, syn.error);
+    TCPIP2_EXPECT_TRUE(syn.response.valid);
+    // Our SYN-ACK must advertise the clamped MSS, never the peer's 65535.
+    TCPIP2_EXPECT_EQ(std::uint16_t{500}, syn.response.syn_options.mss);
+
+    // Complete the handshake; the send-side MSS (peer_mss) must be clamped too.
+    engine.OnSegment(
+        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 5001);
+    TcpPcbSnapshot snapshot;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, snapshot));
+    TCPIP2_EXPECT_EQ(std::uint16_t{500}, snapshot.options.peer_mss);
+}
+
+namespace {
+
+/// Drive a flow to Established with the negotiated MSS, enqueue application
+/// bytes, and return the first emitted data segment.
+std::vector<BufferLease> PumpOneSegment(TcpHandshakeEngine& engine,
+                                        const FlowKey& flow,
+                                        PktBufferPool& pool,
+                                        std::uint64_t now_ms) {
+    const std::vector<std::uint8_t> mss_option = {2, 4, 0x05, 0xb4}; // MSS 1460
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, TcpFlag::Syn, mss_option), now_ms);
+    if (!syn.response.valid) return {};
+    engine.OnSegment(
+        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack),
+        now_ms + 1);
+
+    TcpPcbSnapshot snapshot;
+    if (!engine.Find(flow, snapshot)) return {};
+    std::vector<std::uint8_t> app_data(4000, 0xAB);
+    engine.EnqueueSendData(snapshot.flow_id, app_data.data(), app_data.size());
+
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(now_ms + 2, 64, pool, tx, 1);
+    return tx;
+}
+
+} // namespace
+
+// R4: without PMTU discovery the negotiated MSS (1460) is used verbatim.
+TCPIP2_TEST(SendSegmentUsesNegotiatedMssWithoutPmtu) {
+    // Pool must outlive the engine: the send buffer retains a BufferRef from
+    // the pool for retransmission, and the engine destructor releases it.
+    PktBufferPool pool(8, 2048);
+    TimerWheel timers;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
+                              timers);
+    const auto tx = PumpOneSegment(engine, MakeFlow(), pool, 100);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, tx.size());
+    if (!tx.empty()) {
+        // IPv4 header 20 + plain TCP header 20 + negotiated MSS 1460.
+        TCPIP2_EXPECT_EQ(std::size_t{20 + 20 + 1460}, tx[0].Size());
+    }
+}
+
+// R4: after the path MTU to a peer shrinks, every flow to that peer sends
+// smaller segments immediately (RFC 1191 / RFC 8201 PMTUD).
+TCPIP2_TEST(PathMtuLoweredShrinksNextSendSegment) {
+    PktBufferPool pool(8, 2048); // must outlive the engine (retained refs)
+    TimerWheel timers;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
+                              timers);
+    const FlowKey flow = MakeFlow();
+
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, TcpFlag::Syn, {2, 4, 0x05, 0xb4}), 100);
+    TCPIP2_EXPECT_TRUE(syn.response.valid);
+    engine.OnSegment(
+        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+
+    TcpPcbSnapshot snapshot;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, snapshot));
+    std::vector<std::uint8_t> app_data(4000, 0xAB);
+    engine.EnqueueSendData(snapshot.flow_id, app_data.data(), app_data.size());
+
+    // ICMP lowered the path MTU toward 10.0.0.1 to 1000 bytes.
+    engine.OnPathMtuLowered(IpAddress::Ipv4(10, 0, 0, 1), 1000);
+
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(102, 64, pool, tx, 1);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, tx.size());
+    if (!tx.empty()) {
+        // IPv4 header 20 + plain TCP header 20 + MSS 960 (1000 - 40).
+        TCPIP2_EXPECT_EQ(std::size_t{20 + 20 + 960}, tx[0].Size());
+    }
+}
+
 TCPIP2_TEST_MAIN()

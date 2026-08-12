@@ -388,4 +388,42 @@ TCPIP2_TEST(ShardIcmpv4ShortQuotedPayloadNoCrash) {
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
 }
 
+// ---------------------------------------------------------------------------
+// Test 5: ICMPv4 with a corrupted checksum must NOT update PMTU
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(ShardIcmpv4BadChecksumDoesNotUpdatePmtu) {
+    NullPacketIo io(1);
+    PktBufferPool pool(16, 2048);
+    std::unique_ptr<IPacketQueue> queue = io.OpenQueue(0);
+    queue->SetBufferPool(&pool);
+    StackShard shard(0, pool, queue.get(), 128);
+    TCPIP2_EXPECT_TRUE(shard.Start());
+
+    // Build a valid ICMPv4 FragNeeded (checksum computed correctly), then
+    // corrupt the ICMP checksum field (ICMP header starts at IP offset 20,
+    // checksum occupies ICMP bytes [2..3] → packet bytes [22..23]).
+    const std::uint32_t quoted_dst = 0x01020304u;
+    std::vector<std::uint8_t> pkt = BuildIpv4IcmpFragNeeded(
+        0x0a000001u, 0x0a000002u, 1200, quoted_dst);
+    pkt[22] = static_cast<std::uint8_t>(pkt[22] ^ 0xFFu);
+
+    BufferLease lease = pool.Allocate();
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
+    std::memcpy(lease.Data(), pkt.data(), pkt.size());
+    lease.Resize(pkt.size());
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(lease)));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    shard.Stop();
+
+    // PMTU must NOT have been updated for the quoted destination.
+    const std::uint8_t dst_bytes[4] = {1, 2, 3, 4};
+    const PmtuLookupResult result = shard.LookupPmtu(dst_bytes, 4, NowMs());
+    TCPIP2_EXPECT_FALSE(result.found);
+
+    pool.DrainReturnQueue();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
 TCPIP2_TEST_MAIN();
