@@ -160,6 +160,12 @@ private:
     /// After an ICMP error lowered the cached PMTU for @p peer, tell the TCP
     /// engine so established flows to that peer reduce their send MSS.
     void NotifyTcpPmtuLowered(const IpAddress& peer, std::uint64_t now_ms) noexcept;
+    /// RFC 1191 §6 / RFC 4443 §2.4 attribution: reconstruct the reverse
+    /// flow of the ICMP-quoted original packet and require a matching TCP
+    /// PCB before the ICMP error may touch PMTU state.
+    bool QuotedPacketMatchesFlow(const std::uint8_t* quoted,
+                                 std::size_t quoted_len,
+                                 std::uint8_t family) const noexcept;
     void HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept;
     void HandleReassembledUdp(const IpAddress& source, const IpAddress& destination,
                                BufferLease&& lease) noexcept;

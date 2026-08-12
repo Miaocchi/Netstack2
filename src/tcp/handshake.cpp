@@ -949,6 +949,10 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
     return result;
 }
 
+bool TcpHandshakeEngine::HasFlow(const FlowKey& incoming_flow) const noexcept {
+    return FindIndex(incoming_flow) != kNotFound;
+}
+
 bool TcpHandshakeEngine::Find(const FlowKey& incoming_flow,
                               TcpPcbSnapshot& out) const noexcept {
     const std::size_t index = FindIndex(incoming_flow);

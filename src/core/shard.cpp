@@ -718,6 +718,47 @@ bool StackShard::RedirectPacket(std::size_t target_shard, PacketEnvelope&& envel
     return true;
 }
 
+bool StackShard::QuotedPacketMatchesFlow(const std::uint8_t* quoted,
+                                         std::size_t quoted_len,
+                                         std::uint8_t family) const noexcept {
+    // RFC 1191 §6 / RFC 4443 §2.4 attribution: the ICMP-quoted packet is one
+    // WE sent, so its reversed 5-tuple must match a tracked TCP PCB before the
+    // error may influence PMTU state. A forged ICMP for a path we are not
+    // sending on must not poison the PMTU cache.
+    if (!tcp_) return false;
+
+    FlowKey incoming;
+    std::size_t l4_offset;
+    if (family == 4) {
+        if (quoted_len < 20) return false;
+        const std::uint8_t ihl_words = static_cast<std::uint8_t>(quoted[0] & 0x0Fu);
+        if (ihl_words < 5) return false;
+        l4_offset = static_cast<std::size_t>(ihl_words) * 4;
+        if (quoted_len < l4_offset + 4) return false; // need both ports
+        if (quoted[9] != 6) return false;             // attribute TCP only
+        incoming.source = IpAddress::Ipv4(quoted[16], quoted[17], quoted[18], quoted[19]);
+        incoming.destination = IpAddress::Ipv4(quoted[12], quoted[13], quoted[14], quoted[15]);
+        // Quoted packet's dst_port is the peer's port (incoming source_port);
+        // its src_port is our port (incoming destination_port).
+        incoming.source_port = static_cast<std::uint16_t>(
+            (static_cast<std::uint16_t>(quoted[l4_offset + 2]) << 8) | quoted[l4_offset + 3]);
+        incoming.destination_port = static_cast<std::uint16_t>(
+            (static_cast<std::uint16_t>(quoted[l4_offset]) << 8) | quoted[l4_offset + 1]);
+        incoming.protocol = 6;
+    } else {
+        if (quoted_len < 40 + 4) return false;
+        if (quoted[6] != 6) return false; // next header must be TCP
+        incoming.source = IpAddress::Ipv6(quoted + 24);
+        incoming.destination = IpAddress::Ipv6(quoted + 8);
+        incoming.source_port = static_cast<std::uint16_t>(
+            (static_cast<std::uint16_t>(quoted[42]) << 8) | quoted[43]);
+        incoming.destination_port = static_cast<std::uint16_t>(
+            (static_cast<std::uint16_t>(quoted[40]) << 8) | quoted[41]);
+        incoming.protocol = 6;
+    }
+    return tcp_->HasFlow(incoming);
+}
+
 void StackShard::HandleIcmp(const std::uint8_t* packet, std::size_t length,
                             std::uint64_t now_ms) noexcept {
     if (packet == nullptr || length == 0) return;
@@ -742,6 +783,12 @@ void StackShard::HandleIcmp(const std::uint8_t* packet, std::size_t length,
             if (icmp.header.quoted_payload == nullptr ||
                 icmp.header.quoted_payload_len < 20) {
                 return;  // quoted payload too short
+            }
+            // Attribution: ignore errors whose quoted packet does not belong
+            // to an existing TCP flow (prevents PMTU-cache poisoning).
+            if (!QuotedPacketMatchesFlow(icmp.header.quoted_payload,
+                                         icmp.header.quoted_payload_len, 4)) {
+                return;
             }
             const std::uint8_t* orig_dst = icmp.header.quoted_payload + 16;
             pmtu_cache_.LowerFromIcmp(orig_dst, 4, icmp.header.mtu, now_ms);
@@ -769,6 +816,12 @@ void StackShard::HandleIcmp(const std::uint8_t* packet, std::size_t length,
             if (icmp.header.quoted_payload == nullptr ||
                 icmp.header.quoted_payload_len < 40) {
                 return;  // quoted payload too short
+            }
+            // Attribution: ignore errors whose quoted packet does not belong
+            // to an existing TCP flow (prevents PMTU-cache poisoning).
+            if (!QuotedPacketMatchesFlow(icmp.header.quoted_payload,
+                                         icmp.header.quoted_payload_len, 6)) {
+                return;
             }
             const std::uint8_t* orig_dst = icmp.header.quoted_payload + 24;
             pmtu_cache_.LowerFromIcmp(orig_dst, 6, icmp.header.mtu, now_ms);

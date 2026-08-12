@@ -229,6 +229,11 @@ public:
     /// segment it emits fits the new path MTU (RFC 1191 / RFC 8201).
     void OnPathMtuLowered(const IpAddress& peer, std::uint32_t pmtu) noexcept;
 
+    /// True when a PCB exists for @p incoming_flow (any state). Used for ICMP
+    /// error attribution: a quoted packet must belong to a real flow before it
+    /// may influence PMTU state (RFC 1191 §6 / RFC 4443 §2.4).
+    bool HasFlow(const FlowKey& incoming_flow) const noexcept;
+
     bool Find(const FlowKey& incoming_flow, TcpPcbSnapshot& out) const noexcept;
     bool PopPendingResponse(TcpResponse& out) noexcept;
     void DeferResponse(const TcpResponse& response) noexcept {
