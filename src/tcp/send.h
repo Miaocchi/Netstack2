@@ -54,6 +54,9 @@ struct TcpSendNextResult {
     bool is_retransmission = false;     ///< True if this is a retransmit, not new data.
     bool is_zero_window_probe = false;  ///< True if this is a persist-timer probe.
     bool is_fin = false;                ///< True if this segment carries the FIN flag.
+    /// RFC 3168: the CWR flag must be set on this segment (an ECE-signalled
+    /// congestion reduction is being acknowledged to the peer).
+    bool set_cwr = false;
     const std::uint8_t* payload = nullptr;
     std::size_t payload_length = 0;
     std::uint32_t sequence = 0;         ///< TCP sequence number for this segment.
@@ -147,7 +150,8 @@ public:
     TcpSendAckResult OnAck(std::uint32_t acknowledgment,
                            std::uint32_t peer_window,
                            std::uint64_t now_ms,
-                           bool ack_only = true) noexcept;
+                           bool ack_only = true,
+                           bool ece = false) noexcept;
 
     /**
      * Process incoming SACK blocks from a duplicate ACK.
@@ -331,8 +335,16 @@ private:
     // Pending send state (between NextSegment and OnSent)
     PendingKind pending_kind_ = PendingKind::None;
     bool pending_is_fin_ = false;
+    bool pending_set_cwr_ = false;
     std::uint32_t pending_seq_ = 0;
     std::size_t pending_len_ = 0;
+
+    // RFC 3168 sender ECN state.
+    // ecn_cwr_queued_ records that an ECE-signalled reduction has happened and
+    // the CWR acknowledgement is owed on the next segment. It stays set until
+    // a segment with CWR is actually sent (OnSent), bounding reductions to
+    // one per CWR round-trip.
+    bool ecn_cwr_queued_ = false;
 };
 
 } // namespace tcpip2

@@ -25,7 +25,8 @@ std::uint32_t Read32(const std::uint8_t* data) noexcept {
 TcpParseResult ParseTcpSegment(const IpAddress& source,
                                const IpAddress& destination,
                                const std::uint8_t* data,
-                               std::size_t length) noexcept {
+                               std::size_t length,
+                               std::uint8_t ip_ecn) noexcept {
     TcpParseResult result;
     if (data == nullptr) {
         result.error = TcpParseError::NullData;
@@ -76,6 +77,7 @@ TcpParseResult ParseTcpSegment(const IpAddress& source,
     result.segment.flags = data[13];
     result.segment.window = Read16(data + 14);
     result.segment.urgent_pointer = Read16(data + 18);
+    result.segment.ip_ecn = static_cast<std::uint8_t>(ip_ecn & 0x03u);
     result.segment.options = data + 20;
     result.segment.options_length = header_length - 20;
     result.segment.payload = data + header_length;

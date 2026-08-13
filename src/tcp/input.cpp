@@ -44,7 +44,7 @@ TcpInputResult ParseIpTcpPacket(const std::uint8_t* packet,
                             ip.header.src_ip[2], ip.header.src_ip[3]),
             IpAddress::Ipv4(ip.header.dst_ip[0], ip.header.dst_ip[1],
                             ip.header.dst_ip[2], ip.header.dst_ip[3]),
-            ip.payload, ip.header.payload_length);
+            ip.payload, ip.header.payload_length, ip.header.ecn);
     } else if (version == 6) {
         const Ipv6ParseResult ip = ParseIpv6(packet, length);
         if (ip.error != Ipv6ParseResult::Error::None) {
@@ -61,7 +61,8 @@ TcpInputResult ParseIpTcpPacket(const std::uint8_t* packet,
         }
         tcp = ParseTcpSegment(
             IpAddress::Ipv6(ip.header.src_ip), IpAddress::Ipv6(ip.header.dst_ip),
-            ip.payload, ip.payload_length);
+            ip.payload, ip.payload_length,
+            static_cast<std::uint8_t>(ip.header.traffic_class & 0x03u));
     } else {
         result.error = TcpInputError::UnsupportedIpVersion;
         return result;
@@ -94,6 +95,7 @@ FragmentInfo ExtractFragmentInfo(const std::uint8_t* packet,
         info.more_fragments = (ip.header.flags & 0x01u) != 0;
         info.payload = ip.payload;
         info.payload_length = ip.header.payload_length;
+        info.ecn = ip.header.ecn;
         info.valid = true;
     } else if (version == 6) {
         const Ipv6ParseResult ip = ParseIpv6(packet, length);
@@ -108,6 +110,7 @@ FragmentInfo ExtractFragmentInfo(const std::uint8_t* packet,
         info.more_fragments = ip.fragment_more;
         info.payload = ip.fragment_payload;
         info.payload_length = ip.fragment_payload_length;
+        info.ecn = static_cast<std::uint8_t>(ip.header.traffic_class & 0x03u);
         info.valid = true;
     }
     return info;

@@ -48,6 +48,8 @@ struct TcpSegmentView {
     std::size_t options_length = 0;
     const std::uint8_t* payload = nullptr;
     std::size_t payload_length = 0;
+    /// IP header ECN codepoint (0 Not-ECT, 1 ECT(1), 2 ECT(0), 3 CE).
+    std::uint8_t ip_ecn = 0;
 
     bool HasFlag(std::uint8_t flag) const noexcept {
         return (flags & flag) != 0;
@@ -62,6 +64,7 @@ struct TcpParseResult {
 TcpParseResult ParseTcpSegment(const IpAddress& source,
                                const IpAddress& destination,
                                const std::uint8_t* data,
-                               std::size_t length) noexcept;
+                               std::size_t length,
+                               std::uint8_t ip_ecn = 0) noexcept;
 
 } // namespace tcpip2

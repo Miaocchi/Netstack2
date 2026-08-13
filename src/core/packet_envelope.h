@@ -29,6 +29,8 @@ struct PacketEnvelope {
     BufferLease lease;
     IpAddress source;
     IpAddress destination;
+    /// IP ECN codepoint of the reassembled datagram (kReassembledTcp/Udp).
+    std::uint8_t ecn = 0;
 
     std::size_t ByteSize() const noexcept { return lease.Size(); }
 };

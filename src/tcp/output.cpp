@@ -184,6 +184,7 @@ TcpOutputResult BuildTcpControlPacket(const TcpResponse& response,
     std::uint32_t pseudo_seed = 0;
     if (response.flow.source.IsIpv4()) {
         output[0] = 0x45;
+        output[1] = static_cast<std::uint8_t>(response.ip_ecn & 0x03u);
         Write16(output + 2, static_cast<std::uint16_t>(packet_length));
         Write16(output + 4, ipv4_id);
         output[8] = hop_limit;
@@ -196,6 +197,9 @@ TcpOutputResult BuildTcpControlPacket(const TcpResponse& response,
             static_cast<std::uint16_t>(tcp_total));
     } else {
         output[0] = 0x60;
+        // ECN codepoint occupies the low two bits of the traffic-class octet,
+        // i.e. bits 5:4 of byte 1 (DSCP stays 0).
+        output[1] = static_cast<std::uint8_t>((response.ip_ecn & 0x03u) << 4);
         Write16(output + 4, static_cast<std::uint16_t>(tcp_total));
         output[6] = 6;
         output[7] = hop_limit;

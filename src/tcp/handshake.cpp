@@ -224,6 +224,10 @@ TcpResponse TcpHandshakeEngine::BuildAck(Pcb& pcb,
     response.sequence = pcb.send ? pcb.send->SndNxt() : pcb.snd_nxt;
     response.acknowledgment = pcb.receive->RcvNxt();
     response.flags = TcpFlag::Ack;
+    if (pcb.options.ecn && pcb.ecn_ece_pending) {
+        // RFC 3168 §6.1.3: reflect CE to the sender via ECE until CWR returns.
+        response.flags = static_cast<std::uint8_t>(response.flags | TcpFlag::Ece);
+    }
 
     const std::uint8_t scale = pcb.options.window_scale
         ? pcb.options.receive_window_scale : 0;
@@ -490,7 +494,8 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
             : static_cast<std::uint32_t>(segment.window);
         const TcpSendAckResult ar = pcb.send->OnAck(
             segment.acknowledgment, scaled_pw, now_ms,
-            segment.payload_length == 0);
+            segment.payload_length == 0,
+            pcb.options.ecn && segment.HasFlag(TcpFlag::Ece));
         if (ar.duplicate && pcb.options.sack_permitted) {
             const TcpSackBlockList sacks =
                 ParseTcpSackBlocks(segment.options, segment.options_length);
@@ -560,6 +565,11 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
     };
 
     if (segment.payload_length == 0) {
+        // RFC 3168 §6.1.3: a pure-ACK CWR also acknowledges the sender's
+        // congestion reduction (the peer stops echoing ECE).
+        if (pcb.options.ecn && segment.HasFlag(TcpFlag::Cwr)) {
+            pcb.ecn_ece_pending = false;
+        }
         if (timestamp_present && segment.sequence == pcb.receive->RcvNxt()) {
             pcb.options.peer_timestamp = incoming_timestamp;
         }
@@ -598,6 +608,17 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
     if (received.disposition == ReceiveDisposition::Invalid) {
         result.error = TcpHandshakeError::InvalidFlags;
         return result;
+    }
+    if (pcb.options.ecn) {
+        // RFC 3168 §6.1.3 receiver algorithm: a data segment carrying CWR
+        // clears the ECE feedback; a CE-marked new-data segment (accepted
+        // bytes, i.e. not a retransmission) re-asserts it.
+        if (segment.HasFlag(TcpFlag::Cwr)) {
+            pcb.ecn_ece_pending = false;
+        }
+        if (received.accepted_bytes != 0 && segment.ip_ecn == 3) {
+            pcb.ecn_ece_pending = true;
+        }
     }
     if (timestamp_present && pcb.receive->RcvNxt() != old_rcv_nxt) {
         pcb.options.peer_timestamp = incoming_timestamp;
@@ -1293,6 +1314,15 @@ void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
         resp.sequence = next.sequence;
         resp.acknowledgment = pcb.receive ? pcb.receive->RcvNxt() : pcb.rcv_nxt;
         resp.flags = TcpFlag::Ack | (next.is_fin ? TcpFlag::Fin : 0);
+        if (pcb.options.ecn) {
+            // RFC 3168 §6.1.2: after negotiation, data segments (including
+            // retransmissions and FIN) are ECT(0); an ECE-signalled reduction
+            // is acknowledged with CWR on the next segment.
+            if (next.payload_length != 0 || next.is_fin) resp.ip_ecn = 2;
+            if (next.set_cwr) {
+                resp.flags = static_cast<std::uint8_t>(resp.flags | TcpFlag::Cwr);
+            }
+        }
         resp.timestamp_present = pcb.options.timestamps;
         resp.timestamp_value = static_cast<std::uint32_t>(now_ms);
         resp.timestamp_echo = pcb.options.peer_timestamp;

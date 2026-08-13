@@ -1672,4 +1672,70 @@ TCPIP2_TEST(PacingResetOnClose) {
     TCPIP2_EXPECT_EQ(send.PacingDeadline(), std::uint64_t{0});
 }
 
+// ---------------------------------------------------------------------------
+// RFC 3168 sender ECN data path (R6 step 10, data path)
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(EcnEceAckReducesCwndAndQueuesCwr) {
+    SendHelper sh;
+    auto send = MakeSendBuffer(1000);
+
+    // Grow cwnd above 2*MSS (the OnEcnCe floor) so the reduction is visible.
+    std::uint8_t data[6000];
+    std::memset(data, 0xAB, sizeof(data));
+    TCPIP2_EXPECT_EQ(send->Enqueue(data, sizeof(data)), std::size_t{6000});
+
+    TcpSendNextResult seg = send->NextSegment(65535, sh.now_ms);
+    TCPIP2_EXPECT_TRUE(seg.has_segment);
+    sh.SendSegment(*send, seg);
+    send->OnAck(seg.sequence + static_cast<std::uint32_t>(seg.payload_length),
+                65535, sh.now_ms + 10, true, false);
+    seg = send->NextSegment(65535, sh.now_ms + 10);
+    sh.SendSegment(*send, seg);
+    const auto ack = send->OnAck(
+        seg.sequence + static_cast<std::uint32_t>(seg.payload_length),
+        65535, sh.now_ms + 20, true, false);
+    TCPIP2_EXPECT_TRUE(ack.newly_acked > 0);
+    // cwnd grew in slow start to 4*MSS = 5840.
+    TCPIP2_EXPECT_EQ(std::uint32_t{5840}, send->CongestionWindow());
+
+    // First ECE ACK: reduce cwnd (halve, floor 2*MSS) and queue CWR.
+    // The reduction is applied after the slow-start growth on the same ACK,
+    // so the final cwnd is max(7300/2, 2*MSS) = 3650.
+    TcpSendNextResult in_flight = send->NextSegment(65535, sh.now_ms + 20);
+    TCPIP2_EXPECT_TRUE(in_flight.has_segment);
+    sh.SendSegment(*send, in_flight);
+    send->OnAck(in_flight.sequence + static_cast<std::uint32_t>(in_flight.payload_length),
+                65535, sh.now_ms + 30, true, true);
+    TCPIP2_EXPECT_EQ(std::uint32_t{3650}, send->CongestionWindow());
+
+    // A further ECE ACK (duplicate) before CWR is sent must not reduce again.
+    send->OnAck(in_flight.sequence + static_cast<std::uint32_t>(in_flight.payload_length),
+                65535, sh.now_ms + 40, true, true);
+    TCPIP2_EXPECT_EQ(std::uint32_t{3650}, send->CongestionWindow());
+
+    // The next segment carries the CWR acknowledgement.
+    TcpSendNextResult cwr_seg = send->NextSegment(65535, sh.now_ms + 40);
+    TCPIP2_EXPECT_TRUE(cwr_seg.has_segment);
+    TCPIP2_EXPECT_TRUE(cwr_seg.set_cwr);
+    sh.SendSegment(*send, cwr_seg);
+}
+
+TCPIP2_TEST(EcnAckWithoutEceNeverQueuesCwr) {
+    SendHelper sh;
+    auto send = MakeSendBuffer(1000);
+    std::uint8_t data[3000];
+    std::memset(data, 0xCD, sizeof(data));
+    TCPIP2_EXPECT_EQ(send->Enqueue(data, sizeof(data)), std::size_t{3000});
+
+    TcpSendNextResult seg = send->NextSegment(65535, sh.now_ms);
+    sh.SendSegment(*send, seg);
+    send->OnAck(seg.sequence + static_cast<std::uint32_t>(seg.payload_length),
+                65535, sh.now_ms + 10, true, false);
+
+    TcpSendNextResult seg2 = send->NextSegment(65535, sh.now_ms + 10);
+    TCPIP2_EXPECT_TRUE(seg2.has_segment);
+    TCPIP2_EXPECT_FALSE(seg2.set_cwr);
+}
+
 TCPIP2_TEST_MAIN()

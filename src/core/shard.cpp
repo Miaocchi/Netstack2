@@ -548,7 +548,7 @@ void StackShard::ProcessEnvelope(PacketEnvelope&& envelope, std::uint64_t now_ms
     if (envelope.type == PacketEnvelopeType::kReassembledTcp) {
         const TcpParseResult tcp = ParseTcpSegment(
             envelope.source, envelope.destination,
-            envelope.lease.Data(), envelope.lease.Size());
+            envelope.lease.Data(), envelope.lease.Size(), envelope.ecn);
         if (tcp.error != TcpParseError::None) {
             packets_dropped_.fetch_add(1, std::memory_order_relaxed);
             return;
@@ -590,12 +590,12 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
             fi.src_ip, fi.dst_ip, fi.protocol,
             static_cast<std::uint16_t>(fi.identification),
             fi.fragment_offset, fi.more_fragments,
-            fi.payload, fi.payload_length, now_ms);
+            fi.payload, fi.payload_length, now_ms, 0, 0, fi.ecn);
     } else {
         result = reassembler_.AddIpv6Fragment(
             fi.src_ip, fi.dst_ip, fi.identification,
             fi.fragment_offset, fi.more_fragments,
-            fi.payload, fi.payload_length, now_ms, 0, 0, fi.protocol);
+            fi.payload, fi.payload_length, now_ms, 0, 0, fi.protocol, fi.ecn);
     }
     if (result.error != FragmentError::None) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
@@ -615,7 +615,7 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
     }
     if (fi.protocol == 6) {
         const TcpParseResult tcp = ParseTcpSegment(
-            src, dst, result.payload.data(), result.total_length);
+            src, dst, result.payload.data(), result.total_length, result.ecn);
         if (tcp.error != TcpParseError::None) {
             packets_dropped_.fetch_add(1, std::memory_order_relaxed);
             return;
@@ -640,6 +640,7 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
         envelope.lease = std::move(transport);
         envelope.source = src;
         envelope.destination = dst;
+        envelope.ecn = result.ecn;
         RedirectPacket(owner, std::move(envelope));
         return;
     }

@@ -59,6 +59,9 @@ struct FragmentAddResult {
     FragmentError error = FragmentError::None;
     bool complete = false;
     std::size_t total_length = 0;
+    /// ECN codepoint of the reassembled datagram (RFC 3168 §5.2.2: the OR of
+    /// the constituent fragments' ECN fields). Valid when complete == true.
+    std::uint8_t ecn = 0;
     std::vector<std::uint8_t> payload;  // owning buffer (moved from entry on completion)
 };
 
@@ -99,7 +102,8 @@ public:
                                   std::uint64_t now_ms,
                                   std::uint32_t expires_ms,
                                   std::uint32_t max_payload_bytes,
-                                  std::size_t additional_byte_budget) noexcept;
+                                  std::size_t additional_byte_budget,
+                                  std::uint8_t ecn = 0) noexcept;
 
     /// Check if this entry has expired. Deadline is fixed at first fragment.
     bool IsExpired(std::uint64_t now_ms) const noexcept;
@@ -140,6 +144,7 @@ private:
     std::uint32_t total_payload_length_ = 0;
     std::uint64_t deadline_ms_ = 0;       // fixed at first fragment
     bool discarded_ = false;               // RFC 5722: IPv6 overlap → discard all
+    std::uint8_t ecn_or_ = 0;              // OR of fragment ECN codepoints (RFC 3168 §5.2.2)
     std::vector<std::uint8_t> data_buffer_;  // owned, contiguous reassembly buffer
 
     bool HasOverlap(std::uint32_t offset, std::uint32_t length) const noexcept;
@@ -173,7 +178,7 @@ public:
         std::uint16_t fragment_offset, bool more_fragments,
         const std::uint8_t* payload, std::size_t payload_len,
         std::uint64_t now_ms, std::uint32_t expires_ms = 0,
-        std::uint32_t max_payload_bytes = 0) noexcept;
+        std::uint32_t max_payload_bytes = 0, std::uint8_t ecn = 0) noexcept;
 
     /// Add an IPv6 fragment.
     /// @param src_ip source IPv6 address (16 bytes, must not be null)
@@ -193,7 +198,8 @@ public:
         std::uint16_t fragment_offset, bool more_fragments,
         const std::uint8_t* payload, std::size_t payload_len,
         std::uint64_t now_ms, std::uint32_t expires_ms = 0,
-        std::uint32_t max_payload_bytes = 0, std::uint8_t protocol = 0) noexcept;
+        std::uint32_t max_payload_bytes = 0, std::uint8_t protocol = 0,
+        std::uint8_t ecn = 0) noexcept;
 
     /// Purge expired entries. Returns number of entries removed.
     std::size_t Purge(std::uint64_t now_ms) noexcept;

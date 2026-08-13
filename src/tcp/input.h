@@ -47,6 +47,8 @@ struct FragmentInfo {
     bool more_fragments = false;
     const std::uint8_t* payload = nullptr;
     std::size_t payload_length = 0;
+    /// IP header ECN codepoint of this fragment (0 Not-ECT .. 3 CE).
+    std::uint8_t ecn = 0;
 };
 
 /// Extract fragment metadata from a raw IP packet.

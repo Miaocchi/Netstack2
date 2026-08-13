@@ -137,6 +137,8 @@ struct TcpResponse {
     std::uint32_t timestamp_value = 0;
     std::uint32_t timestamp_echo = 0;
     TcpSackBlockList sack_blocks;
+    /// IP header ECN codepoint for this packet (0 Not-ECT, 2 ECT(0)).
+    std::uint8_t ip_ecn = 0;
     /// Optional payload for data segments (non-SYN packets).
     /// Must outlive the call to BuildTcpControlPacket.
     const std::uint8_t* payload = nullptr;
@@ -289,6 +291,9 @@ private:
         std::uint64_t timewait_deadline_ms = 0;
         bool fin_received = false;
         bool close_notified = false;
+        /// RFC 3168 receiver state: assert ECE in ACKs until the peer sends a
+        /// data segment with CWR set. Only meaningful when options.ecn.
+        bool ecn_ece_pending = false;
     };
 
     struct CallbackGate {

@@ -875,4 +875,40 @@ TCPIP2_TEST(InvalidOffsetNotMultipleOf8Rejected) {
     TCPIP2_EXPECT_TRUE(true);
 }
 
+// ===========================================================================
+// RFC 3168 §5.2.2 ECN in fragments
+// ===========================================================================
+
+TCPIP2_TEST(Ipv4FragmentEcnOrPropagatesToReassembledDatagram) {
+    FragmentReassembler r;
+    auto p1 = MakePayload(104, 0xAA);
+    auto p2 = MakePayload(56, 0xBB);
+
+    // First fragment ECT(0), second CE: the reassembled datagram's ECN is the
+    // bitwise OR (10 | 11 = 11 → CE).
+    auto r1 = r.AddIpv4Fragment(kSrcIpv4, kDstIpv4, kProtoUdp, 42,
+                                 0, true, p1.data(), p1.size(), 1000, 0, 0, 2);
+    TCPIP2_EXPECT_FALSE(r1.complete);
+
+    auto r2 = r.AddIpv4Fragment(kSrcIpv4, kDstIpv4, kProtoUdp, 42,
+                                 13, false, p2.data(), p2.size(), 1000, 0, 0, 3);
+    TCPIP2_EXPECT_TRUE(r2.complete);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0x03}, r2.ecn);
+}
+
+TCPIP2_TEST(Ipv6FragmentEcnOrPropagatesToReassembledDatagram) {
+    FragmentReassembler r;
+    auto p1 = MakePayload(104, 0xAA);
+    auto p2 = MakePayload(56, 0xBB);
+
+    // ECT(0) + Not-ECT: OR is ECT(0).
+    auto r1 = r.AddIpv6Fragment(kSrcIpv6, kDstIpv6, 0x42,
+                                 0, true, p1.data(), p1.size(), 1000, 0, 0, 6, 2);
+    TCPIP2_EXPECT_FALSE(r1.complete);
+    auto r2 = r.AddIpv6Fragment(kSrcIpv6, kDstIpv6, 0x42,
+                                 13, false, p2.data(), p2.size(), 1000, 0, 0, 6, 0);
+    TCPIP2_EXPECT_TRUE(r2.complete);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0x02}, r2.ecn);
+}
+
 TCPIP2_TEST_MAIN()

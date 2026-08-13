@@ -134,6 +134,11 @@ TcpSendNextResult TcpSendBuffer::NextSegment(std::uint32_t peer_window,
         peer_window_valid_ = true;
     }
 
+    // RFC 3168 §6.1.2: if an ECE-signalled reduction is still owed a CWR
+    // acknowledgement, the next segment (any kind) carries it.
+    pending_set_cwr_ = ecn_cwr_queued_;
+    result.set_cwr = pending_set_cwr_;
+
     if (peer_window == 0) {
         // A persist timer, rather than the retransmission timer, governs a
         // connection whose peer has explicitly closed its receive window.
@@ -487,6 +492,13 @@ void TcpSendBuffer::OnSent(BufferRef owner, std::size_t payload_offset,
         ScheduleNextPersist(now_ms);
     }
 
+    if (accepted && pending_set_cwr_) {
+        // The CWR acknowledgement has reached the wire; a later ECE may
+        // trigger a fresh reduction (RFC 3168 §6.1.2, once per window).
+        ecn_cwr_queued_ = false;
+    }
+    pending_set_cwr_ = false;
+
     pending_kind_ = PendingKind::None;
     pending_is_fin_ = false;
     pending_seq_ = 0;
@@ -496,7 +508,8 @@ void TcpSendBuffer::OnSent(BufferRef owner, std::size_t payload_offset,
 TcpSendAckResult TcpSendBuffer::OnAck(std::uint32_t acknowledgment,
                                       std::uint32_t peer_window,
                                       std::uint64_t now_ms,
-                                      bool ack_only) noexcept {
+                                      bool ack_only,
+                                      bool ece) noexcept {
     TcpSendAckResult result;
 
     if (SequenceAfter(acknowledgment, snd_max_)) {
@@ -507,6 +520,15 @@ TcpSendAckResult TcpSendBuffer::OnAck(std::uint32_t acknowledgment,
     if (SequenceBefore(acknowledgment, snd_una_)) {
         result.retransmit_queue_bytes = in_flight_bytes_;
         return result;
+    }
+
+    if (ece && !ecn_cwr_queued_) {
+        // RFC 3168 §6.1.2: an ECE on an ACK is a congestion signal. Reduce
+        // the window as for a loss and queue the CWR acknowledgement on the
+        // next segment. ecn_cwr_queued_ bounds reductions to once per CWR
+        // round-trip.
+        ecn_cwr_queued_ = true;
+        std::visit([](auto& c) noexcept { c.OnEcnCe(); }, controller_);
     }
 
     if (acknowledgment == snd_una_) {
@@ -846,6 +868,8 @@ void TcpSendBuffer::Close() noexcept {
     fast_retransmit_pending_ = false;
     pending_kind_ = PendingKind::None;
     next_send_time_ms_ = 0;
+    ecn_cwr_queued_ = false;
+    pending_set_cwr_ = false;
     sampler_.Reset();
     std::visit([](auto& c) noexcept { c.Reset(); }, controller_);
 }
@@ -880,6 +904,7 @@ void TcpSendBuffer::CancelTimers() noexcept {
 void TcpSendBuffer::ResetPending() noexcept {
     pending_kind_ = PendingKind::None;
     pending_is_fin_ = false;
+    pending_set_cwr_ = false;
     pending_seq_ = 0;
     pending_len_ = 0;
 }

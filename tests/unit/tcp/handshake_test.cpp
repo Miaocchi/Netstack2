@@ -2989,4 +2989,117 @@ TCPIP2_TEST(EcnNegotiationDisabledByConfig) {
     TCPIP2_EXPECT_FALSE(snapshot.options.ecn);
 }
 
+// ---------------------------------------------------------------------------
+// RFC 3168 ECN data path (R6 step 10, data path)
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(EcnDataSegmentIsMarkedEctOnTheWire) {
+    PktBufferPool pool(8, 2048);
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+
+    // Negotiate ECN via the ECN-offering SYN.
+    const auto syn = engine.OnSegment(MakeView(
+        flow, 1000, 0,
+        static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    TcpPcbSnapshot established;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, established));
+    TCPIP2_EXPECT_TRUE(established.options.ecn);
+
+    engine.EnqueueSendData(established.flow_id,
+                           reinterpret_cast<const std::uint8_t*>("ABC"), 3);
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(200, 64, pool, tx, 64);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, tx.size());
+
+    // The serialized IPv4 data segment must carry ECT(0) (ECN bits = 10).
+    const auto ip = ParseIpv4(tx[0].Data(), tx[0].Size());
+    TCPIP2_EXPECT_EQ(Ipv4ParseError::None, ip.error);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0x02}, ip.header.ecn);
+
+    const FlowKey resp_flow = Reverse(flow);
+    const auto tcp = ParseTcpSegment(
+        resp_flow.source, resp_flow.destination, ip.payload, ip.header.payload_length);
+    TCPIP2_EXPECT_EQ(TcpParseError::None, tcp.error);
+    TCPIP2_EXPECT_EQ(std::size_t{3}, tcp.segment.payload_length);
+}
+
+TCPIP2_TEST(NonEcnFlowDataSegmentStaysNotEct) {
+    PktBufferPool pool(8, 2048);
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_timestamps = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const TcpPcbSnapshot established = Establish(engine, flow);
+
+    engine.EnqueueSendData(established.flow_id,
+                           reinterpret_cast<const std::uint8_t*>("XYZ"), 3);
+    std::vector<BufferLease> tx;
+    engine.PumpSendPaths(200, 64, pool, tx, 64);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, tx.size());
+    const auto ip = ParseIpv4(tx[0].Data(), tx[0].Size());
+    TCPIP2_EXPECT_EQ(std::uint8_t{0x00}, ip.header.ecn);
+}
+
+TCPIP2_TEST(CeMarkedDataSegmentReflectsEceOnSubsequentAck) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const auto syn = engine.OnSegment(MakeView(
+        flow, 1000, 0,
+        static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    auto session = std::make_shared<ReceiveSession>();
+    engine.AttachSession(flow, session, 150);
+
+    TcpPcbSnapshot snap;
+    engine.Find(flow, snap);
+    const std::vector<std::uint8_t> payload = {1, 2, 3};
+    // CE-marked new-data segment (ip_ecn == 3). The receiver must assert ECE
+    // on the ACK until the peer acknowledges with CWR.
+    auto view = MakeView(flow, snap.rcv_nxt, snap.snd_nxt,
+                         static_cast<std::uint8_t>(TcpFlag::Psh | TcpFlag::Ack), {}, payload);
+    view.ip_ecn = 3;
+    const auto result = engine.OnSegment(view, 200);
+    TCPIP2_EXPECT_TRUE(result.response.valid);
+    TCPIP2_EXPECT_TRUE((result.response.flags & TcpFlag::Ece) != 0);
+}
+
+TCPIP2_TEST(EceClearedByCwrDataSegment) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+    const auto syn = engine.OnSegment(MakeView(
+        flow, 1000, 0,
+        static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    auto session = std::make_shared<ReceiveSession>();
+    engine.AttachSession(flow, session, 150);
+
+    TcpPcbSnapshot snap;
+    engine.Find(flow, snap);
+    const std::vector<std::uint8_t> payload = {9, 8, 7};
+    auto ce = MakeView(flow, snap.rcv_nxt, snap.snd_nxt,
+                       static_cast<std::uint8_t>(TcpFlag::Psh | TcpFlag::Ack), {}, payload);
+    ce.ip_ecn = 3;
+    const auto ce_result = engine.OnSegment(ce, 200);
+    TCPIP2_EXPECT_TRUE((ce_result.response.flags & TcpFlag::Ece) != 0);
+
+    // A data segment with CWR set clears the ECE feedback.
+    const std::vector<std::uint8_t> payload2 = {1, 1, 1};
+    auto cwr = MakeView(flow, snap.rcv_nxt + 3, snap.snd_nxt,
+                        static_cast<std::uint8_t>(TcpFlag::Ack | TcpFlag::Psh | TcpFlag::Cwr),
+                        {}, payload2);
+    const auto cwr_result = engine.OnSegment(cwr, 201);
+    TCPIP2_EXPECT_TRUE(cwr_result.response.valid);
+    TCPIP2_EXPECT_FALSE((cwr_result.response.flags & TcpFlag::Ece) != 0);
+}
+
 TCPIP2_TEST_MAIN()

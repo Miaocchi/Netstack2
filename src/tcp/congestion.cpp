@@ -90,6 +90,13 @@ void AimdController::OnRto() noexcept {
     fast_recovery_ = false;
 }
 
+void AimdController::OnEcnCe() noexcept {
+    // RFC 3168 §6.1.2: reduce cwnd/ssthresh as for a packet loss (RFC 5681).
+    ssthresh_ = std::max<std::uint32_t>(cwnd_ / 2U,
+                                        static_cast<std::uint32_t>(mss_) * 2U);
+    cwnd_ = ssthresh_;
+}
+
 void AimdController::UpdateMss(std::uint16_t mss, bool pristine) noexcept {
     if (mss == 0 || mss == mss_) return;
     const std::uint16_t old_mss = mss_;
@@ -341,6 +348,12 @@ void BbrController::OnRto() noexcept {
     pacing_rate_ = 0;
 }
 
+void BbrController::OnEcnCe() noexcept {
+    // RFC 3168 §6.1.2: ECE signals congestion; cut cwnd to half (floor 2 MSS).
+    cwnd_ = std::max<std::uint64_t>(cwnd_ / 2U,
+                                    static_cast<std::uint64_t>(mss_) * 2U);
+}
+
 void BbrController::Reset() noexcept {
     btlbw_ = 0;
     rtprop_ = 0;
@@ -365,9 +378,9 @@ void BbrController::Reset() noexcept {
 
 HybridBdpAimdController::HybridBdpAimdController(std::uint16_t mss) noexcept
     : mss_(mss),
+      round_target_bytes_(static_cast<std::uint64_t>(mss) * 2U),
       cwnd_(static_cast<std::uint32_t>(mss) * 2U),
-      ssthresh_(std::numeric_limits<std::uint32_t>::max()),
-      round_target_bytes_(static_cast<std::uint64_t>(mss) * 2U) {}
+      ssthresh_(std::numeric_limits<std::uint32_t>::max()) {}
 
 void HybridBdpAimdController::OnPacketSent(std::uint64_t /*bytes*/) noexcept {
     // Round detection is ACK-based (see OnAck), so send-side bookkeeping is
@@ -547,6 +560,13 @@ void HybridBdpAimdController::OnRto() noexcept {
     round_start_delivered_ = 0;
     round_target_bytes_ = static_cast<std::uint64_t>(mss_) * 2U;
     round_started_ = false;
+}
+
+void HybridBdpAimdController::OnEcnCe() noexcept {
+    // RFC 3168 §6.1.2: reduce cwnd/ssthresh as for a packet loss (RFC 5681).
+    ssthresh_ = std::max<std::uint32_t>(cwnd_ / 2U,
+                                        static_cast<std::uint32_t>(mss_) * 2U);
+    cwnd_ = ssthresh_;
 }
 
 std::uint32_t HybridBdpAimdController::CongestionWindow() const noexcept {

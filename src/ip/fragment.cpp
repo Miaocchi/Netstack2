@@ -35,6 +35,7 @@ void ReassemblyEntry::Reset() noexcept {
     total_payload_length_ = 0;
     deadline_ms_ = 0;
     discarded_ = false;
+    ecn_or_ = 0;
     // Preserve capacity to avoid repeated allocation; clear size.
     data_buffer_.clear();
 }
@@ -57,7 +58,7 @@ FragmentAddResult ReassemblyEntry::AddFragment(
     std::uint32_t length, bool more_fragments,
     std::uint64_t now_ms, std::uint32_t expires_ms,
     std::uint32_t max_payload_bytes,
-    std::size_t additional_byte_budget) noexcept {
+    std::size_t additional_byte_budget, std::uint8_t ecn) noexcept {
 
     FragmentAddResult result;
 
@@ -176,6 +177,7 @@ FragmentAddResult ReassemblyEntry::AddFragment(
     pieces_[fragment_count_].offset = offset;
     pieces_[fragment_count_].length = length;
     ++fragment_count_;
+    ecn_or_ = static_cast<std::uint8_t>(ecn_or_ | (ecn & 0x03u));
 
     if (end > highest_end_) {
         highest_end_ = end;
@@ -229,6 +231,7 @@ FragmentAddResult ReassemblyEntry::AddFragment(
                 }
                 result.complete = true;
                 result.total_length = total_payload_length_;
+                result.ecn = ecn_or_;
                 result.payload = std::move(data_buffer_);
                 // data_buffer_ is now empty; entry can be Reset by caller.
                 return result;
@@ -271,7 +274,7 @@ FragmentAddResult FragmentReassembler::AddIpv4Fragment(
     std::uint16_t fragment_offset, bool more_fragments,
     const std::uint8_t* payload, std::size_t payload_len,
     std::uint64_t now_ms, std::uint32_t expires_ms,
-    std::uint32_t max_payload_bytes) noexcept {
+    std::uint32_t max_payload_bytes, std::uint8_t ecn) noexcept {
 
     FragmentAddResult result;
 
@@ -330,7 +333,8 @@ FragmentAddResult FragmentReassembler::AddIpv4Fragment(
     result = entry->AddFragment(byte_offset, payload,
                                 static_cast<std::uint32_t>(payload_len),
                                 more_fragments, now_ms, expires_ms,
-                                max_payload_bytes, additional_byte_budget);
+                                max_payload_bytes, additional_byte_budget,
+                                ecn);
 
     std::size_t bytes_after = entry->BytesHeld();
 
@@ -354,7 +358,8 @@ FragmentAddResult FragmentReassembler::AddIpv6Fragment(
     std::uint16_t fragment_offset, bool more_fragments,
     const std::uint8_t* payload, std::size_t payload_len,
     std::uint64_t now_ms, std::uint32_t expires_ms,
-    std::uint32_t max_payload_bytes, std::uint8_t protocol) noexcept {
+    std::uint32_t max_payload_bytes, std::uint8_t protocol,
+    std::uint8_t ecn) noexcept {
 
     FragmentAddResult result;
 
@@ -411,7 +416,8 @@ FragmentAddResult FragmentReassembler::AddIpv6Fragment(
     result = entry->AddFragment(byte_offset, payload,
                                 static_cast<std::uint32_t>(payload_len),
                                 more_fragments, now_ms, expires_ms,
-                                max_payload_bytes, additional_byte_budget);
+                                max_payload_bytes, additional_byte_budget,
+                                ecn);
 
     std::size_t bytes_after = entry->BytesHeld();
 

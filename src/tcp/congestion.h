@@ -50,6 +50,9 @@ public:
     void OnAck(const RateSample& rs) noexcept;
     void OnLoss(const LossEvent& ev) noexcept;
     void OnRto() noexcept;
+    /// RFC 3168 §6.1.2: an ECE on an ACK is a congestion signal — halve the
+    /// window as for a packet loss (the sender then echoes CWR).
+    void OnEcnCe() noexcept;
 
     std::uint32_t CongestionWindow() const noexcept { return cwnd_; }
     std::uint32_t Ssthresh() const noexcept { return ssthresh_; }
@@ -91,13 +94,14 @@ public:
     void OnAck(const RateSample& rs) noexcept;
     void OnLoss(const LossEvent& ev) noexcept;
     void OnRto() noexcept;
+    /// RFC 3168 §6.1.2 ECE congestion response: cut cwnd.
+    void OnEcnCe() noexcept;
 
     std::uint32_t CongestionWindow() const noexcept;
     std::uint32_t PacingRate() const noexcept;
 
     /// Telemetry string (always "bbr_v1").
     static const char* AlgorithmId() noexcept { return "bbr_v1"; }
-
     /// Reset to initial state.
     void Reset() noexcept;
 
@@ -176,6 +180,8 @@ public:
     void OnAck(const RateSample& rs) noexcept;
     void OnLoss(const LossEvent& ev) noexcept;
     void OnRto() noexcept;
+    /// RFC 3168 §6.1.2 ECE congestion response: halve cwnd as for a loss.
+    void OnEcnCe() noexcept;
 
     std::uint32_t CongestionWindow() const noexcept;
     std::uint32_t Ssthresh() const noexcept { return ssthresh_; }
@@ -183,7 +189,6 @@ public:
 
     /// Telemetry string (always "hybrid_bdp_aimd_v1").
     static const char* AlgorithmId() noexcept { return "hybrid_bdp_aimd_v1"; }
-
     /// Called by TcpSendBuffer when entering fast recovery.
     void OnFastRecoveryEntry(std::uint32_t flight) noexcept;
     /// Called by TcpSendBuffer for each dup-ACK during recovery (inflate).
