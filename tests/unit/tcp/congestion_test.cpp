@@ -1049,4 +1049,65 @@ TCPIP2_TEST(SendBufferHybridCloseResetsController) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// R5 #8: app-limited delivery-rate sampling
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(RateSamplerStampsAppLimitedOnPacket) {
+    DeliveryRateSampler s;
+    s.MarkAppLimited(100);
+    PacketDeliveryState pkt;
+    s.OnPacketSent(pkt, 100);
+    TCPIP2_EXPECT_TRUE(pkt.app_limited);
+
+    const RateSample sample = s.OnAck(pkt, 100, 110, 0);
+    TCPIP2_EXPECT_TRUE(sample.app_limited);
+
+    // A fresh sampler is not app-limited until MarkAppLimited.
+    DeliveryRateSampler clean;
+    PacketDeliveryState pkt2;
+    clean.OnPacketSent(pkt2, 100);
+    TCPIP2_EXPECT_FALSE(pkt2.app_limited);
+}
+
+TCPIP2_TEST(BbrSmallAppLimitedBurstDoesNotLearnBtlBw) {
+    TestEnv env;
+    auto send = MakeBbr(1000, 1000);  // MSS 1000, initial cwnd 2000
+
+    // A single 1000-byte segment drains the queue with the pipe only half
+    // full (cwnd 2000): the rate sample is app-limited and must NOT raise
+    // BtlBw, so BBR stays unpaced.
+    std::vector<std::uint8_t> data(1000, 0xAB);
+    send->Enqueue(data.data(), data.size());
+    auto seg = send->NextSegment(65535, env.now_ms);
+    TCPIP2_EXPECT_TRUE(seg.has_segment);
+    env.SendSegment(*send, seg);
+
+    env.now_ms += 10;
+    auto ack = send->OnAck(seg.sequence + static_cast<std::uint32_t>(seg.payload_length),
+                           65535, env.now_ms, true);
+    TCPIP2_EXPECT_TRUE(ack.newly_acked > 0);
+    TCPIP2_EXPECT_EQ(send->PacingRate(), 0U);  // BtlBw stayed 0 (app-limited)
+}
+
+TCPIP2_TEST(BbrPipeFillingBurstLearnsBtlBw) {
+    TestEnv env;
+    auto send = MakeBbr(1000, 1000);  // MSS 1000, initial cwnd 2000
+
+    // 3000 bytes: the first segment does not drain the queue (queue remains
+    // 2000) and the second fills the pipe to cwnd — neither sample is
+    // app-limited, so BBR learns BtlBw and paces.
+    std::vector<std::uint8_t> data(3000, 0xAB);
+    send->Enqueue(data.data(), data.size());
+    auto seg1 = send->NextSegment(65535, env.now_ms);
+    env.SendSegment(*send, seg1);
+    auto seg2 = send->NextSegment(65535, env.now_ms);
+    env.SendSegment(*send, seg2);
+
+    env.now_ms += 10;
+    send->OnAck(seg1.sequence + static_cast<std::uint32_t>(seg1.payload_length),
+                65535, env.now_ms, true);
+    TCPIP2_EXPECT_TRUE(send->PacingRate() > 0U);
+}
+
 TCPIP2_TEST_MAIN()

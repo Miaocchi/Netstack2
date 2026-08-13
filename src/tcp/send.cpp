@@ -90,7 +90,12 @@ std::size_t TcpSendBuffer::Enqueue(const std::uint8_t* data,
 
     const std::size_t accepted =
         std::min(length, send_queue_limit_ - send_queue_.size());
+    if (accepted == 0) return 0;
     send_queue_.insert(send_queue_.end(), data, data + accepted);
+    // The application has more data to send, so the flow is no longer
+    // app-limited (R5 #8: delivery-rate samples must not be marked
+    // app-limited while the pipe can be filled).
+    sampler_.ClearAppLimited();
     return accepted;
 }
 
@@ -340,6 +345,16 @@ bool TcpSendBuffer::StoreNewRecord(BufferRef owner,
     }
     record.sent_time_ms = now_ms;
     sampler_.OnPacketSent(record.delivery, now_ms);
+    // R5 #8 app-limited: stamp this packet precisely. It is app-limited when
+    // it drains the send queue (no more data to send) AND the pipe is not
+    // full (the sender could have sent more right now but had no data). The
+    // flow-level MarkAppLimited below covers subsequent non-new-data sends.
+    const bool drains_queue = !pending_is_fin_ &&
+        payload_length == send_queue_.size();
+    const bool pipe_not_full =
+        (static_cast<std::uint64_t>(in_flight_sequence_) + pending_len_) <
+            static_cast<std::uint64_t>(CongestionWindow());
+    record.delivery.app_limited = drains_queue && pipe_not_full;
     retransmit_queue_.push_back(std::move(record));
 
     send_queue_.erase(send_queue_.begin(),
@@ -357,6 +372,16 @@ bool TcpSendBuffer::StoreNewRecord(BufferRef owner,
     }
     if (!rto_running_) {
         ArmRto(now_ms);
+    }
+
+    // R5 #8: if this segment drained the send queue while packets remain in
+    // flight (and no FIN is being sent), the sender stopped because the
+    // application had no more data, not because of cwnd/window. Enter the
+    // app-limited state so subsequent delivery-rate samples (probes,
+    // retransmissions, or the tail of a small enqueue) are not used to raise
+    // BtlBw. The next Enqueue() clears it.
+    if (!pending_is_fin_ && send_queue_.empty() && in_flight_sequence_ != 0) {
+        sampler_.MarkAppLimited(now_ms);
     }
 
     // P3C-03: Update pacing deadline after sending new data.

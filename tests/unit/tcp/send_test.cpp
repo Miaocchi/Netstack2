@@ -1545,7 +1545,7 @@ TCPIP2_TEST(PacingDoesNotBlockRetransmission) {
     auto& sh = s.sh;
 
     // Establish BtlBw by sending and ACKing one segment.
-    std::vector<std::uint8_t> data(1000, 0xAB);
+    std::vector<std::uint8_t> data(2000, 0xAB);
     send.Enqueue(data.data(), data.size());
     auto seg1 = send.NextSegment(65535, sh.now_ms);
     sh.SendSegment(send, seg1);
@@ -1581,7 +1581,7 @@ TCPIP2_TEST(PacingDoesNotBlockZeroWindowProbe) {
     auto& sh = s.sh;
 
     // Establish BtlBw.
-    std::vector<std::uint8_t> data(1000, 0xAB);
+    std::vector<std::uint8_t> data(2000, 0xAB);
     send.Enqueue(data.data(), data.size());
     auto seg1 = send.NextSegment(65535, sh.now_ms);
     sh.SendSegment(send, seg1);
@@ -1611,7 +1611,7 @@ TCPIP2_TEST(PacingGateExpiresAfterDeadline) {
     auto& sh = s.sh;
 
     // Establish BtlBw.
-    std::vector<std::uint8_t> data(1000, 0xAB);
+    std::vector<std::uint8_t> data(2000, 0xAB);
     send.Enqueue(data.data(), data.size());
     auto seg1 = send.NextSegment(65535, sh.now_ms);
     sh.SendSegment(send, seg1);
@@ -1650,7 +1650,7 @@ TCPIP2_TEST(PacingResetOnClose) {
     auto& sh = s.sh;
 
     // Establish BtlBw and arm pacing gate.
-    std::vector<std::uint8_t> data(1000, 0xAB);
+    std::vector<std::uint8_t> data(2000, 0xAB);
     send.Enqueue(data.data(), data.size());
     auto seg1 = send.NextSegment(65535, sh.now_ms);
     sh.SendSegment(send, seg1);
