@@ -80,6 +80,10 @@ struct TcpHandshakeConfig {
     bool enable_window_scale = true;
     bool enable_sack = true;
     bool enable_timestamps = true;
+    /// RFC 3168 ECN negotiation: answer a SYN carrying ECE+CWR with ECE+CWR
+    /// on the SYN-ACK so the connection is recorded as ECN-enabled. Data-path
+    /// ECT marking / ECE-CWR feedback is a separate (still open) work item.
+    bool enable_ecn = true;
     std::size_t receive_memory_budget = 16 * 1024 * 1024;
     std::size_t delivery_call_budget = 16;
     std::uint64_t delayed_ack_ms = 40;
@@ -116,6 +120,9 @@ struct TcpNegotiatedOptions {
     bool sack_permitted = false;
     bool timestamps = false;
     std::uint32_t peer_timestamp = 0;
+    /// RFC 3168 ECN was negotiated: the SYN carried ECE+CWR and our SYN-ACK
+    /// confirmed it. Data-path ECT/ECE-CWR handling is not yet implemented.
+    bool ecn = false;
 };
 
 struct TcpResponse {

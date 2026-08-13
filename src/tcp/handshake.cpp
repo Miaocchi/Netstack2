@@ -197,6 +197,11 @@ TcpResponse TcpHandshakeEngine::BuildSynAck(Pcb& pcb,
     response.sequence = pcb.iss;
     response.acknowledgment = pcb.rcv_nxt;
     response.flags = static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack);
+    if (pcb.options.ecn) {
+        // Confirm the negotiated ECN capability (RFC 3168 §6.1.1).
+        response.flags = static_cast<std::uint8_t>(
+            response.flags | TcpFlag::Ece | TcpFlag::Cwr);
+    }
     response.window = pcb.response_window;
     response.syn_options = pcb.response_options;
     if (response.syn_options.timestamp_present) {
@@ -919,6 +924,10 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
     pcb.options.sack_permitted = config_.enable_sack && offered.sack_permitted;
     pcb.options.timestamps = config_.enable_timestamps && offered.timestamp_present;
     pcb.options.peer_timestamp = offered.timestamp_value;
+    // RFC 3168 negotiation: the peer announces ECN capability by setting both
+    // ECE and CWR on its SYN. Confirm only when our own stack enables ECN.
+    pcb.options.ecn = config_.enable_ecn &&
+        segment.HasFlag(TcpFlag::Ece) && segment.HasFlag(TcpFlag::Cwr);
 
     pcb.response_options.mss_present = true;
     pcb.response_options.mss = send_cap;

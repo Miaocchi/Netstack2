@@ -2916,4 +2916,77 @@ TCPIP2_TEST(PathMtuLoweredShrinksNextSendSegment) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// RFC 3168 ECN negotiation (R6 step 10, negotiation half)
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(SynOfferingEcnGetsEcnSynAck) {
+    TimerWheel timers;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+
+    // Peer announces ECN capability: SYN with ECE+CWR.
+    const auto syn = engine.OnSegment(MakeView(
+        flow, 1000, 0,
+        static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
+    TCPIP2_EXPECT_TRUE(syn.response.valid);
+    TCPIP2_EXPECT_EQ(
+        static_cast<std::uint8_t>(
+            TcpFlag::Syn | TcpFlag::Ack | TcpFlag::Ece | TcpFlag::Cwr),
+        syn.response.flags);
+
+    // Complete the handshake; the negotiated state must record ECN.
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    TcpPcbSnapshot snapshot;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, snapshot));
+    TCPIP2_EXPECT_TRUE(snapshot.options.ecn);
+}
+
+TCPIP2_TEST(SynWithoutEcnGetsPlainSynAck) {
+    TimerWheel timers;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack),
+                     syn.response.flags);
+
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    TcpPcbSnapshot snapshot;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, snapshot));
+    TCPIP2_EXPECT_FALSE(snapshot.options.ecn);
+}
+
+TCPIP2_TEST(EceOrCwrAloneDoesNotNegotiateEcn) {
+    TimerWheel timers;
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
+
+    // RFC 3168 requires BOTH ECE and CWR on the SYN; ECE alone must not
+    // negotiate ECN.
+    const auto syn = engine.OnSegment(MakeView(
+        MakeFlow(40001), 1000, 0,
+        static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece)), 100);
+    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack),
+                     syn.response.flags);
+}
+
+TCPIP2_TEST(EcnNegotiationDisabledByConfig) {
+    TimerWheel timers;
+    TcpHandshakeConfig config;
+    config.enable_ecn = false;
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
+    const FlowKey flow = MakeFlow();
+
+    const auto syn = engine.OnSegment(MakeView(
+        flow, 1000, 0,
+        static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
+    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack),
+                     syn.response.flags);
+
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    TcpPcbSnapshot snapshot;
+    TCPIP2_EXPECT_TRUE(engine.Find(flow, snapshot));
+    TCPIP2_EXPECT_FALSE(snapshot.options.ecn);
+}
+
 TCPIP2_TEST_MAIN()
