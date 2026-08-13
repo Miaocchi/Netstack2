@@ -177,6 +177,46 @@ std::vector<std::uint8_t> BuildIpv6Udp(
     return pkt;
 }
 
+/// Build IPv6 + a single 8-byte HopByHop extension header + UDP with a
+/// correct checksum (IPv6 pseudo-header over the UDP span).
+std::vector<std::uint8_t> BuildIpv6HopByHopUdp(
+    const std::uint8_t src_ip[16], const std::uint8_t dst_ip[16],
+    std::uint16_t src_port, std::uint16_t dst_port,
+    const std::vector<std::uint8_t>& payload) {
+
+    const std::size_t udp_len = 8 + payload.size();
+    std::vector<std::uint8_t> pkt;
+    pkt.reserve(40 + 8 + udp_len);
+    pkt.push_back(0x60);
+    pkt.push_back(0x00);
+    pkt.push_back(0x00);
+    pkt.push_back(0x00);
+    AppendU16(pkt, static_cast<std::uint16_t>(8 + udp_len));
+    pkt.push_back(Ipv6ExtHeaderType::HopByHop);
+    pkt.push_back(64);
+    for (int i = 0; i < 16; ++i) pkt.push_back(src_ip[i]);
+    for (int i = 0; i < 16; ++i) pkt.push_back(dst_ip[i]);
+    // HopByHop body: next header = UDP(17), hdr_ext_len = 0, six Pad1 bytes.
+    pkt.push_back(17);
+    pkt.push_back(0);
+    for (int i = 0; i < 6; ++i) pkt.push_back(0);
+
+    const std::size_t udp_offset = pkt.size();
+    AppendU16(pkt, src_port);
+    AppendU16(pkt, dst_port);
+    AppendU16(pkt, static_cast<std::uint16_t>(udp_len));
+    AppendU16(pkt, 0);  // checksum placeholder
+    for (auto b : payload) pkt.push_back(b);
+
+    const std::uint32_t seed = Ipv6PseudoHeaderSeed(src_ip, dst_ip, 17,
+                                                    static_cast<std::uint32_t>(udp_len));
+    std::uint16_t cksum = InlineChecksum(pkt.data() + udp_offset, udp_len, seed);
+    if (cksum == 0) cksum = 0xFFFF;
+    pkt[udp_offset + 6] = static_cast<std::uint8_t>((cksum >> 8) & 0xFFu);
+    pkt[udp_offset + 7] = static_cast<std::uint8_t>(cksum & 0xFFu);
+    return pkt;
+}
+
 /// Build an IPv4 packet with a specified protocol (for NotUdp testing).
 std::vector<std::uint8_t> BuildIpv4WithProtocol(
     std::uint32_t src_ip, std::uint32_t dst_ip, std::uint8_t protocol) {
@@ -375,6 +415,66 @@ TCPIP2_TEST(UdpNotUdpProtocol) {
     const UdpInputResult result = ParseIpUdpPacket(pkt.data(), pkt.size());
     TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::NotUdp),
                      static_cast<int>(result.error));
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: IPv6 walkable extension headers carry UDP (R4 step 7)
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(UdpIpv6HopByHopExtHeaderCarriesUdp) {
+    const std::uint8_t src_ip[16] = {
+        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t dst_ip[16] = {
+        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+    const std::vector<std::uint8_t> payload = {0xDE, 0xAD, 0xBE, 0xEF};
+    const std::vector<std::uint8_t> pkt = BuildIpv6HopByHopUdp(
+        src_ip, dst_ip, 5353, 53, payload);
+
+    const UdpInputResult result = ParseIpUdpPacket(pkt.data(), pkt.size());
+    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::None),
+                     static_cast<int>(result.error));
+    TCPIP2_EXPECT_EQ(std::uint16_t{5353}, result.datagram.flow.source_port);
+    TCPIP2_EXPECT_EQ(std::uint16_t{53}, result.datagram.flow.destination_port);
+    TCPIP2_EXPECT_EQ(std::size_t{4}, result.datagram.payload_length);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0xDE}, result.datagram.payload[0]);
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: IPv6 terminal headers (AH/ESP/Mobility) do NOT carry UDP (R4 step 7)
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(UdpIpv6TerminalExtHeadersDoNotCarryUdp) {
+    const std::uint8_t src_ip[16] = {
+        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t dst_ip[16] = {
+        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+
+    for (std::uint8_t terminal : {static_cast<std::uint8_t>(Ipv6ExtHeaderType::Ah),
+                                  static_cast<std::uint8_t>(Ipv6ExtHeaderType::Esp),
+                                  static_cast<std::uint8_t>(Ipv6ExtHeaderType::Mobility)}) {
+        // Fixed header chains straight into the terminal header; whatever
+        // follows is opaque and must never be parsed as UDP.
+        std::vector<std::uint8_t> pkt;
+        pkt.reserve(48);
+        pkt.push_back(0x60);
+        pkt.push_back(0x00);
+        pkt.push_back(0x00);
+        pkt.push_back(0x00);
+        AppendU16(pkt, 8);
+        pkt.push_back(terminal);
+        pkt.push_back(64);
+        for (int i = 0; i < 16; ++i) pkt.push_back(src_ip[i]);
+        for (int i = 0; i < 16; ++i) pkt.push_back(dst_ip[i]);
+        // UDP-shaped bytes after the terminal header — must be rejected.
+        AppendU16(pkt, 5353);
+        AppendU16(pkt, 53);
+        AppendU16(pkt, 8);
+        AppendU16(pkt, 0);
+
+        const UdpInputResult result = ParseIpUdpPacket(pkt.data(), pkt.size());
+        TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::NotUdp),
+                         static_cast<int>(result.error));
+    }
 }
 
 TCPIP2_TEST_MAIN();

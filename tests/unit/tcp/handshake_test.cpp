@@ -2809,6 +2809,83 @@ TCPIP2_TEST(SendSegmentUsesNegotiatedMssWithoutPmtu) {
 
 // R4: after the path MTU to a peer shrinks, every flow to that peer sends
 // smaller segments immediately (RFC 1191 / RFC 8201 PMTUD).
+namespace {
+
+/// Append a generic 8-byte extension header whose next-header field links to
+/// @p next. Header bytes: next_header, hdr_ext_len=0 (8 total), six Pad1.
+void AppendExtHeader8(std::vector<std::uint8_t>& pkt, std::uint8_t next) {
+    pkt.push_back(next);
+    pkt.push_back(0);
+    for (int i = 0; i < 6; ++i) pkt.push_back(0);
+}
+
+} // namespace
+
+// R4 step 7: walkable IPv6 extension headers must still deliver TCP, while
+// terminal headers (AH/ESP/Mobility) must NOT be treated as transparent carriers.
+TCPIP2_TEST(Ipv6ExtHeadersCarryTcpButTerminalDoNot) {
+    std::uint8_t src[16];
+    std::uint8_t dst[16];
+    for (int i = 0; i < 16; ++i) { src[i] = 0; dst[i] = 0; }
+    src[0] = 0x20; src[1] = 0x01; src[15] = 1;
+    dst[0] = 0x20; dst[1] = 0x01; dst[15] = 2;
+
+    // Builder: IPv6 fixed header + walkable chain + 20-byte TCP (SYN) with a
+    // valid IPv6 pseudo-header checksum.
+    auto build = [&](const std::vector<std::uint8_t>& chain_nh,
+                     std::uint8_t first_nh) {
+        const std::size_t ext_bytes = chain_nh.size() * 8;
+        const std::size_t payload_len = ext_bytes + 20;  // chain + TCP header
+        std::vector<std::uint8_t> pkt;
+        pkt.reserve(40 + payload_len);
+        pkt.push_back(0x60);
+        pkt.push_back(0x00); pkt.push_back(0x00); pkt.push_back(0x00);
+        pkt.push_back(static_cast<std::uint8_t>(payload_len >> 8));
+        pkt.push_back(static_cast<std::uint8_t>(payload_len & 0xFF));
+        pkt.push_back(first_nh);
+        pkt.push_back(64);
+        for (int i = 0; i < 16; ++i) pkt.push_back(src[i]);
+        for (int i = 0; i < 16; ++i) pkt.push_back(dst[i]);
+        for (std::uint8_t nh : chain_nh) AppendExtHeader8(pkt, nh);
+        const std::size_t tcp_off = pkt.size();
+        pkt.resize(pkt.size() + 20, 0);
+        Write16(pkt.data() + tcp_off, 40000);      // src port
+        Write16(pkt.data() + tcp_off + 2, 443);    // dst port
+        Write32(pkt.data() + tcp_off + 4, 1000);   // seq
+        pkt[tcp_off + 12] = 0x50;                  // DO=5, no options
+        pkt[tcp_off + 13] = TcpFlag::Syn;
+        Write16(pkt.data() + tcp_off + 14, 32768); // window
+        const std::uint32_t seed = Ipv6PseudoHeaderSeed(src, dst, 6,
+                                                        static_cast<std::uint32_t>(20));
+        const std::uint16_t cksum = InternetChecksum(pkt.data() + tcp_off, 20, seed);
+        Write16(pkt.data() + tcp_off + 16, cksum);
+        return pkt;
+    };
+
+    // HopByHop -> TCP: delivered.
+    const auto one = build({6}, Ipv6ExtHeaderType::HopByHop);
+    const auto r1 = ParseIpTcpPacket(one.data(), one.size());
+    TCPIP2_EXPECT_EQ(TcpInputError::None, r1.error);
+    TCPIP2_EXPECT_TRUE(r1.segment.HasFlag(TcpFlag::Syn));
+    TCPIP2_EXPECT_EQ(std::uint16_t{40000}, r1.segment.flow.source_port);
+
+    // HopByHop -> DestinationOptions -> TCP chain: delivered.
+    const auto two = build({Ipv6ExtHeaderType::DestinationOptions, 6},
+                           Ipv6ExtHeaderType::HopByHop);
+    const auto r2 = ParseIpTcpPacket(two.data(), two.size());
+    TCPIP2_EXPECT_EQ(TcpInputError::None, r2.error);
+    TCPIP2_EXPECT_TRUE(r2.segment.flow.source.IsIpv6());
+
+    // Terminal headers (AH/ESP/Mobility) are NOT transparent carriers.
+    for (std::uint8_t terminal : {static_cast<std::uint8_t>(Ipv6ExtHeaderType::Ah),
+                                  static_cast<std::uint8_t>(Ipv6ExtHeaderType::Esp),
+                                  static_cast<std::uint8_t>(Ipv6ExtHeaderType::Mobility)}) {
+        const auto term = build({}, terminal);
+        TCPIP2_EXPECT_EQ(TcpInputError::NotTcp,
+                         ParseIpTcpPacket(term.data(), term.size()).error);
+    }
+}
+
 TCPIP2_TEST(PathMtuLoweredShrinksNextSendSegment) {
     PktBufferPool pool(8, 2048); // must outlive the engine (retained refs)
     TimerWheel timers;
