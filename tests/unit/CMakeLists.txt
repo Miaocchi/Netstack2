@@ -58,6 +58,11 @@ tcpip2_add_unit_test(tcp_send_test tcp/send_test.cpp)
 tcpip2_add_unit_test(tcp_congestion_test tcp/congestion_test.cpp)
 tcpip2_add_unit_test(tcp_netem_cc_test tcp/netem_cc_test.cpp)
 tcpip2_add_unit_test(fq_codel_test qos/fq_codel_test.cpp)
+# The hot-path allocation hook overrides the global operator new/delete, which
+# conflicts with ThreadSanitizer's own replacements; skip it under TSan.
+if(NOT ENABLE_TSAN)
+    tcpip2_add_unit_test(hotpath_alloc_test hotpath_alloc_test.cpp)
+endif()
 tcpip2_add_unit_test(tcp_session_test tcp_session_test.cpp)
 tcpip2_add_unit_test(udp_parser_test udp/udp_parser_test.cpp)
 tcpip2_add_unit_test(shard_udp_test shard_udp_test.cpp)

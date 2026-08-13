@@ -143,8 +143,86 @@ private:
         std::uint64_t enqueue_time_ms = 0;
     };
 
+    /**
+     * Capacity-retaining ring queue for one flow (R6: no per-packet heap
+     * allocation). The backing vector grows only when the queue exceeds its
+     * previous peak, and is never shrunk, so a flow that drains and re-fills
+     * reuses its storage instead of allocating. clear() releases the leases
+     * but keeps the capacity. Growth is bounded by max_queue_length.
+     */
+    class FlowQueue {
+    public:
+        FlowQueue() = default;
+        FlowQueue(const FlowQueue&) = delete;
+        FlowQueue& operator=(const FlowQueue&) = delete;
+        FlowQueue(FlowQueue&& other) noexcept
+            : slots_(std::move(other.slots_)),
+              head_(other.head_),
+              count_(other.count_) {
+            other.head_ = 0;
+            other.count_ = 0;
+        }
+        FlowQueue& operator=(FlowQueue&& other) noexcept {
+            slots_ = std::move(other.slots_);
+            head_ = other.head_;
+            count_ = other.count_;
+            other.head_ = 0;
+            other.count_ = 0;
+            return *this;
+        }
+        ~FlowQueue() = default;
+
+        bool empty() const noexcept { return count_ == 0; }
+        std::size_t size() const noexcept { return count_; }
+
+        void push_back(QueuedPacket&& pkt) noexcept {
+            if (count_ == slots_.size()) Grow();
+            const std::size_t idx = (head_ + count_) % slots_.size();
+            slots_[idx] = std::move(pkt);
+            ++count_;
+        }
+
+        QueuedPacket& front() noexcept { return slots_[head_]; }
+        const QueuedPacket& front() const noexcept { return slots_[head_]; }
+
+        QueuedPacket pop_front() noexcept {
+            QueuedPacket out = std::move(slots_[head_]);
+            slots_[head_] = QueuedPacket{};
+            head_ = (head_ + 1) % slots_.size();
+            --count_;
+            return out;
+        }
+
+        /// Release all elements but retain the backing storage for reuse.
+        void clear() noexcept {
+            while (count_ != 0) {
+                slots_[head_] = QueuedPacket{};
+                head_ = (head_ + 1) % slots_.size();
+                --count_;
+            }
+            head_ = 0;
+        }
+
+    private:
+        void Grow() noexcept {
+            const std::size_t new_cap = slots_.empty() ? 8 : slots_.size() * 2;
+            std::vector<QueuedPacket> grown;
+            grown.resize(new_cap);
+            for (std::size_t i = 0; i < count_; ++i) {
+                const std::size_t idx = (head_ + i) % slots_.size();
+                grown[i] = std::move(slots_[idx]);
+            }
+            slots_ = std::move(grown);
+            head_ = 0;
+        }
+
+        std::vector<QueuedPacket> slots_;
+        std::size_t head_ = 0;
+        std::size_t count_ = 0;
+    };
+
     struct Flow {
-        std::deque<QueuedPacket> queue;
+        FlowQueue queue;
         std::size_t queue_bytes = 0;
         std::int64_t deficit = 0;
         FlowList list = FlowList::None;
