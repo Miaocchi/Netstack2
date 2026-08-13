@@ -467,6 +467,21 @@ TCPIP2_TEST(BbrRTpropIgnoresZeroRtt) {
     TCPIP2_EXPECT_EQ(c.RTprop(), 50ULL);
 }
 
+TCPIP2_TEST(BbrRTpropExpiresStaleSamples) {
+    BbrController c(1460);
+    c.OnAck(MakeBbrSample(100, 1000000, 50));
+    c.OnAck(MakeBbrSample(110, 1000000, 30));
+    c.OnAck(MakeBbrSample(120, 1000000, 40));  // higher than min
+    TCPIP2_EXPECT_EQ(c.RTprop(), 30ULL);
+
+    // A path change raises RTT; the old 30ms sample expires after the 10s
+    // window, so RTprop re-measures (min filter over the current window only).
+    c.OnAck(MakeBbrSample(10150, 1000000, 80));
+    TCPIP2_EXPECT_EQ(c.RTprop(), 80ULL);
+    c.OnAck(MakeBbrSample(10160, 1000000, 70));
+    TCPIP2_EXPECT_EQ(c.RTprop(), 70ULL);
+}
+
 TCPIP2_TEST(BbrStartupExitsAfterThreeRoundsNoGrowth) {
     BbrController c(1460);
 

@@ -252,10 +252,28 @@ void BbrController::UpdateBtlBw(const RateSample& rs) noexcept {
 
 void BbrController::UpdateRTprop(const RateSample& rs) noexcept {
     if (rs.rtt_ms == 0) return;
-    if (rtprop_ == 0 || rs.rtt_ms < rtprop_) {
-        rtprop_ = rs.rtt_ms;
-        rtprop_stamp_ms_ = rs.now_ms;
+
+    // Timestamped min filter over the last kRtpropWindowMs: samples older
+    // than the window expire so the estimate re-measures after a path change
+    // (R5 requirement 5, not a lifetime monotonic minimum).
+    const std::uint64_t now = rs.now_ms;
+    const std::uint8_t pos = rtprop_pos_;
+    rtprop_pos_ = static_cast<std::uint8_t>((rtprop_pos_ + 1U) % kRtpropSampleCount);
+    if (rtprop_count_ < kRtpropSampleCount) ++rtprop_count_;
+    rtprop_samples_[pos] = RtpropSample{rs.rtt_ms, now};
+
+    std::uint64_t min_rtt = 0;
+    std::uint64_t min_time = 0;
+    for (std::uint8_t i = 0; i < rtprop_count_; ++i) {
+        const RtpropSample& s = rtprop_samples_[i];
+        if (now - s.time_ms > kRtpropWindowMs) continue;  // expired
+        if (min_rtt == 0 || s.rtt_ms < min_rtt) {
+            min_rtt = s.rtt_ms;
+            min_time = s.time_ms;
+        }
     }
+    rtprop_ = min_rtt;
+    rtprop_stamp_ms_ = min_time;
 }
 
 void BbrController::CheckStartupDone() noexcept {
@@ -358,6 +376,9 @@ void BbrController::Reset() noexcept {
     btlbw_ = 0;
     rtprop_ = 0;
     rtprop_stamp_ms_ = 0;
+    rtprop_pos_ = 0;
+    rtprop_count_ = 0;
+    for (auto& s : rtprop_samples_) s = RtpropSample{};
     state_ = State::Startup;
     startup_rounds_no_growth_ = 0;
     startup_prev_round_max_bw_ = 0;

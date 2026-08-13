@@ -127,8 +127,20 @@ private:
 
     // Estimated bottleneck bandwidth (bytes/sec) and min RTT (ms).
     std::uint64_t btlbw_ = 0;
+    // Timestamped min filter over the last ~kRtpropSampleCount samples;
+    // samples older than kRtpropWindowMs expire so the estimate re-measures
+    // after path changes (R5 requirement: not a lifetime monotonic minimum).
     std::uint64_t rtprop_ = 0;  // 0 means "unknown"
     std::uint64_t rtprop_stamp_ms_ = 0;
+    static constexpr std::uint64_t kRtpropWindowMs = 10000;
+    static constexpr std::uint8_t kRtpropSampleCount = 16;
+    struct RtpropSample {
+        std::uint64_t rtt_ms;
+        std::uint64_t time_ms;
+    };
+    RtpropSample rtprop_samples_[kRtpropSampleCount] = {};
+    std::uint8_t rtprop_count_ = 0;
+    std::uint8_t rtprop_pos_ = 0;
 
     // State machine.
     State state_ = State::Startup;

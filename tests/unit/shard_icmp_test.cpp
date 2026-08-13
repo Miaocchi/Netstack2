@@ -547,6 +547,60 @@ TCPIP2_TEST(ShardIcmpv4FragNeededUpdatesPmtu) {
 }
 
 // ---------------------------------------------------------------------------
+// Test 1c: fragment-reassembled flow + PMTU lowering combination (R4 #5)
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(ShardFragmentedFlowAttributedByPmtuIcmp) {
+    const std::uint32_t us = 0x0a000002u;    // 10.0.0.2
+    const std::uint32_t peer = 0x01020304u;  // 1.2.3.4
+    const std::uint16_t our_port = 443;
+    const std::uint16_t peer_port = 40000;
+
+    NullPacketIo io(1);
+    PktBufferPool pool(16, 2048);
+    std::unique_ptr<IPacketQueue> queue = io.OpenQueue(0);
+    queue->SetBufferPool(&pool);
+    StackShard shard(0, pool, queue.get(), 128);
+    TCPIP2_EXPECT_TRUE(shard.Start());
+
+    // Establish the flow via a FRAGMENTED SYN: the fragments reassemble in
+    // the shard and feed the TCP handshake engine (fragment + TCP RX path).
+    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
+        peer, us, peer_port, our_port, 1000, 0, test::TcpFlags::Syn, {});
+    std::vector<std::uint8_t> tcp_segment(syn.begin() + 20, syn.end());
+    const std::size_t split = std::min(tcp_segment.size(), std::size_t{8});
+    std::vector<std::uint8_t> frag1_payload(tcp_segment.begin(),
+                                             tcp_segment.begin() + split);
+    std::vector<std::uint8_t> frag2_payload(tcp_segment.begin() + split,
+                                             tcp_segment.end());
+    const std::vector<std::uint8_t> frag1 = test::PacketBuilder::BuildIpv4TcpFragment(
+        peer, us, 0x1234, 0, true, frag1_payload);
+    const std::vector<std::uint8_t> frag2 = test::PacketBuilder::BuildIpv4TcpFragment(
+        peer, us, 0x1234, 1, false, frag2_payload);
+    Inject(io, pool, frag1);
+    Inject(io, pool, frag2);
+    TCPIP2_EXPECT_TRUE(WaitForHalfOpen(shard, 1));
+
+    // FragNeeded quoting our original packet (us -> peer, ports 443->40000).
+    // Attribution runs against the flow created through fragment reassembly;
+    // this is the fragment + PMTU combination.
+    const std::vector<std::uint8_t> pkt = BuildIpv4IcmpFragNeeded(
+        0x0a000099u, us, 1200, us, peer, our_port, peer_port);
+    Inject(io, pool, pkt);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    shard.Stop();
+
+    const std::uint8_t dst_bytes[4] = {1, 2, 3, 4};
+    const PmtuLookupResult result = shard.LookupPmtu(dst_bytes, 4, NowMs());
+    TCPIP2_EXPECT_TRUE(result.found);
+    TCPIP2_EXPECT_EQ(std::uint32_t{1200}, result.pmtu);
+
+    pool.DrainReturnQueue();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+// ---------------------------------------------------------------------------
 // Test 1b: ICMPv4 for a peer with no matching flow must NOT update PMTU
 // ---------------------------------------------------------------------------
 
