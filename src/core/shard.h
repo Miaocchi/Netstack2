@@ -155,8 +155,7 @@ private:
     void ProcessTcpSegment(const TcpSegmentView& segment, std::uint64_t now_ms) noexcept;
     void HandleFragment(const std::uint8_t* packet, std::size_t length,
                          std::uint64_t now_ms) noexcept;
-    void HandleIcmp(const std::uint8_t* packet, std::size_t length,
-                    std::uint64_t now_ms) noexcept;
+    void HandleIcmp(BufferLease& lease, std::uint64_t now_ms) noexcept;
     /// After an ICMP error lowered the cached PMTU for @p peer, tell the TCP
     /// engine so established flows to that peer reduce their send MSS.
     void NotifyTcpPmtuLowered(const IpAddress& peer, std::uint64_t now_ms) noexcept;
@@ -166,6 +165,9 @@ private:
     bool QuotedPacketMatchesFlow(const std::uint8_t* quoted,
                                  std::size_t quoted_len,
                                  std::uint8_t family) const noexcept;
+    /// Enqueue an in-place-built ICMP echo reply through the generic FQ-CoDel
+    /// egress scheduler. The lease is consumed (sent or dropped on failure).
+    void SendEchoReply(BufferLease lease, const FlowKey& reply_flow) noexcept;
     void HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept;
     void HandleReassembledUdp(const IpAddress& source, const IpAddress& destination,
                                BufferLease&& lease) noexcept;

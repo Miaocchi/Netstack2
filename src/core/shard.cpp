@@ -38,6 +38,7 @@
 #include <tcp/output.h>
 #include <tcp/segment.h>
 
+#include <ip/checksum.h>
 #include <ip/icmpv4.h>
 #include <ip/icmpv6.h>
 #include <ip/ipv4.h>
@@ -511,7 +512,7 @@ void StackShard::ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexce
                 : static_cast<std::uint8_t>(0);
 
             if (protocol == 1 || protocol == 58) {
-                HandleIcmp(lease.Data(), lease.Size(), now_ms);
+                HandleIcmp(lease, now_ms);
                 return;
             }
             if (protocol == 17) {
@@ -759,8 +760,21 @@ bool StackShard::QuotedPacketMatchesFlow(const std::uint8_t* quoted,
     return tcp_->HasFlow(incoming);
 }
 
-void StackShard::HandleIcmp(const std::uint8_t* packet, std::size_t length,
-                            std::uint64_t now_ms) noexcept {
+void StackShard::SendEchoReply(BufferLease lease, const FlowKey& reply_flow) noexcept {
+    if (fq_codel_.QueueLength() >= kTcpTxBudget) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (!fq_codel_.Enqueue(std::move(lease),
+                           static_cast<std::uint32_t>(FlowHash(reply_flow) >> 32),
+                           clock_->NowMs())) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void StackShard::HandleIcmp(BufferLease& lease, std::uint64_t now_ms) noexcept {
+    std::uint8_t* const packet = lease.Data();
+    const std::size_t length = lease.Size();
     if (packet == nullptr || length == 0) return;
 
     const std::uint8_t version = static_cast<std::uint8_t>(packet[0] >> 4);
@@ -795,8 +809,46 @@ void StackShard::HandleIcmp(const std::uint8_t* packet, std::size_t length,
             NotifyTcpPmtuLowered(
                 IpAddress::Ipv4(orig_dst[0], orig_dst[1], orig_dst[2], orig_dst[3]),
                 now_ms);
+            return;
         }
-        // TimeExceeded and ParameterProblem: no PMTU action for now.
+
+        if (icmp.header.type == Icmpv4Type::Echo) {
+            // RFC 792 echo reply, built in place on the received lease. Do
+            // not reply to requests addressed to multicast/broadcast groups.
+            if (ip.header.dst_ip[0] >= 224) return;
+
+            // Swap IPv4 src/dst and refresh TTL.
+            for (std::size_t i = 0; i < 4; ++i) {
+                std::swap(packet[12 + i], packet[16 + i]);
+            }
+            packet[8] = 64;
+
+            // Flip type to Echo Reply and recompute the ICMP checksum.
+            std::uint8_t* const msg = packet + ip.header.header_length;
+            msg[0] = Icmpv4Type::EchoReply;
+            msg[2] = 0;
+            msg[3] = 0;
+            const std::uint16_t icmp_cksum = InternetChecksum(
+                msg, ip.header.payload_length, 0);
+            msg[2] = static_cast<std::uint8_t>(icmp_cksum >> 8);
+            msg[3] = static_cast<std::uint8_t>(icmp_cksum & 0xFFu);
+
+            // Refresh the IPv4 header checksum.
+            packet[10] = 0;
+            packet[11] = 0;
+            const std::uint16_t ip_cksum = InternetChecksum(packet, 20, 0);
+            packet[10] = static_cast<std::uint8_t>(ip_cksum >> 8);
+            packet[11] = static_cast<std::uint8_t>(ip_cksum & 0xFFu);
+
+            FlowKey reply_flow;
+            reply_flow.source = IpAddress::Ipv4(packet[12], packet[13],
+                                                packet[14], packet[15]);
+            reply_flow.destination = IpAddress::Ipv4(packet[16], packet[17],
+                                                     packet[18], packet[19]);
+            reply_flow.protocol = 1;
+            SendEchoReply(std::move(lease), reply_flow);
+        }
+        // TimeExceeded, ParameterProblem and EchoReply: no further action.
     } else if (version == 6) {
         const Ipv6ParseResult ip = ParseIpv6(packet, length);
         if (ip.error != Ipv6ParseResult::Error::None) return;
@@ -826,6 +878,39 @@ void StackShard::HandleIcmp(const std::uint8_t* packet, std::size_t length,
             const std::uint8_t* orig_dst = icmp.header.quoted_payload + 24;
             pmtu_cache_.LowerFromIcmp(orig_dst, 6, icmp.header.mtu, now_ms);
             NotifyTcpPmtuLowered(IpAddress::Ipv6(orig_dst), now_ms);
+            return;
+        }
+
+        if (icmp.header.type == Icmpv6Type::EchoRequest) {
+            // RFC 4443 §4.1 echo reply, built in place. Do not reply to
+            // requests addressed to a multicast group.
+            if (ip.header.dst_ip[0] == 0xFF) return;
+
+            // Swap IPv6 src/dst and refresh hop limit.
+            for (std::size_t i = 0; i < 16; ++i) {
+                std::swap(packet[8 + i], packet[24 + i]);
+            }
+            packet[7] = 64;
+
+            // Flip type to Echo Reply and recompute the ICMPv6 checksum
+            // (pseudo-header uses the new source/destination).
+            std::uint8_t* const msg = packet + ip.payload_offset;
+            msg[0] = Icmpv6Type::EchoReply;
+            msg[2] = 0;
+            msg[3] = 0;
+            const std::uint32_t seed = Ipv6PseudoHeaderSeed(
+                packet + 8, packet + 24, 58,
+                static_cast<std::uint32_t>(ip.payload_length));
+            const std::uint16_t icmp_cksum = InternetChecksum(
+                msg, ip.payload_length, seed);
+            msg[2] = static_cast<std::uint8_t>(icmp_cksum >> 8);
+            msg[3] = static_cast<std::uint8_t>(icmp_cksum & 0xFFu);
+
+            FlowKey reply_flow;
+            reply_flow.source = IpAddress::Ipv6(packet + 8);
+            reply_flow.destination = IpAddress::Ipv6(packet + 24);
+            reply_flow.protocol = 58;
+            SendEchoReply(std::move(lease), reply_flow);
         }
     }
 }
