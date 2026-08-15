@@ -45,6 +45,7 @@
 #include <ip/ipv6.h>
 #include <tcpip2/flow.h>
 #include <udp/input.h>
+#include <udp/output.h>
 
 namespace tcpip2 {
 
@@ -150,12 +151,44 @@ bool StackShard::Start() noexcept {
         tcp_.reset();
         return false;
     }
+    try {
+        udp_ = std::make_unique<UdpFlowTable>(
+            udp_config_, session_factory_, clock_,
+            [this](ShardMessage&& msg) noexcept {
+                return control_inbox_.Push(std::move(msg));
+            });
+        // Remote UDP datagrams are serialized and routed through the same
+        // FQ-CoDel egress scheduler as TCP (R6: TCP and UDP share the path).
+        udp_->SetEgressEmitter([this](const FlowKey& flow, BufferLease& payload) {
+            BufferLease tx = pool_.Allocate();
+            if (!tx) return false;
+            const UdpOutputResult out = BuildUdpPacket(
+                flow, payload.Data(), payload.Size(), tx.Data(), tx.Capacity());
+            if (out.error != UdpOutputError::None) {
+                return false;
+            }
+            tx.Resize(out.packet_length);
+            if (!fq_codel_.Enqueue(std::move(tx),
+                                   static_cast<std::uint32_t>(FlowHash(flow) >> 32),
+                                   clock_->NowMs())) {
+                packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
+            payload.Reset();
+            return true;
+        });
+    } catch (...) {
+        udp_.reset();
+        tcp_.reset();
+        return false;
+    }
     stop_requested_.store(false, std::memory_order_relaxed);
     running_.store(true, std::memory_order_relaxed);
     try {
         thread_ = std::thread([this] { Run(); });
     } catch (...) {
         running_.store(false, std::memory_order_relaxed);
+        udp_.reset();
         tcp_.reset();
         return false;
     }
@@ -182,6 +215,10 @@ void StackShard::Stop() noexcept {
         thread_.join();
     }
     running_.store(false, std::memory_order_release);
+    // Quiesce UDP session callbacks (adapter thread) before releasing the
+    // table so no message can arrive after it is gone.
+    if (udp_) udp_->Shutdown();
+    udp_.reset();
     tcp_.reset();
 }
 
@@ -397,6 +434,12 @@ void StackShard::EventLoopIteration() noexcept {
         if (msg.type == ShardMessageType::kFlowAbort && tcp_) {
             tcp_->AbortFlow(msg.flow_id, msg.generation);
         }
+        if (msg.type == ShardMessageType::kUdpSessionData && udp_) {
+            udp_->OnRemoteData(msg.flow_id.value, msg.data);
+        }
+        if (msg.type == ShardMessageType::kUdpSessionClosed && udp_) {
+            udp_->OnFlowClosed(msg.flow_id.value);
+        }
         messages_processed_.fetch_add(1, std::memory_order_relaxed);
         // Release any carried data.
         msg.data.Reset();
@@ -408,6 +451,7 @@ void StackShard::EventLoopIteration() noexcept {
     timer_.AdvanceTo(now_ms);
     reassembler_.Purge(now_ms);
     pmtu_cache_.Purge(now_ms);
+    if (udp_) udp_->PurgeExpired(now_ms);
     if (tcp_) {
         tcp_->PumpSessionDeliveries(now_ms, kControlInboxBudget);
         TcpResponse response;
@@ -659,7 +703,17 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
             ? shard_id_
             : dispatcher_->FlowShard(udp.flow);
         if (owner == shard_id_) {
-            udp_datagrams_received_.fetch_add(1, std::memory_order_relaxed);
+            // R7: local reassembled UDP is dispatched to the flow table
+            // (previously counted-and-dropped). Copy the payload into a pool
+            // lease and route through HandleReassembledUdp.
+            BufferLease local = pool_.Allocate();
+            if (!local || result.total_length > local.Capacity()) {
+                packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            std::memcpy(local.Data(), result.payload.data(), result.total_length);
+            local.Resize(result.total_length);
+            HandleReassembledUdp(src, dst, std::move(local));
             return;
         }
 
@@ -682,10 +736,22 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
     packets_dropped_.fetch_add(1, std::memory_order_relaxed);
 }
 
-void StackShard::HandleUdp(BufferLease&& lease, std::uint64_t /*now_ms*/) noexcept {
-    (void)lease;
+void StackShard::HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept {
     udp_datagrams_received_.fetch_add(1, std::memory_order_relaxed);
-    // Full UDP flow tracking is future work. The lease is consumed (dropped).
+    if (!udp_ || !lease) return;
+    const UdpInputResult input = ParseIpUdpPacket(lease.Data(), lease.Size());
+    if (input.error != UdpInputResult::Error::None) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    // Client datagram -> remote session (flow table opens the adapter session
+    // on the first packet and forwards the payload).
+    const UdpFlowTable::Dispatch d = udp_->OnClientDatagram(
+        input.datagram.flow, input.datagram.payload,
+        input.datagram.payload_length, now_ms);
+    if (d != UdpFlowTable::Dispatch::Accepted) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void StackShard::HandleReassembledUdp(const IpAddress& source, const IpAddress& destination,
@@ -701,6 +767,12 @@ void StackShard::HandleReassembledUdp(const IpAddress& source, const IpAddress& 
         return;
     }
     udp_datagrams_received_.fetch_add(1, std::memory_order_relaxed);
+    if (!udp_) return;
+    const UdpFlowTable::Dispatch d = udp_->OnClientDatagram(
+        udp.flow, udp.payload, udp.payload_length, clock_->NowMs());
+    if (d != UdpFlowTable::Dispatch::Accepted) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 bool StackShard::RedirectPacket(std::size_t target_shard, PacketEnvelope&& envelope) noexcept {

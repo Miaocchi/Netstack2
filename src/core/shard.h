@@ -29,6 +29,7 @@
 #include <tcpip2/packet_io.h>
 #include <tcpip2/session_factory.h>
 #include <tcpip2/transport_session.h>
+#include <udp/flow_table.h>
 
 #include <core/inbox_mpsc.h>
 #include <core/inbox_spsc.h>
@@ -125,6 +126,9 @@ public:
     std::size_t UdpDatagramsReceived() const noexcept {
         return udp_datagrams_received_.load(std::memory_order_relaxed);
     }
+    std::size_t UdpFlowCount() const noexcept {
+        return udp_ != nullptr ? udp_->Size() : 0;
+    }
     std::size_t RedirectedPackets() const noexcept {
         return redirected_packets_.load(std::memory_order_relaxed);
     }
@@ -203,6 +207,8 @@ private:
     ThreadOwnershipGuard ownership_;
     TimerWheel timer_;
     std::unique_ptr<TcpHandshakeEngine> tcp_;
+    std::unique_ptr<UdpFlowTable> udp_;
+    UdpFlowConfig udp_config_;
     FragmentReassembler reassembler_;
     PmtuCache pmtu_cache_;
     FqCoDelScheduler fq_codel_;

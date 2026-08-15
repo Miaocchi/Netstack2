@@ -32,6 +32,8 @@ enum class ShardMessageType {
     kSessionClosed,
     kFlowClose,
     kFlowAbort,
+    kUdpSessionData,
+    kUdpSessionClosed,
     kStop,
 };
 

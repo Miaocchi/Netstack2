@@ -38,6 +38,8 @@ add_library(tcpip2 STATIC
     qos/fq_codel.cpp
     udp/udp.cpp
     udp/input.cpp
+    udp/output.cpp
+    udp/flow_table.cpp
     session/tcp_session.cpp
 )
 

@@ -185,7 +185,7 @@ TCPIP2_TEST(RuntimeInjectPacketReceived) {
     TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(lease)));
 
     // Wait for the shard to receive it.
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return rt.Shard(0)->PacketsReceived() > 0; }));
     StackShard* shard = rt.Shard(0);
     TCPIP2_EXPECT_TRUE(shard != nullptr);
     TCPIP2_EXPECT_TRUE(shard->PacketsReceived() > 0);
@@ -238,9 +238,8 @@ TCPIP2_TEST(RuntimeCustomQueueShardMapping) {
     TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(queue_zero_lease)));
     TCPIP2_EXPECT_TRUE(io.Inject(1, std::move(queue_one_lease)));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    TCPIP2_EXPECT_TRUE(rt.Shard(2)->PacketsReceived() > 0);
-    TCPIP2_EXPECT_TRUE(rt.Shard(3)->PacketsReceived() > 0);
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return rt.Shard(2)->PacketsReceived() > 0; }));
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return rt.Shard(3)->PacketsReceived() > 0; }));
 
     rt.Stop();
 }
@@ -263,7 +262,7 @@ TCPIP2_TEST(RuntimeMultipleQueuesOneShard) {
         TCPIP2_EXPECT_TRUE(io.Inject(queue_id, std::move(lease)));
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return rt.Shard(0)->PacketsReceived() >= 2; }));
     TCPIP2_EXPECT_EQ(std::size_t{2}, rt.Shard(0)->PacketsReceived());
     rt.Stop();
 }

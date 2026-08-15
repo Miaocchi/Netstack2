@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <thread>
 #include <vector>
 
@@ -15,10 +16,21 @@
 #include <tcpip2/packet_io.h>
 
 #include <core/shard.h>
+#include <ip/ipv4.h>
+#include <udp/udp.h>
 
+#include "FakeUdpSession.h"
 #include "Test.h"
 
 using namespace tcpip2;
+
+bool WaitFor(const std::function<bool()>& predicate) {
+    for (int i = 0; i < 300; ++i) {
+        if (predicate()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return predicate();
+}
 
 namespace {
 
@@ -213,6 +225,110 @@ TCPIP2_TEST(ShardNonUdpNonTcpDropped) {
 
     TCPIP2_EXPECT_TRUE(shard.PacketsDropped() > dropped_before);
     TCPIP2_EXPECT_EQ(udp_before, shard.UdpDatagramsReceived());
+
+    pool.DrainReturnQueue();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+// ---------------------------------------------------------------------------
+// R7: UDP flow table integration through the StackShard
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(ShardUdpFlowOpensSessionAndForwardsDatagram) {
+    NullPacketIo io(1);
+    PktBufferPool pool(16, 2048);
+    test::FakeSessionFactory factory;
+    std::unique_ptr<IPacketQueue> queue = io.OpenQueue(0);
+    queue->SetBufferPool(&pool);
+    StackShard shard(0, pool, queue.get(), 128, &factory);
+    TCPIP2_EXPECT_TRUE(shard.Start());
+
+    const std::vector<std::uint8_t> pkt = BuildValidIpv4Udp(
+        0x0a000001u, 0x0a000002u, 12345, 53);
+    BufferLease lease = pool.Allocate();
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
+    std::memcpy(lease.Data(), pkt.data(), pkt.size());
+    lease.Resize(pkt.size());
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(lease)));
+
+    // First client datagram opens the adapter session and forwards the payload.
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return factory.SessionCount() == 1; }));
+    TCPIP2_EXPECT_EQ(std::size_t{1}, shard.UdpFlowCount());
+    shard.Stop();
+
+    TCPIP2_EXPECT_EQ(std::size_t{1}, factory.OpenCalls());
+    const auto session = factory.Session(0);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, session->SendCalls());
+    // BuildValidIpv4Udp carries payload {1,2,3,4}.
+    TCPIP2_EXPECT_EQ(std::size_t{4}, session->Received().size());
+    TCPIP2_EXPECT_EQ(std::uint8_t{1}, session->Received()[0]);
+    TCPIP2_EXPECT_EQ(std::uint8_t{4}, session->Received()[3]);
+
+    pool.DrainReturnQueue();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+TCPIP2_TEST(ShardUdpRemoteDatagramEgressesThroughScheduler) {
+    NullPacketIo io(1);
+    PktBufferPool pool(16, 2048);
+    test::FakeSessionFactory factory;
+    std::unique_ptr<IPacketQueue> queue = io.OpenQueue(0);
+    queue->SetBufferPool(&pool);
+    StackShard shard(0, pool, queue.get(), 128, &factory);
+    TCPIP2_EXPECT_TRUE(shard.Start());
+
+    // Client datagram opens the flow/session.
+    const std::vector<std::uint8_t> pkt = BuildValidIpv4Udp(
+        0x0a000001u, 0x0a000002u, 12345, 53);
+    BufferLease lease = pool.Allocate();
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
+    std::memcpy(lease.Data(), pkt.data(), pkt.size());
+    lease.Resize(pkt.size());
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(lease)));
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return factory.SessionCount() == 1; }));
+
+    // A remote datagram arrives through the session's data callback. The
+    // shard serializes it (reversed flow: 10.0.0.2:53 -> 10.0.0.1:12345) and
+    // routes it through the shared FQ-CoDel egress scheduler.
+    const std::vector<std::uint8_t> remote = {0xAA, 0xBB, 0xCC, 0xDD};
+    const ReceiveStatus st = factory.Session(0)->PushRemote(remote, pool);
+    TCPIP2_EXPECT_EQ(ReceiveStatus::Accepted, st);
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return io.EgressSnapshot(0).size() > 0; }));
+    shard.Stop();
+
+    const auto egress = io.EgressSnapshot(0);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, egress.size());
+    if (egress.empty()) {
+        pool.DrainReturnQueue();
+        return;
+    }
+    const auto& emitted = egress[0];
+    const Ipv4ParseResult ip = ParseIpv4(emitted.data(), emitted.size());
+    TCPIP2_EXPECT_EQ(Ipv4ParseError::None, ip.error);
+    if (ip.error != Ipv4ParseError::None) {
+        pool.DrainReturnQueue();
+        return;
+    }
+    // Reversed flow: source = remote endpoint 10.0.0.2:53.
+    TCPIP2_EXPECT_EQ(std::uint8_t{0x0a}, ip.header.src_ip[0]);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0x02}, ip.header.src_ip[3]);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0x0a}, ip.header.dst_ip[0]);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0x01}, ip.header.dst_ip[3]);
+    const UdpParseResult udp = ParseUdpDatagram(
+        IpAddress::Ipv4(ip.header.src_ip[0], ip.header.src_ip[1],
+                        ip.header.src_ip[2], ip.header.src_ip[3]),
+        IpAddress::Ipv4(ip.header.dst_ip[0], ip.header.dst_ip[1],
+                        ip.header.dst_ip[2], ip.header.dst_ip[3]),
+        ip.payload, ip.header.payload_length, false);
+    TCPIP2_EXPECT_EQ(UdpParseError::None, udp.error);
+    if (udp.error != UdpParseError::None) {
+        pool.DrainReturnQueue();
+        return;
+    }
+    TCPIP2_EXPECT_EQ(std::uint16_t{53}, udp.header.src_port);
+    TCPIP2_EXPECT_EQ(std::uint16_t{12345}, udp.header.dst_port);
+    TCPIP2_EXPECT_EQ(remote, std::vector<std::uint8_t>(
+        udp.payload, udp.payload + udp.payload_length));
 
     pool.DrainReturnQueue();
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
