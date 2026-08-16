@@ -22,6 +22,7 @@ add_library(tcpip2 STATIC
     ip/extension_headers.cpp
     ip/icmpv4.cpp
     ip/icmpv6.cpp
+    ip/icmp_unreachable.cpp
     ip/pmtu.cpp
     ip/fragment.cpp
     tcp/segment.cpp

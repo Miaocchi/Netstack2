@@ -334,4 +334,52 @@ TCPIP2_TEST(ShardUdpRemoteDatagramEgressesThroughScheduler) {
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
 }
 
+// R7 step 9: no session / policy rejection -> ICMP port-unreachable back to
+// the sender (configurable and observable).
+TCPIP2_TEST(ShardUdpRejectedEmitsIcmpUnreachable) {
+    NullPacketIo io(1);
+    PktBufferPool pool(16, 2048);
+    std::unique_ptr<IPacketQueue> queue = io.OpenQueue(0);
+    queue->SetBufferPool(&pool);
+    // No session factory -> the flow table cannot bind a session -> reject.
+    StackShard shard(0, pool, queue.get(), 128);
+    TCPIP2_EXPECT_TRUE(shard.Start());
+
+    const std::vector<std::uint8_t> pkt = BuildValidIpv4Udp(
+        0x0a000001u, 0x0a000002u, 12345, 53);
+    BufferLease lease = pool.Allocate();
+    TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
+    std::memcpy(lease.Data(), pkt.data(), pkt.size());
+    lease.Resize(pkt.size());
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(lease)));
+
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return io.EgressSnapshot(0).size() > 0; }));
+    shard.Stop();
+
+    TCPIP2_EXPECT_TRUE(shard.UdpRejectedCount() > 0);
+    const auto egress = io.EgressSnapshot(0);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, egress.size());
+    if (!egress.empty()) {
+        const auto& icmp = egress[0];
+        const Ipv4ParseResult ip = ParseIpv4(icmp.data(), icmp.size());
+        TCPIP2_EXPECT_EQ(Ipv4ParseError::None, ip.error);
+        if (ip.error != Ipv4ParseError::None) {
+            pool.DrainReturnQueue();
+            return;
+        }
+        TCPIP2_EXPECT_EQ(std::uint8_t{1}, ip.header.protocol);  // ICMP
+        // Source/destination swapped: reply from 10.0.0.2 to 10.0.0.1.
+        TCPIP2_EXPECT_EQ(std::uint8_t{10}, ip.header.src_ip[0]);
+        TCPIP2_EXPECT_EQ(std::uint8_t{2}, ip.header.src_ip[3]);
+        TCPIP2_EXPECT_EQ(std::uint8_t{10}, ip.header.dst_ip[0]);
+        TCPIP2_EXPECT_EQ(std::uint8_t{1}, ip.header.dst_ip[3]);
+        // ICMP type/code = Destination Unreachable / Port.
+        TCPIP2_EXPECT_EQ(std::uint8_t{3}, ip.payload[0]);
+        TCPIP2_EXPECT_EQ(std::uint8_t{3}, ip.payload[1]);
+    }
+
+    pool.DrainReturnQueue();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
 TCPIP2_TEST_MAIN();

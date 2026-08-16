@@ -38,6 +38,11 @@ namespace tcpip2 {
 struct UdpFlowConfig {
     std::size_t max_flows = 256;
     std::uint64_t idle_timeout_ms = 60000;
+    /// When a client datagram cannot be dispatched (no session, factory
+    /// refusal, or closed session), the shard emits an ICMP destination
+    /// unreachable (port unreachable) back to the sender instead of silently
+    /// dropping (R7 step 9). Controlled here so callers can opt out.
+    bool emit_icmp_unreachable = true;
 };
 
 /// Observability snapshot of one UDP flow.

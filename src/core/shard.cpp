@@ -39,6 +39,7 @@
 #include <tcp/segment.h>
 
 #include <ip/checksum.h>
+#include <ip/icmp_unreachable.h>
 #include <ip/icmpv4.h>
 #include <ip/icmpv6.h>
 #include <ip/ipv4.h>
@@ -736,6 +737,40 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
     packets_dropped_.fetch_add(1, std::memory_order_relaxed);
 }
 
+void StackShard::EmitUdpUnreachable(const std::uint8_t* original,
+                                    std::size_t original_len,
+                                    std::uint8_t version,
+                                    const FlowKey& reply_flow) noexcept {
+    if (!udp_config_.emit_icmp_unreachable || original == nullptr) return;
+    if (fq_codel_.QueueLength() >= kTcpTxBudget) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    BufferLease tx = pool_.Allocate();
+    if (!tx) return;
+    IcmpUnreachableResult out;
+    if (version == 4) {
+        out = BuildIcmpv4Unreachable(
+            original, original_len, Icmpv4DestUnreachableCode::Port, 0,
+            tx.Data(), tx.Capacity());
+    } else if (version == 6) {
+        out = BuildIcmpv6Unreachable(
+            original, original_len, Icmpv6DestUnreachableCode::PortUnreachable,
+            tx.Data(), tx.Capacity());
+    } else {
+        return;
+    }
+    if (out.error != IcmpUnreachableError::None) {
+        return;
+    }
+    tx.Resize(out.packet_length);
+    if (!fq_codel_.Enqueue(std::move(tx),
+                           static_cast<std::uint32_t>(FlowHash(reply_flow) >> 32),
+                           clock_->NowMs())) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 void StackShard::HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept {
     udp_datagrams_received_.fetch_add(1, std::memory_order_relaxed);
     if (!udp_ || !lease) return;
@@ -749,9 +784,24 @@ void StackShard::HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept {
     const UdpFlowTable::Dispatch d = udp_->OnClientDatagram(
         input.datagram.flow, input.datagram.payload,
         input.datagram.payload_length, now_ms);
-    if (d != UdpFlowTable::Dispatch::Accepted) {
-        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+    if (d == UdpFlowTable::Dispatch::Accepted) {
+        return;
     }
+    if (d == UdpFlowTable::Dispatch::Rejected) {
+        // No session / policy rejection: report port unreachable to the
+        // sender (configurable), and keep it observable.
+        udp_rejected_.fetch_add(1, std::memory_order_relaxed);
+        const std::uint8_t version = static_cast<std::uint8_t>(lease.Data()[0] >> 4);
+        FlowKey reply = input.datagram.flow;
+        reply.source = input.datagram.flow.destination;
+        reply.destination = input.datagram.flow.source;
+        reply.source_port = input.datagram.flow.destination_port;
+        reply.destination_port = input.datagram.flow.source_port;
+        reply.protocol = (version == 4) ? 1 : 58;
+        EmitUdpUnreachable(lease.Data(), lease.Size(), version, reply);
+        return;
+    }
+    packets_dropped_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void StackShard::HandleReassembledUdp(const IpAddress& source, const IpAddress& destination,
@@ -770,9 +820,40 @@ void StackShard::HandleReassembledUdp(const IpAddress& source, const IpAddress& 
     if (!udp_) return;
     const UdpFlowTable::Dispatch d = udp_->OnClientDatagram(
         udp.flow, udp.payload, udp.payload_length, clock_->NowMs());
-    if (d != UdpFlowTable::Dispatch::Accepted) {
-        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+    if (d == UdpFlowTable::Dispatch::Accepted) {
+        return;
     }
+    if (d == UdpFlowTable::Dispatch::Rejected) {
+        // Report port unreachable for the reassembled datagram too: rebuild a
+        // minimal original IP header + transport for the ICMP quote.
+        udp_rejected_.fetch_add(1, std::memory_order_relaxed);
+        const bool is_v4 = source.IsIpv4();
+        std::uint8_t synthetic[40 + 64];
+        const std::size_t header_len = is_v4 ? 20 : 40;
+        std::memset(synthetic, 0, header_len);
+        if (is_v4) {
+            synthetic[0] = 0x45;
+            synthetic[9] = 17;
+            std::memcpy(synthetic + 12, source.Bytes(), 4);
+            std::memcpy(synthetic + 16, destination.Bytes(), 4);
+        } else {
+            synthetic[0] = 0x60;
+            synthetic[6] = 17;
+            std::memcpy(synthetic + 8, source.Bytes(), 16);
+            std::memcpy(synthetic + 24, destination.Bytes(), 16);
+        }
+        const std::size_t take = std::min(lease.Size(), sizeof(synthetic) - header_len);
+        std::memcpy(synthetic + header_len, lease.Data(), take);
+        FlowKey reply = udp.flow;
+        reply.source = udp.flow.destination;
+        reply.destination = udp.flow.source;
+        reply.source_port = udp.flow.destination_port;
+        reply.destination_port = udp.flow.source_port;
+        reply.protocol = is_v4 ? 1 : 58;
+        EmitUdpUnreachable(synthetic, header_len + take, is_v4 ? 4 : 6, reply);
+        return;
+    }
+    packets_dropped_.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool StackShard::RedirectPacket(std::size_t target_shard, PacketEnvelope&& envelope) noexcept {

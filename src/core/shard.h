@@ -129,6 +129,9 @@ public:
     std::size_t UdpFlowCount() const noexcept {
         return udp_ != nullptr ? udp_->Size() : 0;
     }
+    std::size_t UdpRejectedCount() const noexcept {
+        return udp_rejected_.load(std::memory_order_relaxed);
+    }
     std::size_t RedirectedPackets() const noexcept {
         return redirected_packets_.load(std::memory_order_relaxed);
     }
@@ -175,6 +178,13 @@ private:
     void HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept;
     void HandleReassembledUdp(const IpAddress& source, const IpAddress& destination,
                                BufferLease&& lease) noexcept;
+    /// Emit an ICMP destination-unreachable (port unreachable) back to the
+    /// sender of a rejected UDP datagram (R7 step 9). @p original is the full
+    /// original IP packet used for the quote; @p reply_flow is the ICMP
+    /// response's (already reversed) flow for egress hashing.
+    void EmitUdpUnreachable(const std::uint8_t* original, std::size_t original_len,
+                            std::uint8_t version,
+                            const FlowKey& reply_flow) noexcept;
     bool RedirectPacket(std::size_t target_shard, PacketEnvelope&& envelope) noexcept;
     bool EnqueueTcpResponse(const TcpResponse& response) noexcept;
     void DrainEgressLanes() noexcept;
@@ -230,6 +240,7 @@ private:
     std::atomic<std::size_t> tcp_pcb_count_{0};
     std::atomic<std::size_t> tcp_half_open_count_{0};
     std::atomic<std::size_t> udp_datagrams_received_{0};
+    std::atomic<std::size_t> udp_rejected_{0};
     std::atomic<std::size_t> redirected_packets_{0};
     std::atomic<std::size_t> redirect_drops_{0};
 };
