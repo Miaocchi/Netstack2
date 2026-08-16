@@ -132,6 +132,9 @@ public:
     std::size_t UdpRejectedCount() const noexcept {
         return udp_rejected_.load(std::memory_order_relaxed);
     }
+    std::size_t UdpOversizeCount() const noexcept {
+        return udp_oversize_.load(std::memory_order_relaxed);
+    }
     std::size_t RedirectedPackets() const noexcept {
         return redirected_packets_.load(std::memory_order_relaxed);
     }
@@ -185,6 +188,11 @@ private:
     void EmitUdpUnreachable(const std::uint8_t* original, std::size_t original_len,
                             std::uint8_t version,
                             const FlowKey& reply_flow) noexcept;
+    /// Emit an ICMP Fragmentation Needed (IPv4) / Packet Too Big (IPv6) for a
+    /// client datagram that exceeds the learned path MTU (R7 step 8).
+    void EmitUdpPmtuError(const std::uint8_t* original, std::size_t original_len,
+                          std::uint8_t version, std::uint32_t pmtu,
+                          const FlowKey& reply_flow) noexcept;
     bool RedirectPacket(std::size_t target_shard, PacketEnvelope&& envelope) noexcept;
     bool EnqueueTcpResponse(const TcpResponse& response) noexcept;
     void DrainEgressLanes() noexcept;
@@ -241,6 +249,7 @@ private:
     std::atomic<std::size_t> tcp_half_open_count_{0};
     std::atomic<std::size_t> udp_datagrams_received_{0};
     std::atomic<std::size_t> udp_rejected_{0};
+    std::atomic<std::size_t> udp_oversize_{0};
     std::atomic<std::size_t> redirected_packets_{0};
     std::atomic<std::size_t> redirect_drops_{0};
 };

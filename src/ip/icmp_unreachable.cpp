@@ -139,4 +139,51 @@ IcmpUnreachableResult BuildIcmpv6Unreachable(const std::uint8_t* original,
     return result;
 }
 
+IcmpUnreachableResult BuildIcmpv6PacketTooBig(const std::uint8_t* original,
+                                              std::size_t original_len,
+                                              std::uint32_t mtu,
+                                              std::uint8_t* output,
+                                              std::size_t capacity,
+                                              std::uint8_t hop_limit) noexcept {
+    IcmpUnreachableResult result;
+    if (original == nullptr || output == nullptr || original_len < 40) {
+        result.error = IcmpUnreachableError::InvalidOriginal;
+        return result;
+    }
+    if ((original[0] >> 4) != 6) {
+        result.error = IcmpUnreachableError::InvalidOriginal;
+        return result;
+    }
+
+    const std::size_t quoted = 40 + std::min(kMaxQuoteBytes, original_len - 40);
+
+    const std::size_t icmp_length = 8 + quoted;
+    const std::size_t packet_length = 40 + icmp_length;
+    if (capacity < packet_length) {
+        result.error = IcmpUnreachableError::BufferTooSmall;
+        return result;
+    }
+
+    std::uint8_t* const icmp = output + 40;
+    icmp[0] = 2;  // Packet Too Big
+    icmp[1] = 0;
+    Write16(icmp + 2, 0);  // checksum placeholder
+    Write32(icmp + 4, mtu);
+    std::memcpy(icmp + 8, original, quoted);
+
+    const std::uint32_t seed = Ipv6PseudoHeaderSeed(
+        original + 24, original + 8, 58, static_cast<std::uint32_t>(icmp_length));
+    Write16(icmp + 2, InternetChecksum(icmp, icmp_length, seed));
+
+    output[0] = 0x60;
+    Write16(output + 4, static_cast<std::uint16_t>(icmp_length));
+    output[6] = 58;  // ICMPv6
+    output[7] = hop_limit;
+    std::memcpy(output + 8, original + 24, 16);  // src = original dst
+    std::memcpy(output + 24, original + 8, 16);  // dst = original src
+
+    result.packet_length = packet_length;
+    return result;
+}
+
 } // namespace tcpip2

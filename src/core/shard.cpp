@@ -771,6 +771,40 @@ void StackShard::EmitUdpUnreachable(const std::uint8_t* original,
     }
 }
 
+void StackShard::EmitUdpPmtuError(const std::uint8_t* original,
+                                  std::size_t original_len,
+                                  std::uint8_t version,
+                                  std::uint32_t pmtu,
+                                  const FlowKey& reply_flow) noexcept {
+    if (original == nullptr) return;
+    if (fq_codel_.QueueLength() >= kTcpTxBudget) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    BufferLease tx = pool_.Allocate();
+    if (!tx) return;
+    IcmpUnreachableResult out;
+    if (version == 4) {
+        out = BuildIcmpv4Unreachable(
+            original, original_len, Icmpv4DestUnreachableCode::FragmentationNeeded,
+            static_cast<std::uint16_t>(pmtu), tx.Data(), tx.Capacity());
+    } else if (version == 6) {
+        out = BuildIcmpv6PacketTooBig(
+            original, original_len, pmtu, tx.Data(), tx.Capacity());
+    } else {
+        return;
+    }
+    if (out.error != IcmpUnreachableError::None) {
+        return;
+    }
+    tx.Resize(out.packet_length);
+    if (!fq_codel_.Enqueue(std::move(tx),
+                           static_cast<std::uint32_t>(FlowHash(reply_flow) >> 32),
+                           clock_->NowMs())) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 void StackShard::HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept {
     udp_datagrams_received_.fetch_add(1, std::memory_order_relaxed);
     if (!udp_ || !lease) return;
@@ -779,6 +813,27 @@ void StackShard::HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    const std::uint8_t version = static_cast<std::uint8_t>(lease.Data()[0] >> 4);
+
+    // R7 step 8: enforce the learned path MTU to the remote. A client datagram
+    // larger than the path MTU cannot be fragmented (UDP is atomic), so drop it
+    // and report ICMP Fragmentation Needed (IPv4) / Packet Too Big (IPv6) to
+    // the sender.
+    const PmtuLookupResult pmtu = pmtu_cache_.Lookup(
+        input.datagram.flow.destination.Bytes(),
+        input.datagram.flow.destination.IsIpv4() ? 4 : 6, now_ms);
+    if (pmtu.found && lease.Size() > pmtu.pmtu) {
+        udp_oversize_.fetch_add(1, std::memory_order_relaxed);
+        FlowKey reply = input.datagram.flow;
+        reply.source = input.datagram.flow.destination;
+        reply.destination = input.datagram.flow.source;
+        reply.source_port = input.datagram.flow.destination_port;
+        reply.destination_port = input.datagram.flow.source_port;
+        reply.protocol = (version == 4) ? 1 : 58;
+        EmitUdpPmtuError(lease.Data(), lease.Size(), version, pmtu.pmtu, reply);
+        return;
+    }
+
     // Client datagram -> remote session (flow table opens the adapter session
     // on the first packet and forwards the payload).
     const UdpFlowTable::Dispatch d = udp_->OnClientDatagram(
@@ -791,7 +846,6 @@ void StackShard::HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept {
         // No session / policy rejection: report port unreachable to the
         // sender (configurable), and keep it observable.
         udp_rejected_.fetch_add(1, std::memory_order_relaxed);
-        const std::uint8_t version = static_cast<std::uint8_t>(lease.Data()[0] >> 4);
         FlowKey reply = input.datagram.flow;
         reply.source = input.datagram.flow.destination;
         reply.destination = input.datagram.flow.source;
@@ -818,6 +872,41 @@ void StackShard::HandleReassembledUdp(const IpAddress& source, const IpAddress& 
     }
     udp_datagrams_received_.fetch_add(1, std::memory_order_relaxed);
     if (!udp_) return;
+    const bool is_v4 = source.IsIpv4();
+    const std::size_t header_len = is_v4 ? 20 : 40;
+
+    // R7 step 8: enforce the learned path MTU to the remote. A client datagram
+    // larger than the path MTU cannot be fragmented (UDP is atomic), so drop it
+    // and report ICMP Fragmentation Needed (IPv4) / Packet Too Big (IPv6).
+    const PmtuLookupResult pmtu = pmtu_cache_.Lookup(
+        udp.flow.destination.Bytes(), is_v4 ? 4 : 6, clock_->NowMs());
+    if (pmtu.found && (header_len + lease.Size()) > pmtu.pmtu) {
+        udp_oversize_.fetch_add(1, std::memory_order_relaxed);
+        FlowKey reply = udp.flow;
+        reply.source = udp.flow.destination;
+        reply.destination = udp.flow.source;
+        reply.source_port = udp.flow.destination_port;
+        reply.destination_port = udp.flow.source_port;
+        reply.protocol = is_v4 ? 1 : 58;
+        std::uint8_t synthetic[40 + 64];
+        std::memset(synthetic, 0, header_len);
+        if (is_v4) {
+            synthetic[0] = 0x45;
+            synthetic[9] = 17;
+            std::memcpy(synthetic + 12, source.Bytes(), 4);
+            std::memcpy(synthetic + 16, destination.Bytes(), 4);
+        } else {
+            synthetic[0] = 0x60;
+            synthetic[6] = 17;
+            std::memcpy(synthetic + 8, source.Bytes(), 16);
+            std::memcpy(synthetic + 24, destination.Bytes(), 16);
+        }
+        const std::size_t take = std::min(lease.Size(), sizeof(synthetic) - header_len);
+        std::memcpy(synthetic + header_len, lease.Data(), take);
+        EmitUdpPmtuError(synthetic, header_len + take, is_v4 ? 4 : 6, pmtu.pmtu, reply);
+        return;
+    }
+
     const UdpFlowTable::Dispatch d = udp_->OnClientDatagram(
         udp.flow, udp.payload, udp.payload_length, clock_->NowMs());
     if (d == UdpFlowTable::Dispatch::Accepted) {
@@ -827,9 +916,7 @@ void StackShard::HandleReassembledUdp(const IpAddress& source, const IpAddress& 
         // Report port unreachable for the reassembled datagram too: rebuild a
         // minimal original IP header + transport for the ICMP quote.
         udp_rejected_.fetch_add(1, std::memory_order_relaxed);
-        const bool is_v4 = source.IsIpv4();
         std::uint8_t synthetic[40 + 64];
-        const std::size_t header_len = is_v4 ? 20 : 40;
         std::memset(synthetic, 0, header_len);
         if (is_v4) {
             synthetic[0] = 0x45;
@@ -877,10 +964,10 @@ bool StackShard::QuotedPacketMatchesFlow(const std::uint8_t* quoted,
                                          std::size_t quoted_len,
                                          std::uint8_t family) const noexcept {
     // RFC 1191 §6 / RFC 4443 §2.4 attribution: the ICMP-quoted packet is one
-    // WE sent, so its reversed 5-tuple must match a tracked TCP PCB before the
-    // error may influence PMTU state. A forged ICMP for a path we are not
-    // sending on must not poison the PMTU cache.
-    if (!tcp_) return false;
+    // WE sent, so its reversed 5-tuple must match a tracked TCP or UDP flow
+    // before the error may influence PMTU state. A forged ICMP for a path we
+    // are not sending on must not poison the PMTU cache.
+    if (tcp_ == nullptr && udp_ == nullptr) return false;
 
     FlowKey incoming;
     std::size_t l4_offset;
@@ -890,7 +977,8 @@ bool StackShard::QuotedPacketMatchesFlow(const std::uint8_t* quoted,
         if (ihl_words < 5) return false;
         l4_offset = static_cast<std::size_t>(ihl_words) * 4;
         if (quoted_len < l4_offset + 4) return false; // need both ports
-        if (quoted[9] != 6) return false;             // attribute TCP only
+        const std::uint8_t proto = quoted[9];
+        if (proto != 6 && proto != 17) return false;  // attribute TCP/UDP only
         incoming.source = IpAddress::Ipv4(quoted[16], quoted[17], quoted[18], quoted[19]);
         incoming.destination = IpAddress::Ipv4(quoted[12], quoted[13], quoted[14], quoted[15]);
         // Quoted packet's dst_port is the peer's port (incoming source_port);
@@ -899,19 +987,35 @@ bool StackShard::QuotedPacketMatchesFlow(const std::uint8_t* quoted,
             (static_cast<std::uint16_t>(quoted[l4_offset + 2]) << 8) | quoted[l4_offset + 3]);
         incoming.destination_port = static_cast<std::uint16_t>(
             (static_cast<std::uint16_t>(quoted[l4_offset]) << 8) | quoted[l4_offset + 1]);
-        incoming.protocol = 6;
+        incoming.protocol = proto;
     } else {
         if (quoted_len < 40 + 4) return false;
-        if (quoted[6] != 6) return false; // next header must be TCP
+        const std::uint8_t proto = quoted[6];
+        if (proto != 6 && proto != 17) return false;  // next header TCP/UDP
         incoming.source = IpAddress::Ipv6(quoted + 24);
         incoming.destination = IpAddress::Ipv6(quoted + 8);
         incoming.source_port = static_cast<std::uint16_t>(
             (static_cast<std::uint16_t>(quoted[42]) << 8) | quoted[43]);
         incoming.destination_port = static_cast<std::uint16_t>(
             (static_cast<std::uint16_t>(quoted[40]) << 8) | quoted[41]);
-        incoming.protocol = 6;
+        incoming.protocol = proto;
     }
-    return tcp_->HasFlow(incoming);
+
+    if (incoming.protocol == 6) {
+        return tcp_ != nullptr && tcp_->HasFlow(incoming);
+    }
+    // UDP: the flow table keys flows by the client datagram's direction
+    // (client->remote). The quoted packet is what WE sent (also client->remote);
+    // incoming is its reverse, so look up the reversed flow.
+    if (udp_ == nullptr) return false;
+    FlowKey sent;
+    sent.source = incoming.destination;
+    sent.destination = incoming.source;
+    sent.source_port = incoming.destination_port;
+    sent.destination_port = incoming.source_port;
+    sent.protocol = incoming.protocol;
+    UdpFlowSnapshot snap;
+    return udp_->Find(sent, snap);
 }
 
 void StackShard::SendEchoReply(BufferLease lease, const FlowKey& reply_flow) noexcept {

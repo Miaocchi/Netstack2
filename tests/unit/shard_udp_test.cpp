@@ -66,12 +66,11 @@ void AppendU32(std::vector<std::uint8_t>& v, std::uint32_t val) {
     v.push_back(static_cast<std::uint8_t>(val & 0xFFu));
 }
 
-/// Build a valid IPv4+UDP packet with correct checksums.
-std::vector<std::uint8_t> BuildValidIpv4Udp(
+/// Build a valid IPv4+UDP packet with a caller-supplied payload.
+std::vector<std::uint8_t> BuildValidIpv4UdpPayload(
     std::uint32_t src_ip, std::uint32_t dst_ip,
-    std::uint16_t src_port, std::uint16_t dst_port) {
-
-    const std::vector<std::uint8_t> payload = {0x01, 0x02, 0x03, 0x04};
+    std::uint16_t src_port, std::uint16_t dst_port,
+    const std::vector<std::uint8_t>& payload) {
     const std::size_t udp_len = 8 + payload.size();
     const std::size_t total_len = 20 + udp_len;
 
@@ -130,6 +129,71 @@ std::vector<std::uint8_t> BuildValidIpv4Udp(
     pkt[26] = static_cast<std::uint8_t>((udp_cksum >> 8) & 0xFFu);
     pkt[27] = static_cast<std::uint8_t>(udp_cksum & 0xFFu);
 
+    return pkt;
+}
+
+/// Build a valid IPv4+UDP packet with correct checksums.
+std::vector<std::uint8_t> BuildValidIpv4Udp(
+    std::uint32_t src_ip, std::uint32_t dst_ip,
+    std::uint16_t src_port, std::uint16_t dst_port) {
+    return BuildValidIpv4UdpPayload(src_ip, dst_ip, src_port, dst_port,
+                                    {0x01, 0x02, 0x03, 0x04});
+}
+
+/// Build an ICMPv4 Fragmentation-Needed packet quoting an IPv4+UDP original
+/// (protocol 17) sent by us to the remote — for UDP PMTU attribution.
+std::vector<std::uint8_t> BuildIpv4IcmpFragNeededUdp(
+    std::uint32_t icmp_src, std::uint32_t icmp_dst, std::uint16_t mtu,
+    std::uint32_t orig_src, std::uint32_t orig_dst,
+    std::uint16_t orig_src_port, std::uint16_t orig_dst_port) {
+
+    // Quoted payload: IPv4 header (20) + first 8 bytes of the UDP header.
+    std::vector<std::uint8_t> quoted;
+    quoted.reserve(28);
+    quoted.push_back(0x45);
+    quoted.push_back(0x00);
+    AppendU16(quoted, static_cast<std::uint16_t>(28));  // total_length
+    AppendU16(quoted, 0x1234);
+    AppendU16(quoted, 0x4000);  // DF
+    quoted.push_back(64);
+    quoted.push_back(0x11);  // protocol = UDP
+    AppendU16(quoted, 0);
+    AppendU32(quoted, orig_src);
+    AppendU32(quoted, orig_dst);
+    AppendU16(quoted, orig_src_port);
+    AppendU16(quoted, orig_dst_port);
+    AppendU32(quoted, 0);  // rest of UDP header (unused)
+
+    // ICMP message: type(3) code(4) checksum(2) unused(2) mtu(2) + quoted.
+    std::vector<std::uint8_t> icmp;
+    icmp.push_back(3);
+    icmp.push_back(4);
+    AppendU16(icmp, 0);
+    AppendU16(icmp, 0);
+    AppendU16(icmp, mtu);
+    for (std::uint8_t b : quoted) icmp.push_back(b);
+    const std::uint16_t icmp_cksum = InlineChecksum(icmp.data(), icmp.size(), 0);
+    icmp[2] = static_cast<std::uint8_t>((icmp_cksum >> 8) & 0xFFu);
+    icmp[3] = static_cast<std::uint8_t>(icmp_cksum & 0xFFu);
+
+    // Outer IPv4 header wrapping the ICMP message.
+    const std::size_t total_len = 20 + icmp.size();
+    std::vector<std::uint8_t> pkt;
+    pkt.reserve(total_len);
+    pkt.push_back(0x45);
+    pkt.push_back(0x00);
+    AppendU16(pkt, static_cast<std::uint16_t>(total_len));
+    AppendU16(pkt, 0);
+    AppendU16(pkt, 0x0000);
+    pkt.push_back(64);
+    pkt.push_back(0x01);  // ICMP
+    AppendU16(pkt, 0);
+    AppendU32(pkt, icmp_src);
+    AppendU32(pkt, icmp_dst);
+    for (std::uint8_t b : icmp) pkt.push_back(b);
+    const std::uint16_t ip_cksum = InlineChecksum(pkt.data(), 20, 0);
+    pkt[10] = static_cast<std::uint8_t>((ip_cksum >> 8) & 0xFFu);
+    pkt[11] = static_cast<std::uint8_t>(ip_cksum & 0xFFu);
     return pkt;
 }
 
@@ -376,6 +440,77 @@ TCPIP2_TEST(ShardUdpRejectedEmitsIcmpUnreachable) {
         // ICMP type/code = Destination Unreachable / Port.
         TCPIP2_EXPECT_EQ(std::uint8_t{3}, ip.payload[0]);
         TCPIP2_EXPECT_EQ(std::uint8_t{3}, ip.payload[1]);
+    }
+
+    pool.DrainReturnQueue();
+    TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
+}
+
+// R7 step 8: a client UDP datagram that exceeds the learned path MTU is
+// dropped and the sender gets an ICMP Fragmentation Needed (IPv4) / Packet
+// Too Big (IPv6) report.
+TCPIP2_TEST(ShardUdpOversizeDatagramEmitsFragNeeded) {
+    NullPacketIo io(1);
+    PktBufferPool pool(32, 2048);
+    test::FakeSessionFactory factory;
+    std::unique_ptr<IPacketQueue> queue = io.OpenQueue(0);
+    queue->SetBufferPool(&pool);
+    StackShard shard(0, pool, queue.get(), 128, &factory);
+    TCPIP2_EXPECT_TRUE(shard.Start());
+
+    // 1. Establish the UDP flow with a normal client datagram.
+    const std::vector<std::uint8_t> pkt = BuildValidIpv4Udp(
+        0x0a000001u, 0x0a000002u, 12345, 53);
+    BufferLease lease = pool.Allocate();
+    std::memcpy(lease.Data(), pkt.data(), pkt.size());
+    lease.Resize(pkt.size());
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(lease)));
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return factory.SessionCount() == 1; }));
+
+    // 2. A router reports Fragmentation Needed (MTU 1000) for a packet we sent
+    //    to 10.0.0.2 (the quoted packet's reversed flow matches the UDP flow).
+    const std::vector<std::uint8_t> frag_needed = BuildIpv4IcmpFragNeededUdp(
+        0x0a000099u, 0x0a000001u, 1000,
+        0x0a000001u, 0x0a000002u, 12345, 53);
+    BufferLease icmp_lease = pool.Allocate();
+    std::memcpy(icmp_lease.Data(), frag_needed.data(), frag_needed.size());
+    icmp_lease.Resize(frag_needed.size());
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(icmp_lease)));
+
+    // 3. An oversize client datagram (payload > 1000 - 28) must be dropped and
+    //    reflected as Fragmentation Needed back to the sender.
+    const std::vector<std::uint8_t> oversize = BuildValidIpv4UdpPayload(
+        0x0a000001u, 0x0a000002u, 12345, 53, std::vector<std::uint8_t>(1100, 0xEE));
+    BufferLease big = pool.Allocate();
+    std::memcpy(big.Data(), oversize.data(), oversize.size());
+    big.Resize(oversize.size());
+    TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(big)));
+
+    // The first ICMP Frag Needed we emit in step 3 lands in egress. Wait for
+    // it (there may be two egress records if the port-unreachable path fired,
+    // but here the flow exists so no port-unreachable; only the frag needed).
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return shard.UdpOversizeCount() > 0; }));
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return io.EgressSnapshot(0).size() > 0; }));
+    shard.Stop();
+
+    const auto egress = io.EgressSnapshot(0);
+    TCPIP2_EXPECT_EQ(std::size_t{1}, egress.size());
+    if (!egress.empty()) {
+        const auto& reply = egress[0];
+        const Ipv4ParseResult ip = ParseIpv4(reply.data(), reply.size());
+        TCPIP2_EXPECT_EQ(Ipv4ParseError::None, ip.error);
+        if (ip.error != Ipv4ParseError::None) {
+            pool.DrainReturnQueue();
+            return;
+        }
+        // ICMP type 3 code 4 (Fragmentation Needed) back to the client.
+        TCPIP2_EXPECT_EQ(std::uint8_t{1}, ip.header.protocol);
+        TCPIP2_EXPECT_EQ(std::uint8_t{10}, ip.header.src_ip[0]);
+        TCPIP2_EXPECT_EQ(std::uint8_t{2}, ip.header.src_ip[3]);
+        TCPIP2_EXPECT_EQ(std::uint8_t{10}, ip.header.dst_ip[0]);
+        TCPIP2_EXPECT_EQ(std::uint8_t{1}, ip.header.dst_ip[3]);
+        TCPIP2_EXPECT_EQ(std::uint8_t{3}, ip.payload[0]);
+        TCPIP2_EXPECT_EQ(std::uint8_t{4}, ip.payload[1]);
     }
 
     pool.DrainReturnQueue();

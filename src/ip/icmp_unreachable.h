@@ -64,4 +64,21 @@ IcmpUnreachableResult BuildIcmpv6Unreachable(const std::uint8_t* original,
                                              std::size_t capacity,
                                              std::uint8_t hop_limit = 64) noexcept;
 
+/**
+ * Build an IPv6 ICMPv6 Packet Too Big response (RFC 4443 §3.2) quoting the
+ * original (client) IPv6 packet's header + first 8 transport bytes.
+ * @param original      the original (client) IPv6 packet.
+ * @param original_len  length of @p original.
+ * @param mtu           next-hop MTU to report.
+ * @param output        destination buffer.
+ * @param capacity      bytes available at @p output.
+ * @param hop_limit     IPv6 hop limit for the reply.
+ */
+IcmpUnreachableResult BuildIcmpv6PacketTooBig(const std::uint8_t* original,
+                                              std::size_t original_len,
+                                              std::uint32_t mtu,
+                                              std::uint8_t* output,
+                                              std::size_t capacity,
+                                              std::uint8_t hop_limit = 64) noexcept;
+
 } // namespace tcpip2

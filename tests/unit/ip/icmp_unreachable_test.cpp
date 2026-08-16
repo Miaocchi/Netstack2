@@ -137,4 +137,33 @@ TCPIP2_TEST(Icmpv6UnreachablePortFormat) {
     TCPIP2_EXPECT_EQ(std::uint16_t{0}, InternetChecksum(out + 40, r.packet_length - 40, seed));
 }
 
+TCPIP2_TEST(Icmpv6PacketTooBigFormat) {
+    std::uint8_t original[48];
+    std::size_t original_len = 0;
+    FillIpv6Original(original, sizeof(original), original_len);
+
+    std::uint8_t out[160];
+    const IcmpUnreachableResult r = BuildIcmpv6PacketTooBig(
+        original, original_len, 1280, out, sizeof(out));
+    TCPIP2_EXPECT_EQ(IcmpUnreachableError::None, r.error);
+    TCPIP2_EXPECT_EQ(std::size_t{96}, r.packet_length);
+
+    // Type 2 (Packet Too Big), MTU field = 1280.
+    TCPIP2_EXPECT_EQ(std::uint8_t{2}, out[40]);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0}, out[41]);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0x00}, out[44]);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0x00}, out[45]);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0x05}, out[46]);
+    TCPIP2_EXPECT_EQ(std::uint8_t{0x00}, out[47]);
+
+    // src/dst swapped.
+    TCPIP2_EXPECT_EQ(std::uint8_t{2}, out[23]);   // src = 2001:db8::2
+    TCPIP2_EXPECT_EQ(std::uint8_t{1}, out[39]);   // dst = 2001:db8::1
+
+    // ICMPv6 checksum valid under the (swapped) pseudo-header.
+    const std::uint32_t seed = Ipv6PseudoHeaderSeed(
+        out + 8, out + 24, 58, static_cast<std::uint32_t>(r.packet_length - 40));
+    TCPIP2_EXPECT_EQ(std::uint16_t{0}, InternetChecksum(out + 40, r.packet_length - 40, seed));
+}
+
 TCPIP2_TEST_MAIN()
