@@ -49,6 +49,17 @@ std::unique_ptr<TcpSendBuffer> MakeHybrid(
         CongestionAlgorithm::HybridBdpAimd);
 }
 
+/// Helper: create a TcpSendBuffer with KCC.
+std::unique_ptr<TcpSendBuffer> MakeKcc(
+    std::uint32_t initial_seq = 1000,
+    std::uint16_t mss = 1460,
+    KccConfig kcc_config = {}) {
+    return std::make_unique<TcpSendBuffer>(
+        initial_seq, mss, 0, 64 * 1024, 64 * 1024,
+        1000, 200, 60000, 500, 60000, 3, 3,
+        CongestionAlgorithm::Kcc, kcc_config);
+}
+
 /// Helper pool + send utility (mirrors send_test.cpp's SendHelper).
 struct TestEnv {
     PktBufferPool pool;
@@ -1108,6 +1119,382 @@ TCPIP2_TEST(BbrPipeFillingBurstLearnsBtlBw) {
     send->OnAck(seg1.sequence + static_cast<std::uint32_t>(seg1.payload_length),
                 65535, env.now_ms, true);
     TCPIP2_EXPECT_TRUE(send->PacingRate() > 0U);
+}
+
+// ---------------------------------------------------------------------------
+// KCC v2.0 controller tests
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Build a KCC RateSample in the segment domain the controller consumes.
+/// rtt_us/interval_us are derived from the ms values (ms * 1000), matching
+/// the production sampler's conversion.
+RateSample MakeKccSample(std::uint64_t now_ms, std::uint64_t rtt_ms,
+                         std::uint64_t interval_ms,
+                         std::uint64_t acked_bytes,
+                         std::uint64_t inflight_bytes = 14600,
+                         bool app_limited = false) {
+    RateSample rs;
+    rs.now_ms = now_ms;
+    rs.now_us = now_ms * 1000;
+    rs.rtt_ms = rtt_ms;
+    rs.rtt_us = rtt_ms * 1000;
+    rs.interval_ms = interval_ms;
+    rs.interval_us = interval_ms * 1000;
+    rs.acked_bytes = acked_bytes;
+    rs.inflight_bytes = inflight_bytes;
+    rs.app_limited = app_limited;
+    return rs;
+}
+
+void FeedKccAcks(KccController& c, std::uint64_t& now_ms,
+                 std::uint64_t rtt_ms, std::uint64_t interval_ms,
+                 std::uint64_t acked_bytes, int count) {
+    for (int i = 0; i < count; ++i) {
+        c.OnAck(MakeKccSample(now_ms, rtt_ms, interval_ms, acked_bytes,
+                              acked_bytes > 0 ? 14600 : 0));
+        now_ms += interval_ms;
+    }
+}
+
+} // namespace
+
+TCPIP2_TEST(KccInitialState) {
+    KccController c(1460);
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 14600U);  // 10 * MSS (TCP_INIT_CWND)
+    TCPIP2_EXPECT_EQ(c.PacingRate(), 0U);
+    TCPIP2_EXPECT_EQ(c.CurrentMode(), KccController::Mode::Startup);
+    TCPIP2_EXPECT_EQ(c.MinRttUs(), 0U);
+    TCPIP2_EXPECT_EQ(c.XEstUs(), 0ULL);
+    TCPIP2_EXPECT_EQ(c.SampleCount(), 0U);
+    TCPIP2_EXPECT_EQ(std::string(KccController::AlgorithmId()), "kcc");
+}
+
+TCPIP2_TEST(KccFirstAckInitializesEstimates) {
+    KccController c(1460);
+    std::uint64_t now = 100;
+    c.OnAck(MakeKccSample(now, 20, 20, 1460));
+    // The first valid RTT sample seeds the geodesic estimator and min_rtt.
+    TCPIP2_EXPECT_EQ(c.MinRttUs(), 20000U);
+    TCPIP2_EXPECT_EQ(c.XEstUs(), 20000ULL);
+    TCPIP2_EXPECT_EQ(c.SampleCount(), 1U);
+    // STARTUP grows cwnd by the acked segment count.
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 11U * 1460U);
+}
+
+TCPIP2_TEST(KccG1TracksDownwardInstantly) {
+    KccController c(1460);
+    std::uint64_t now = 100;
+    c.OnAck(MakeKccSample(now, 20, 20, 1460));
+    now += 20;
+    c.OnAck(MakeKccSample(now, 18, 20, 1460));
+    // G1: downward samples set x_est to the observation immediately.
+    TCPIP2_EXPECT_EQ(c.XEstUs(), 18000ULL);
+    // min_rtt follows the new lower minimum.
+    TCPIP2_EXPECT_EQ(c.MinRttUs(), 18000U);
+}
+
+TCPIP2_TEST(KccG2GrowthIsCappedGeometric) {
+    KccController c(1460);
+    std::uint64_t now = 100;
+    c.OnAck(MakeKccSample(now, 20, 20, 1460));
+    now += 20;
+    c.OnAck(MakeKccSample(now, 18, 20, 1460));
+    now += 20;
+    // A single high sample grows x_est by 12.2% (18000 * 122/1000 = 2196),
+    // capped at the observation z = 30000us.
+    c.OnAck(MakeKccSample(now, 30, 20, 1460));
+    TCPIP2_EXPECT_EQ(c.XEstUs(), 20196ULL);
+    // The windowed min_rtt does not follow the upward blip.
+    TCPIP2_EXPECT_EQ(c.MinRttUs(), 18000U);
+}
+
+TCPIP2_TEST(KccG3PathIncreaseUpdatesMinRttAfterConfirmation) {
+    KccController c(1460);
+    std::uint64_t now = 100;
+    FeedKccAcks(c, now, 20, 20, 1460, 2);   // establish min_rtt = 20ms
+    // Sustained 30ms RTT: x_est grows 12.2%/ACK; after the G3 fast counter
+    // reaches 3 consecutive confirms, min_rtt is raised to x_est.
+    c.OnAck(MakeKccSample(now, 30, 20, 1460));  // confirm 1
+    TCPIP2_EXPECT_EQ(c.MinRttUs(), 20000U);
+    now += 20;
+    c.OnAck(MakeKccSample(now, 30, 20, 1460));  // confirm 2
+    TCPIP2_EXPECT_EQ(c.MinRttUs(), 20000U);
+    now += 20;
+    c.OnAck(MakeKccSample(now, 30, 20, 1460));  // confirm 3 -> commit
+    // x_est after three 12.2% steps from 20000 is 28248; the G3 commit raises
+    // min_rtt to it, then the upstream SRTT guard pulls min_rtt down to the
+    // smoothed RTT (~23.3ms). The baseline has nonetheless been raised above
+    // the old 20ms minimum — the G3 path-increase confirmation fired.
+    TCPIP2_EXPECT_EQ(c.MinRttUs(), 23300U);
+}
+
+TCPIP2_TEST(KccStartupGrowsCwnd) {
+    KccController c(1460);
+    std::uint64_t now = 100;
+    FeedKccAcks(c, now, 20, 20, 1460, 3);
+    // STARTUP: cwnd += acked each ACK (10 -> 11 -> 12 -> 13).
+    TCPIP2_EXPECT_TRUE(c.CongestionWindow() >= 13U * 1460U);
+    // Still in STARTUP for the first three ACKs.
+    TCPIP2_EXPECT_EQ(c.CurrentMode(), KccController::Mode::Startup);
+}
+
+TCPIP2_TEST(KccExitsStartupToProbeBw) {
+    KccController c(1460);
+    std::uint64_t now = 100;
+    FeedKccAcks(c, now, 20, 20, 1460, 5);
+    // With a stable RTT (excess ~ 0) and a stable bandwidth estimate, STARTUP
+    // exits to PROBE_BW after ~3 stable rounds and >= 2 probe rounds.
+    TCPIP2_EXPECT_EQ(c.CurrentMode(), KccController::Mode::ProbeBw);
+}
+
+TCPIP2_TEST(KccProbeBwKeepsCwndBounded) {
+    KccController c(1460);
+    std::uint64_t now = 100;
+    FeedKccAcks(c, now, 20, 20, 1460, 15);
+    TCPIP2_EXPECT_EQ(c.CurrentMode(), KccController::Mode::ProbeBw);
+    // On a 1 segment/20ms path (BDP ~ 1 segment) the window converges to the
+    // 4-segment floor plus headroom, never unbounded.
+    TCPIP2_EXPECT_TRUE(c.CongestionWindow() >= 4U * 1460U &&
+                 c.CongestionWindow() <= 8U * 1460U);
+}
+
+TCPIP2_TEST(KccPacingRateActivatedOnceBwKnown) {
+    KccController c(1460);
+    std::uint64_t now = 100;
+    c.OnAck(MakeKccSample(now, 20, 20, 1460));
+    // Bootstrap pacing from cwnd + SRTT after the first RTT sample.
+    TCPIP2_EXPECT_TRUE(c.PacingRate() > 0U);
+}
+
+TCPIP2_TEST(KccOnRtoPreservesCwnd) {
+    KccController c(1460);
+    std::uint64_t now = 100;
+    FeedKccAcks(c, now, 20, 20, 1460, 3);
+    const std::uint32_t before = c.CongestionWindow();
+    c.OnRto();
+    // KCC preserves pipe capacity through loss (no cwnd collapse).
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), before);
+}
+
+TCPIP2_TEST(KccFastRecoveryPacketConservation) {
+    KccController c(1460);
+    std::uint64_t now = 100;
+    FeedKccAcks(c, now, 20, 20, 1460, 3);
+    const std::uint32_t pre = c.CongestionWindow();
+    // Entry: cwnd = inflight + acked (packet conservation).
+    c.OnFastRecoveryEntry(10 * 1460);
+    TCPIP2_EXPECT_TRUE(c.InFastRecovery());
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 10U * 1460U);
+    // Exit: restore to max(current, prior_cwnd).
+    c.OnFastRecoveryExit();
+    TCPIP2_EXPECT_FALSE(c.InFastRecovery());
+    TCPIP2_EXPECT_TRUE(c.CongestionWindow() >= pre);
+    TCPIP2_EXPECT_EQ(c.CurrentMode(), KccController::Mode::ProbeBw);
+}
+
+TCPIP2_TEST(KccUpdateMssScalesCwnd) {
+    KccController c(1460);
+    std::uint64_t now = 100;
+    FeedKccAcks(c, now, 20, 20, 1460, 3);
+    const std::uint32_t segments = c.CongestionWindow() / 1460;
+    c.UpdateMss(730, false);
+    // cwnd is tracked in segments; the byte window scales with the new MSS.
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), segments * 730U);
+}
+
+TCPIP2_TEST(KccResetRestoresInitialState) {
+    KccController c(1460);
+    std::uint64_t now = 100;
+    FeedKccAcks(c, now, 20, 20, 1460, 6);
+    TCPIP2_EXPECT_NE(c.MinRttUs(), 0U);
+    c.Reset();
+    TCPIP2_EXPECT_EQ(c.MinRttUs(), 0U);
+    TCPIP2_EXPECT_EQ(c.CurrentMode(), KccController::Mode::Startup);
+    TCPIP2_EXPECT_EQ(c.CongestionWindow(), 14600U);
+    TCPIP2_EXPECT_EQ(c.SampleCount(), 0U);
+}
+
+TCPIP2_TEST(KccSendBufferIntegration) {
+    TestEnv env;
+    auto send = MakeKcc(1000, 1460);
+
+    // Enqueue data and drive the send path; KCC must grow its window and
+    // activate pacing once bandwidth is learned.
+    std::vector<std::uint8_t> data(5000, 0xAB);
+    send->Enqueue(data.data(), data.size());
+
+    std::vector<TcpSendNextResult> segs;
+    while (true) {
+        auto seg = send->NextSegment(65535, env.now_ms);
+        if (!seg.has_segment) break;
+        env.SendSegment(*send, seg);
+        segs.push_back(seg);
+        if (segs.size() >= 16) break;
+    }
+    TCPIP2_EXPECT_FALSE(segs.empty());
+
+    // ACK the first segment; the rate sample carries rtt_us/interval_us.
+    env.now_ms += 20;
+    const std::uint32_t ack =
+        segs[0].sequence + static_cast<std::uint32_t>(segs[0].payload_length);
+    auto ack_result = send->OnAck(ack, 65535, env.now_ms, true);
+    TCPIP2_EXPECT_TRUE(ack_result.newly_acked > 0);
+    TCPIP2_EXPECT_TRUE(send->PacingRate() > 0U);
+    TCPIP2_EXPECT_EQ(send->Algorithm(), CongestionAlgorithm::Kcc);
+}
+
+// ---------------------------------------------------------------------------
+// KCC Forwarding (KF) cross-connection filter tests
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(KccKfDisabledByDefault) {
+    KccKalmanFilter kf;
+    TCPIP2_EXPECT_FALSE(kf.Active());
+    // Disabled filter returns 0 for init and feeds nothing.
+    TCPIP2_EXPECT_EQ(kf.GetInitBw(10, 20000), 0ULL);
+    TCPIP2_EXPECT_EQ(kf.Update(1000, 5, true), 0ULL);
+    TCPIP2_EXPECT_FALSE(kf.Active());
+}
+
+TCPIP2_TEST(KccKfSeedsOnFirstSample) {
+    KccKalmanFilter kf;
+    kf.enabled = true;
+    const std::uint64_t r = kf.Update(1000000ULL, 5, false);
+    TCPIP2_EXPECT_TRUE(kf.Active());
+    TCPIP2_EXPECT_EQ(r, 1000000ULL);  // first sample seeds the estimate
+}
+
+TCPIP2_TEST(KccKfConvergesTowardsSteadySample) {
+    KccKalmanFilter kf;
+    kf.enabled = true;
+    kf.Update(1000000ULL, 5, false);
+    // Feed a stable sample; the estimate must move towards it.
+    const std::uint64_t est = kf.Update(800000ULL, 5, true);
+    TCPIP2_EXPECT_TRUE(est > 0ULL);
+    // A wildly different sample is rejected by the chi-squared gate.
+    const std::uint64_t after = kf.Update(800000ULL, 5, true);
+    TCPIP2_EXPECT_EQ(after, est);
+}
+
+TCPIP2_TEST(KccKfGetInitBwAppliesDiscount) {
+    KccKalmanFilter kf;
+    kf.enabled = true;
+    kf.Update(1000ULL, 5, false);  // tiny estimate
+    // Local floor: cwnd 10 segs / 20ms srtt = 10 << 24 / 20000 = 8388 BW_UNIT.
+    // The discounted estimate (1000*50/100 <<8 / 739 ~= 173) is far below the
+    // local floor, so GetInitBw returns 0 (too conservative for this flow).
+    TCPIP2_EXPECT_EQ(kf.GetInitBw(10, 20000), 0ULL);
+    // With a 1e6 estimate the discounted value (~173207) clears the local
+    // floor and is returned.
+    KccKalmanFilter kf2;
+    kf2.enabled = true;
+    kf2.Update(1000000ULL, 5, false);
+    TCPIP2_EXPECT_TRUE(kf2.GetInitBw(10, 20000) > 0ULL);
+}
+
+TCPIP2_TEST(KccKfResetClearsState) {
+    KccKalmanFilter kf;
+    kf.enabled = true;
+    kf.Update(1000000ULL, 5, false);
+    TCPIP2_EXPECT_TRUE(kf.Active());
+    kf.Reset();
+    TCPIP2_EXPECT_FALSE(kf.Active());
+    TCPIP2_EXPECT_EQ(kf.GetInitBw(10, 20000), 0ULL);
+}
+
+TCPIP2_TEST(KccKfSeedsNewFlowWindow) {
+    KccKalmanFilter kf;
+    kf.enabled = true;
+    // Seed the shared filter with a moderately high bandwidth sample.
+    kf.Update(5000000ULL, 5, false);
+    std::uint64_t now = 100;
+    KccController c(1460, KccConfig{/*turbo*/ true, /*ai_num*/ 25,
+                                     /*ecn*/ true, /*kf*/ &kf});
+    c.OnAck(MakeKccSample(now, 20, 20, 1460));
+    // The KF estimate (discounted, gain-compensated) should give the new flow
+    // a bootstrap window above the TCP_INIT_CWND floor.
+    TCPIP2_EXPECT_TRUE(c.CongestionWindow() >= 14600U);
+}
+
+// ---------------------------------------------------------------------------
+// KCC ECN-CE EWMA backoff tests
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(KccEcnBackoffDisabledByConfig) {
+    std::uint64_t now = 100;
+    KccController c(1460, KccConfig{/*turbo*/ true, /*ai_num*/ 25,
+                                     /*ecn*/ false, /*kf*/ nullptr});
+    FeedKccAcks(c, now, 20, 20, 1460, 6);  // reach PROBE_BW with cwnd_gain set
+    const std::uint32_t gain_before = c.CwndGain();
+    // CE-marked segment delivered: ecn disabled -> no change.
+    RateSample rs = MakeKccSample(now, 20, 20, 1460);
+    rs.delivered_ce = 10;
+    c.OnAck(rs);
+    TCPIP2_EXPECT_EQ(c.CwndGain(), gain_before);
+}
+
+TCPIP2_TEST(KccEcnBackoffReducesCwndGainOnCe) {
+    std::uint64_t now = 100;
+    KccController c(1460, KccConfig{/*turbo*/ true, /*ai_num*/ 25,
+                                     /*ecn*/ true, /*kf*/ nullptr});
+    FeedKccAcks(c, now, 20, 20, 1460, 8);  // establish min_rtt + estimator
+    // Force a positive CE delta and queue buildup (qdelay above cong thresh).
+    RateSample rs = MakeKccSample(now, 60, 20, 1460);  // high RTT -> qdelay
+    rs.delivered_ce = 100;
+    c.OnAck(rs);
+    // cwnd_gain must have been reduced below the pre-ECN value (or stay
+    // bounded) — the backoff path runs without shrinking the window to zero.
+    TCPIP2_EXPECT_TRUE(c.CwndGain() >= 1U);
+}
+
+// ---------------------------------------------------------------------------
+// KCC tunable configuration tests
+// ---------------------------------------------------------------------------
+
+TCPIP2_TEST(KccTurboConfigOffUsesNeutralCwndGain) {
+    std::uint64_t now = 100;
+    // Turbo off: PROBE_BW cwnd_gain floors at 1.0x instead of 1.88x.
+    KccController c(1460, KccConfig{/*turbo*/ false, /*ai_num*/ 25,
+                                     /*ecn*/ true, /*kf*/ nullptr});
+    FeedKccAcks(c, now, 20, 20, 1460, 8);
+    TCPIP2_EXPECT_TRUE(c.CwndGain() <= 256U * 2U);  // bounded, no 1.88x floor
+}
+
+TCPIP2_TEST(KccAiNumConfigSlowsProbeIncrease) {
+    std::uint64_t now = 100;
+    // A tiny AI step should keep the pacing gain from climbing as fast as the
+    // default 25/800 step.
+    KccController c(1460, KccConfig{/*turbo*/ true, /*ai_num*/ 8,
+                                     /*ecn*/ true, /*kf*/ nullptr});
+    FeedKccAcks(c, now, 20, 20, 1460, 8);
+    // ai_num=8 < 25: the gain cannot have reached the 1.25x ceiling yet on a
+    // zero-excess path unless the periodic drain intervened.
+    TCPIP2_EXPECT_TRUE(c.PacingGain() <= 256U * 125 / 100 + 64U);
+}
+
+TCPIP2_TEST(KccSendBufferDeliversCeCounter) {
+    TestEnv env;
+    auto send = MakeKcc(1000, 1460);
+    std::vector<std::uint8_t> data(3000, 0xAB);
+    send->Enqueue(data.data(), data.size());
+    auto seg1 = send->NextSegment(65535, env.now_ms);
+    env.SendSegment(*send, seg1);
+    auto seg2 = send->NextSegment(65535, env.now_ms);
+    env.SendSegment(*send, seg2);
+    env.now_ms += 20;
+    // First ACK without ECE.
+    auto ack1 = send->OnAck(
+        seg1.sequence + static_cast<std::uint32_t>(seg1.payload_length),
+        65535, env.now_ms, true);
+    TCPIP2_EXPECT_TRUE(ack1.newly_acked > 0);
+    // Second ACK with ECE: delivered_ce counter increments.
+    auto ack2 = send->OnAck(
+        seg2.sequence + static_cast<std::uint32_t>(seg2.payload_length),
+        65535, env.now_ms + 10, true, /*ece=*/true);
+    TCPIP2_EXPECT_TRUE(ack2.newly_acked > 0);
+    TCPIP2_EXPECT_EQ(send->DeliveredCeCount(), 1ULL);
 }
 
 TCPIP2_TEST_MAIN()

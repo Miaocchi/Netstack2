@@ -15,6 +15,14 @@
 
 namespace tcpip2 {
 
+/// TCP congestion-control algorithm selection (fixed at flow creation).
+enum class TcpCongestionAlgorithm {
+    Aimd,           ///< RFC 5681 (default, no pacing).
+    Bbr,            ///< BBRv1 (with pacing).
+    HybridBdpAimd,  ///< BDP-based cwnd with AIMD loss response.
+    Kcc,            ///< KCC v2.0 geodesic congestion control.
+};
+
 struct NetstackConfig {
     std::size_t shard_count = 1;
 
@@ -38,6 +46,24 @@ struct NetstackConfig {
 
     std::uint32_t initial_tcp_window = 65536;
     std::uint16_t tcp_mss = 1460;
+
+    /// Per-flow congestion-control algorithm for new TCP connections.
+    TcpCongestionAlgorithm tcp_cc = TcpCongestionAlgorithm::Aimd;
+
+    /// KCC v2.0 tunables (ADR-010). Ignored unless tcp_cc == Kcc.
+    /// 1.88x BDP cwnd floor in PROBE_BW (upstream kcc_turbo, default 1).
+    bool kcc_turbo = true;
+    /// PROBE_BW additive-increase numerator over 800 (upstream kcc_ai_num,
+    /// default 25 = 3.125%/round).
+    std::uint32_t kcc_ai_num = 25;
+    /// Enable KCC's ECN-CE EWMA cwnd_gain backoff (upstream KCC_ECN_ENABLE is
+    /// 0; Netstack2 enables it because the RFC 3168 data path is verified).
+    bool kcc_ecn = true;
+    /// Enable the per-shard cross-connection bandwidth filter (KCC Forwarding,
+    /// upstream kcc_kf_enable default 0). New KCC flows on a shard bootstrap
+    /// their window from a fair-share estimate learned from the shard's other
+    /// flows.
+    bool kcc_kf_enable = false;
 
     std::uint64_t rto_initial_ms = 1000;
     std::uint64_t persist_timeout_ms = 30000;

@@ -109,6 +109,14 @@ struct TcpHandshakeConfig {
 
     CongestionAlgorithm cc_algorithm = CongestionAlgorithm::Aimd;
 
+    // KCC v2.0 tunables (ADR-009/010). Ignored unless cc_algorithm == Kcc.
+    bool kcc_turbo = true;             ///< 1.88x BDP cwnd floor in PROBE_BW.
+    std::uint32_t kcc_ai_num = 25;     ///< PROBE_BW AI numerator (/800).
+    bool kcc_ecn = true;               ///< Enable KCC ECN-CE EWMA backoff.
+    bool kcc_kf_enable = false;        ///< Enable per-shard KF (default off).
+    /// Per-shard cross-connection bandwidth filter (may be null = disabled).
+    KccKalmanFilter* kcc_kf = nullptr;
+
     bool Validate() const noexcept;
 };
 

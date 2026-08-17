@@ -66,6 +66,11 @@ Netstack2 按以下原则推进:
 - OpenPPP2 真实 adapter（P4-7 smoke test 已通过, 真实 OpenPPP2 仓库 adapter 待 P4-04）。
 - FQ-CoDel scheduler 已实现 (`src/qos/fq_codel.h`), 已接入 shard egress 路径 (`StackShard::FlushTcpTx`);
 - HybridBdpAimd 拥塞控制已实现 (`HybridBdpAimdController`, ADR-006 Accepted), 尚未在 netem/真实 TUN 下验证。
+- KCC v2.0 拥塞控制已移植 (`KccController`, ADR-009 Accepted), 算法核心来自 `liulilittle/kcc`
+  `tcp_kcc.c` (commit `227a20b`), geodesic G1/G2/G3 + STARTUP/DRAIN/PROBE_BW FSM + LT-BW + ACK 聚合补偿;
+  ADR-010 扩展: per-shard `KccKalmanFilter` 跨连接带宽共享 + ECN EWMA 回退 + `kcc_turbo`/`kcc_ai_num`/
+  `kcc_ecn`/`kcc_kf_enable` 配置;
+  尚未在 netem/真实 TUN 下验证。
 
 冻结 API 前必须先修复的契约问题:
 
@@ -1251,7 +1256,7 @@ public:
 
 #### 切换语义
 
-| 场景 | hybrid/BBR 由谁执行 |
+| 场景 | hybrid/BBR/KCC 由谁执行 |
 |---|---|
 | Netstack2 直接通过 DPDK/AF_XDP 发 TCP | Netstack2 controller |
 | TUN 侧被代理的本地 TCP 腿 | Netstack2 以 Session 背压为主, 不代表公网 CC |
@@ -1260,7 +1265,47 @@ public:
 | Windows/iOS kernel socket | OS 提供的算法, 无法承诺 KCC/BBR |
 | UCP over UDP | UCP KCC |
 
-不支持请求 hybrid/BBR 却静默使用其他算法。必须返回 capability/fallback reason。
+不支持请求 hybrid/BBR/KCC 却静默使用其他算法。必须返回 capability/fallback reason。
+
+#### KCC v2.0 移植 (ADR-009, P3C-14)
+
+已将 `liulilittle/kcc` 的 Linux 内核模块 `tcp_kcc.c`（commit `227a20b`,
+BSD/GPL 双许可）的算法核心移植为 `KccController`
+（`CongestionAlgorithm::Kcc`, telemetry `kcc`）, 与 `AimdController` /
+`BbrController` / `HybridBdpAimdController` 并列于 `TcpSendBuffer` 的
+`std::variant` 热路径, 公共配置新增 `TcpCongestionAlgorithm::Kcc`
+（`NetstackConfig::tcp_cc`）。
+
+移植内容（忠实于上游）:
+
+- 三分量 RTT 模型 + geodesic G1/G2/G3 估计器（G1 即时向下、G2 12.2%/RTT 封顶
+  向上、G3 双阈值路径增加确认）, BDP 安全下限 `min(x_est>>10, min_rtt_us)`。
+- 三态 FSM（STARTUP→DRAIN→PROBE_BW）+ 物理队列驱动的 AI/MD 闭环 PI 控制器。
+- 窗口化 min RTT（sticky fall / fast fall / SRTT guard / geodesic pull-down）。
+- LT-BW 限速检测 + 置信度门控 ACK 聚合补偿 + alone-on-path 单流旁路。
+- `win_minmax` 滑动窗口最大滤波。
+
+未移植（内核专属或上游默认关闭）:
+
+- 全局跨连接 KF（上游默认 `kcc_kf_enable=0`, 保持 shard 本地确定性）。
+- TSO/GSO 突发控制（`kTsoSegsGoal=1` 替代）。
+- `/proc/kcc/status`、sysctl、连接计数。
+- ECN EWMA 回退（`KCC_ECN_ENABLE=0` 上游默认, KCC 自身不响应 ECE）。
+- 恢复期 cwnd 转移改由 send buffer 既有 fast-recovery 通道驱动
+  （`OnFastRecoveryEntry/Exit`）。
+
+> **ADR-010 更正（2026-08-16）**: 上述未移植项中, 全局 KF 已按
+> **per-shard 实例**移植为 `KccKalmanFilter`（`kcc_kf_enable` 默认关）,
+> TSO/GSO 突发 headroom 改为 pacing-interval 估计, sysctl 参数折叠进
+> `NetstackConfig`（`kcc_turbo`/`kcc_ai_num`/`kcc_kf_enable`）, ECN EWMA
+> 回退已移植并默认开启（`kcc_ecn`），`OnEcnCe()` 保持 no-op 避免与
+> send buffer 的 ECE/CWR 循环双重削减。配置经 `TcpHandshakeConfig`
+> 进入 `TcpSendBuffer`/`KccController`; `StackShard` 拥有并注入
+> per-shard `KccKalmanFilter`。
+
+精度映射: Netstack2 时钟为毫秒粒度, 移植按 `rtt_us = rtt_ms*1000` 喂入
+`RateSample` 新增的 us 字段（`interval_us`/`rtt_us`/`delivered_bytes`/
+`prior_delivered_bytes`）, 子毫秒精度受注入 `IClock` 限制（文档化限制, 非行为偏差）。
 
 测试矩阵:
 
@@ -1283,7 +1328,7 @@ public:
 
 ```text
 --stack=lwip|netstack2|native
---tcp-cc=hybrid_bdp_aimd|bbr
+--tcp-cc=hybrid_bdp_aimd|bbr|kcc
 --aqm=none|codel
 --fq=true|false
 --netstack-shards=N

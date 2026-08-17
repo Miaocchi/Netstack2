@@ -98,7 +98,8 @@ public:
                   std::uint64_t persist_max_ms,
                   std::size_t max_retransmissions,
                   std::size_t max_persist_probes,
-                  CongestionAlgorithm cc_algorithm = CongestionAlgorithm::Aimd);
+                  CongestionAlgorithm cc_algorithm = CongestionAlgorithm::Aimd,
+                  KccConfig kcc_config = {});
 
     ~TcpSendBuffer() = default;
 
@@ -210,6 +211,9 @@ public:
     std::size_t SackedBytes() const noexcept { return sacked_bytes_; }
     std::uint32_t SackedSequence() const noexcept { return sacked_sequence_; }
     bool InFastRecovery() const noexcept;
+    /// Cumulative count of CE-marked segments delivered to the receiver
+    /// (RFC 3168 tp->delivered_ce).
+    std::uint64_t DeliveredCeCount() const noexcept { return delivered_ce_; }
 
     /// @return The selected congestion algorithm.
     CongestionAlgorithm Algorithm() const noexcept { return cc_algorithm_; }
@@ -280,9 +284,11 @@ private:
     std::uint32_t snd_nxt_;    ///< Next sequence to assign.
     std::uint32_t snd_max_;    ///< Highest sequence ever sent (+1).
 
-    // Congestion control (pluggable: AIMD, BBRv1, or Hybrid BDP-AIMD)
+    // Congestion control (pluggable: AIMD, BBRv1, Hybrid BDP-AIMD, or KCC)
     CongestionAlgorithm cc_algorithm_;
-    std::variant<AimdController, BbrController, HybridBdpAimdController> controller_;
+    std::variant<AimdController, BbrController, HybridBdpAimdController,
+                 KccController>
+        controller_;
     DeliveryRateSampler sampler_;
     std::uint16_t mss_;        ///< Maximum segment size.
 
@@ -345,6 +351,10 @@ private:
     // a segment with CWR is actually sent (OnSent), bounding reductions to
     // one per CWR round-trip.
     bool ecn_cwr_queued_ = false;
+    // Cumulative count of CE-marked segments delivered to the receiver
+    // (tp->delivered_ce). Incremented on every ACK that carries ECE; consumed
+    // by KCC's ECN-CE EWMA backoff.
+    std::uint64_t delivered_ce_ = 0;
 };
 
 } // namespace tcpip2

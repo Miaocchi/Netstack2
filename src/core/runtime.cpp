@@ -54,6 +54,24 @@ TcpHandshakeConfig MakeTcpConfig(const NetstackConfig& config) noexcept {
     tcp.persist_timer_base_ms = std::min<std::uint64_t>(500, config.persist_timeout_ms);
     tcp.timewait_ms = static_cast<std::uint32_t>(config.time_wait_ms);
     tcp.keepalive_ms = config.keepalive_ms;
+    switch (config.tcp_cc) {
+        case TcpCongestionAlgorithm::Bbr:
+            tcp.cc_algorithm = CongestionAlgorithm::Bbr;
+            break;
+        case TcpCongestionAlgorithm::HybridBdpAimd:
+            tcp.cc_algorithm = CongestionAlgorithm::HybridBdpAimd;
+            break;
+        case TcpCongestionAlgorithm::Kcc:
+            tcp.cc_algorithm = CongestionAlgorithm::Kcc;
+            tcp.kcc_turbo = config.kcc_turbo;
+            tcp.kcc_ai_num = config.kcc_ai_num;
+            tcp.kcc_ecn = config.kcc_ecn;
+            tcp.kcc_kf_enable = config.kcc_kf_enable;
+            break;
+        default:
+            tcp.cc_algorithm = CongestionAlgorithm::Aimd;
+            break;
+    }
     // Segment payload the TX pool can always carry; 0 if the pool slot is
     // too small to bound meaningfully.
     if (config.pool_slot_capacity > kIpTcpMaxHeaderOverhead) {

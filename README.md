@@ -32,7 +32,7 @@ Multithreaded userspace IPv4/IPv6 TCP/IP engine.
 include/tcpip2/     public API (v0.3.0)
 src/core/           dispatcher, shard, timer wheel, buffer pool
 src/ip/             IPv4/IPv6/ICMP/checksum
-src/tcp/            TCP state machine, input, output, recovery, congestion (AIMD/BBR/hybrid), FQ-CoDel
+src/tcp/            TCP state machine, input, output, recovery, congestion (AIMD/BBR/hybrid/KCC v2.0), FQ-CoDel
 src/session/        transport session adapters (TcpSession)
 src/packetio/       null / TAP / AF_XDP / netmap / DPDK backends
 tests/unit/         unit tests (+ support harness)
@@ -68,7 +68,7 @@ bash scripts/build-tsan.sh
 | ADR-008 v0.3 API correctness reset | in progress |
 | P3A IP layer (IPv4/IPv6/ICMP/fragment reassembly) | done |
 | P3B TCP state machine (handshake/send/receive/close) | done |
-| P3C congestion control (AIMD/BBR/hybrid/pacer/FQ-CoDel/TcpSession) | in progress |
+| P3C congestion control (AIMD/BBR/hybrid/KCC v2.0+KF/ECN/pacer/FQ-CoDel/TcpSession) | in progress |
 | P3U UDP flow and datagram session | done |
 | P3I ICMP shard RX wiring + PMTU | done |
 | P4 OpenPPP2 integration | in progress |

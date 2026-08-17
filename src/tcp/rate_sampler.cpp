@@ -31,8 +31,10 @@ void DeliveryRateSampler::OnPacketSent(PacketDeliveryState& pkt,
                                         std::uint64_t now_ms) noexcept {
     pkt.delivered_bytes = delivered_bytes_;
     pkt.delivered_time_ms = delivered_time_ms_;
+    pkt.delivered_time_us = delivered_time_ms_ * 1000;
     if (pkt.first_sent_time_ms == 0) {
         pkt.first_sent_time_ms = now_ms;
+        pkt.first_sent_time_us = now_ms * 1000;
     }
     pkt.app_limited = app_limited_;
     pkt.retransmitted = false;
@@ -44,13 +46,16 @@ RateSample DeliveryRateSampler::OnAck(const PacketDeliveryState& pkt,
                                        std::uint64_t inflight_bytes) noexcept {
     RateSample sample;
     sample.now_ms = now_ms;
+    sample.now_us = now_ms * 1000;
     sample.acked_bytes = acked_bytes;
     sample.inflight_bytes = inflight_bytes;
     sample.app_limited = pkt.app_limited;
 
     // Update delivered counters.
+    sample.prior_delivered_bytes = delivered_bytes_;
     delivered_bytes_ += acked_bytes;
     delivered_time_ms_ = now_ms;
+    sample.delivered_bytes = delivered_bytes_;
 
     // Compute RTT for this packet.
     // If the packet was retransmitted, the rate sample is not trustworthy
@@ -58,6 +63,7 @@ RateSample DeliveryRateSampler::OnAck(const PacketDeliveryState& pkt,
     // we still report acked_bytes but leave delivery_rate at 0.
     if (!pkt.retransmitted && now_ms >= pkt.first_sent_time_ms) {
         sample.rtt_ms = now_ms - pkt.first_sent_time_ms;
+        sample.rtt_us = sample.rtt_ms * 1000;
 
         // Delivery rate = delivered增量 / interval
         // Interval = delivered_time_ms (now) - pkt.delivered_time_ms
@@ -69,6 +75,7 @@ RateSample DeliveryRateSampler::OnAck(const PacketDeliveryState& pkt,
                 SaturatingSub(delivered_bytes_, pkt.delivered_bytes);
 
             sample.interval_ms = interval_ms;
+            sample.interval_us = interval_ms * 1000;
             sample.delivery_rate_bytes_per_sec =
                 SaturatingMulDiv(delivered_delta, 1000, interval_ms);
         }

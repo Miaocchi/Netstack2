@@ -136,6 +136,16 @@ StackShard::~StackShard() {
 
 bool StackShard::Start() noexcept {
     if (running_.load(std::memory_order_relaxed)) return false;
+    // Wire the per-shard KCC bandwidth filter into the TCP engine config.
+    // The filter is owned by this StackShard and only accessed on the shard
+    // thread; its address is stable because the shard object never moves.
+    if (tcp_config_.cc_algorithm == CongestionAlgorithm::Kcc) {
+        kcc_kf_.enabled = tcp_config_.kcc_kf_enable;
+        if (tcp_config_.kcc_kf_enable) {
+            kcc_kf_.Reset();
+        }
+        tcp_config_.kcc_kf = &kcc_kf_;
+    }
     std::array<std::uint64_t, 2> isn_secret{};
     if (!LoadTcpIsnSecret(isn_secret)) return false;
     ++tcp_engine_epoch_;

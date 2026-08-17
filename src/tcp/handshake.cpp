@@ -802,7 +802,9 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
                             config_.persist_timer_max_ms,
                             config_.max_retransmissions,
                             config_.max_persist_probes,
-                            config_.cc_algorithm);
+                            config_.cc_algorithm,
+                            KccConfig{config_.kcc_turbo, config_.kcc_ai_num,
+                                      config_.kcc_ecn, config_.kcc_kf});
                     } catch (...) {
                         result.response = BuildReset(segment);
                         result.error = TcpHandshakeError::ReceiveBudget;

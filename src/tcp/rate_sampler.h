@@ -24,22 +24,39 @@ namespace tcpip2 {
 /// Information passed to the congestion controller on every ACK.
 struct RateSample {
     std::uint64_t now_ms = 0;
+    /// Monotonic time in microseconds (same epoch as now_ms; sub-ms precision
+    /// is limited by the injected clock, see clock.h).
+    std::uint64_t now_us = 0;
     /// Delivery rate in bytes per second (0 until first RTT-complete sample).
     std::uint64_t delivery_rate_bytes_per_sec = 0;
     /// Time between send and ACK for the sample (ms).
     std::uint64_t interval_ms = 0;
+    /// Same interval in microseconds (interval_ms * 1000).
+    std::uint64_t interval_us = 0;
     /// RTT of the sampled packet (ms).
     std::uint64_t rtt_ms = 0;
+    /// Same RTT in microseconds (rtt_ms * 1000).
+    std::uint64_t rtt_us = 0;
     /// Bytes newly acknowledged by this ACK.
     std::uint64_t acked_bytes = 0;
     /// Bytes lost since the last sample (detected via RTO or SACK).
     std::uint64_t lost_bytes = 0;
     /// Estimated bytes currently in flight.
     std::uint64_t inflight_bytes = 0;
+    /// Total bytes delivered (cumulative ACKed) including this sample.
+    std::uint64_t delivered_bytes = 0;
+    /// Cumulative delivered bytes before this sample's interval began.
+    std::uint64_t prior_delivered_bytes = 0;
     /// True if the application is not filling the congestion window.
     bool app_limited = false;
     /// True if ECN CE was observed on the ACK path.
     bool ecn_ce = false;
+    /// True if the ACK was delayed (coalesced) by the receiver.
+    bool is_ack_delayed = false;
+    /// Cumulative number of CE-marked segments delivered to the receiver
+    /// (RFC 3168 tp->delivered_ce). Fed by the ECN data path; consumed by
+    /// KCC's ECN-CE EWMA.
+    std::uint64_t delivered_ce = 0;
 };
 
 /// Per-packet information recorded at send time and consumed at ACK time.
@@ -51,6 +68,10 @@ struct PacketDeliveryState {
     std::uint64_t delivered_time_ms = 0;
     /// Timestamp (ms) when this packet was first transmitted.
     std::uint64_t first_sent_time_ms = 0;
+    /// Microsecond equivalents of the ms fields above (us = ms * 1000),
+    /// consumed by the KCC controller which requires us-scale RTT/interval.
+    std::uint64_t delivered_time_us = 0;
+    std::uint64_t first_sent_time_us = 0;
     /// True if the connection was app-limited when this packet was sent.
     bool app_limited = false;
     /// True if this packet has been retransmitted (invalidates rate sample).

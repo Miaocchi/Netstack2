@@ -220,6 +220,10 @@ private:
     IClock* clock_;  // never null after construction (defaults to DefaultClock)
     IEventSink* event_sink_;  // may be nullptr (events silently dropped)
     TcpHandshakeConfig tcp_config_;
+    /// Per-shard cross-connection bandwidth filter for KCC (ADR-010). Owned
+    /// by the shard, touched only on the shard thread; shared with all KCC
+    /// flows on this shard via TcpHandshakeConfig::kcc_kf.
+    KccKalmanFilter kcc_kf_;
     InboxSpsc packet_inbox_;
     InboxMpsc control_inbox_;
     ThreadOwnershipGuard ownership_;
