@@ -25,17 +25,14 @@
 namespace tcpip2 {
 
 namespace {
-[[noreturn]] void Die(const char* what) noexcept {
+[[noreturn]] void Die(const char *what) noexcept {
     std::fprintf(stderr, "tcpip2: buffer ownership violation: %s\n", what);
     std::abort();
 }
 } // namespace
 
 PktBufferPool::PktBufferPool(std::size_t slot_count, std::size_t slot_capacity)
-    : slot_count_(slot_count),
-      slots_(slot_count),
-      states_(slot_count, SlotState::Free),
-      arena_(nullptr),
+    : slot_count_(slot_count), slots_(slot_count), states_(slot_count, SlotState::Free), arena_(nullptr),
       owner_thread_id_(std::this_thread::get_id()) {
     // Guard against slot_count * slot_capacity overflow. PktBufferPool is a
     // public type constructible independently of NetstackConfig::Validate(),
@@ -59,7 +56,7 @@ PktBufferPool::PktBufferPool(std::size_t slot_count, std::size_t slot_capacity)
     }
     free_slots_.reserve(slot_count);
     for (std::size_t i = 0; i < slot_count; ++i) {
-        PktBuffer& b = slots_[i];
+        PktBuffer &b = slots_[i];
         b.pool_ = this;
         b.slot_ = i;
         b.capacity_ = slot_capacity;
@@ -75,24 +72,28 @@ BufferLease PktBufferPool::Allocate() {
     if (free_slots_.empty() && !return_queue_.empty()) {
         DrainLocked();
     }
-    if (free_slots_.empty()) return {};
+    if (free_slots_.empty())
+        return {};
     const std::size_t idx = free_slots_.back();
     free_slots_.pop_back();
-    if (states_[idx] != SlotState::Free) Die("allocate on non-free slot");
+    if (states_[idx] != SlotState::Free)
+        Die("allocate on non-free slot");
     states_[idx] = SlotState::Leased;
     ++outstanding_;
-    PktBuffer& b = slots_[idx];
+    PktBuffer &b = slots_[idx];
     b.size_ = 0;
     return BufferLease(&b);
 }
 
-BufferRef PktBufferPool::Retain(BufferLease&& lease) {
-    PktBuffer* p = lease.Get();
-    if (p == nullptr) return {};
+BufferRef PktBufferPool::Retain(BufferLease &&lease) {
+    PktBuffer *p = lease.Get();
+    if (p == nullptr)
+        return {};
     {
         std::lock_guard<std::mutex> lock(mutex_);
         const std::size_t idx = p->slot_;
-        if (states_[idx] != SlotState::Leased) Die("retain on non-leased slot");
+        if (states_[idx] != SlotState::Leased)
+            Die("retain on non-leased slot");
         states_[idx] = SlotState::Retained;
         ++retained_;
         p->ref_count_ = 1;
@@ -101,13 +102,17 @@ BufferRef PktBufferPool::Retain(BufferLease&& lease) {
     return BufferRef(p);
 }
 
-void PktBufferPool::ReleaseRetained(PktBuffer* pkt) {
-    if (pkt == nullptr) return;
+void PktBufferPool::ReleaseRetained(PktBuffer *pkt) {
+    if (pkt == nullptr)
+        return;
     std::lock_guard<std::mutex> lock(mutex_);
-    if (pkt->pool_ != this) Die("buffer returned to wrong pool");
+    if (pkt->pool_ != this)
+        Die("buffer returned to wrong pool");
     const std::size_t idx = pkt->slot_;
-    if (&slots_[idx] != pkt) Die("buffer pointer/slot mismatch");
-    if (states_[idx] != SlotState::Retained) Die("release on non-retained slot");
+    if (&slots_[idx] != pkt)
+        Die("buffer pointer/slot mismatch");
+    if (states_[idx] != SlotState::Retained)
+        Die("release on non-retained slot");
     --retained_;
     if (std::this_thread::get_id() == owner_thread_id_) {
         states_[idx] = SlotState::Free;
@@ -120,13 +125,17 @@ void PktBufferPool::ReleaseRetained(PktBuffer* pkt) {
     }
 }
 
-void PktBufferPool::ReturnBuffer(PktBuffer* pkt) {
-    if (pkt == nullptr) return;
+void PktBufferPool::ReturnBuffer(PktBuffer *pkt) {
+    if (pkt == nullptr)
+        return;
     std::lock_guard<std::mutex> lock(mutex_);
-    if (pkt->pool_ != this) Die("buffer returned to wrong pool");
+    if (pkt->pool_ != this)
+        Die("buffer returned to wrong pool");
     const std::size_t idx = pkt->slot_;
-    if (&slots_[idx] != pkt) Die("buffer pointer/slot mismatch");
-    if (states_[idx] != SlotState::Leased) Die("double release / invalid return");
+    if (&slots_[idx] != pkt)
+        Die("buffer pointer/slot mismatch");
+    if (states_[idx] != SlotState::Leased)
+        Die("double release / invalid return");
     if (std::this_thread::get_id() == owner_thread_id_) {
         states_[idx] = SlotState::Free;
         pkt->size_ = 0;
@@ -142,7 +151,8 @@ void PktBufferPool::DrainLocked() noexcept {
     while (!return_queue_.empty()) {
         const std::size_t idx = return_queue_.front();
         return_queue_.pop_front();
-        if (states_[idx] != SlotState::Queued) Die("drain on non-queued slot");
+        if (states_[idx] != SlotState::Queued)
+            Die("drain on non-queued slot");
         states_[idx] = SlotState::Free;
         slots_[idx].size_ = 0;
         --outstanding_;
@@ -164,7 +174,7 @@ std::size_t PktBufferPool::ReturnQueueSize() const noexcept {
 
 BufferLease::~BufferLease() { Release(); }
 
-BufferLease& BufferLease::operator=(BufferLease&& other) noexcept {
+BufferLease &BufferLease::operator=(BufferLease &&other) noexcept {
     if (this != &other) {
         Release();
         pkt_ = other.pkt_;
@@ -174,23 +184,25 @@ BufferLease& BufferLease::operator=(BufferLease&& other) noexcept {
 }
 
 void BufferLease::Release() noexcept {
-    PktBuffer* p = pkt_;
+    PktBuffer *p = pkt_;
     pkt_ = nullptr;
-    if (p != nullptr) p->pool_->ReturnBuffer(p);
+    if (p != nullptr)
+        p->pool_->ReturnBuffer(p);
 }
 
 BufferRef::~BufferRef() { Release(); }
 
-BufferRef& BufferRef::operator=(const BufferRef& other) noexcept {
+BufferRef &BufferRef::operator=(const BufferRef &other) noexcept {
     if (this != &other) {
         Release();
         pkt_ = other.pkt_;
-        if (pkt_) ++pkt_->ref_count_;
+        if (pkt_)
+            ++pkt_->ref_count_;
     }
     return *this;
 }
 
-BufferRef& BufferRef::operator=(BufferRef&& other) noexcept {
+BufferRef &BufferRef::operator=(BufferRef &&other) noexcept {
     if (this != &other) {
         Release();
         pkt_ = other.pkt_;
@@ -202,7 +214,7 @@ BufferRef& BufferRef::operator=(BufferRef&& other) noexcept {
 void BufferRef::Reset() noexcept { Release(); }
 
 void BufferRef::Release() noexcept {
-    PktBuffer* p = pkt_;
+    PktBuffer *p = pkt_;
     pkt_ = nullptr;
     if (p != nullptr) {
         if (--p->ref_count_ == 0) {

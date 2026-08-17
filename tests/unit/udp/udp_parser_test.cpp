@@ -25,12 +25,11 @@ namespace {
 // Inline helpers for building raw packets (no PacketBuilder dependency).
 // ---------------------------------------------------------------------------
 
-std::uint16_t InlineChecksum(const std::uint8_t* data, std::size_t len, std::uint32_t seed) {
+std::uint16_t InlineChecksum(const std::uint8_t *data, std::size_t len, std::uint32_t seed) {
     std::uint32_t acc = seed;
     std::size_t i = 0;
     for (; i + 1 < len; i += 2) {
-        acc += static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(data[i]) << 8) | data[i + 1]);
+        acc += static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[i]) << 8) | data[i + 1]);
     }
     if (i < len) {
         acc += static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[i]) << 8);
@@ -41,12 +40,12 @@ std::uint16_t InlineChecksum(const std::uint8_t* data, std::size_t len, std::uin
     return static_cast<std::uint16_t>(~acc & 0xFFFFu);
 }
 
-void AppendU16(std::vector<std::uint8_t>& v, std::uint16_t val) {
+void AppendU16(std::vector<std::uint8_t> &v, std::uint16_t val) {
     v.push_back(static_cast<std::uint8_t>((val >> 8) & 0xFFu));
     v.push_back(static_cast<std::uint8_t>(val & 0xFFu));
 }
 
-void AppendU32(std::vector<std::uint8_t>& v, std::uint32_t val) {
+void AppendU32(std::vector<std::uint8_t> &v, std::uint32_t val) {
     v.push_back(static_cast<std::uint8_t>((val >> 24) & 0xFFu));
     v.push_back(static_cast<std::uint8_t>((val >> 16) & 0xFFu));
     v.push_back(static_cast<std::uint8_t>((val >> 8) & 0xFFu));
@@ -62,12 +61,9 @@ void AppendU32(std::vector<std::uint8_t>& v, std::uint32_t val) {
 /// @param udp_checksum  value to place in the UDP checksum field (0 = not computed)
 /// @param compute_correct_checksum  if true, compute and set a correct UDP checksum
 /// @param bad_checksum  if true, set a deliberately wrong non-zero checksum
-std::vector<std::uint8_t> BuildIpv4Udp(
-    std::uint32_t src_ip, std::uint32_t dst_ip,
-    std::uint16_t src_port, std::uint16_t dst_port,
-    const std::vector<std::uint8_t>& payload,
-    bool compute_correct_checksum = true,
-    bool bad_checksum = false) {
+std::vector<std::uint8_t> BuildIpv4Udp(std::uint32_t src_ip, std::uint32_t dst_ip, std::uint16_t src_port,
+                                       std::uint16_t dst_port, const std::vector<std::uint8_t> &payload,
+                                       bool compute_correct_checksum = true, bool bad_checksum = false) {
 
     const std::size_t udp_len = 8 + payload.size();
     const std::size_t total_len = 20 + udp_len;
@@ -76,14 +72,14 @@ std::vector<std::uint8_t> BuildIpv4Udp(
     pkt.reserve(total_len);
 
     // IPv4 header
-    pkt.push_back(0x45);  // version 4, IHL 5
-    pkt.push_back(0x00);  // DSCP/ECN
+    pkt.push_back(0x45); // version 4, IHL 5
+    pkt.push_back(0x00); // DSCP/ECN
     AppendU16(pkt, static_cast<std::uint16_t>(total_len));
-    AppendU16(pkt, 0);       // identification
-    AppendU16(pkt, 0x0000);  // flags + frag offset
-    pkt.push_back(64);       // TTL
-    pkt.push_back(0x11);     // protocol = UDP (17)
-    AppendU16(pkt, 0);       // checksum placeholder
+    AppendU16(pkt, 0);      // identification
+    AppendU16(pkt, 0x0000); // flags + frag offset
+    pkt.push_back(64);      // TTL
+    pkt.push_back(0x11);    // protocol = UDP (17)
+    AppendU16(pkt, 0);      // checksum placeholder
     AppendU32(pkt, src_ip);
     AppendU32(pkt, dst_ip);
 
@@ -91,10 +87,11 @@ std::vector<std::uint8_t> BuildIpv4Udp(
     AppendU16(pkt, src_port);
     AppendU16(pkt, dst_port);
     AppendU16(pkt, static_cast<std::uint16_t>(udp_len));
-    AppendU16(pkt, 0);  // checksum placeholder
+    AppendU16(pkt, 0); // checksum placeholder
 
     // UDP payload
-    for (auto b : payload) pkt.push_back(b);
+    for (auto b : payload)
+        pkt.push_back(b);
 
     // Compute IPv4 header checksum
     pkt[10] = 0;
@@ -108,20 +105,17 @@ std::vector<std::uint8_t> BuildIpv4Udp(
         // Build the pseudo-header seed
         std::uint32_t seed = 0;
         const std::uint8_t src_bytes[4] = {
-            static_cast<std::uint8_t>((src_ip >> 24) & 0xFF),
-            static_cast<std::uint8_t>((src_ip >> 16) & 0xFF),
-            static_cast<std::uint8_t>((src_ip >> 8) & 0xFF),
-            static_cast<std::uint8_t>(src_ip & 0xFF)};
+            static_cast<std::uint8_t>((src_ip >> 24) & 0xFF), static_cast<std::uint8_t>((src_ip >> 16) & 0xFF),
+            static_cast<std::uint8_t>((src_ip >> 8) & 0xFF), static_cast<std::uint8_t>(src_ip & 0xFF)};
         const std::uint8_t dst_bytes[4] = {
-            static_cast<std::uint8_t>((dst_ip >> 24) & 0xFF),
-            static_cast<std::uint8_t>((dst_ip >> 16) & 0xFF),
-            static_cast<std::uint8_t>((dst_ip >> 8) & 0xFF),
-            static_cast<std::uint8_t>(dst_ip & 0xFF)};
-        seed = Ipv4PseudoHeaderSeed(src_bytes, dst_bytes, 17,
-                                     static_cast<std::uint16_t>(udp_len));
+            static_cast<std::uint8_t>((dst_ip >> 24) & 0xFF), static_cast<std::uint8_t>((dst_ip >> 16) & 0xFF),
+            static_cast<std::uint8_t>((dst_ip >> 8) & 0xFF), static_cast<std::uint8_t>(dst_ip & 0xFF)};
+        seed = Ipv4PseudoHeaderSeed(src_bytes, dst_bytes, 17, static_cast<std::uint16_t>(udp_len));
         std::uint16_t udp_cksum = InlineChecksum(pkt.data() + 20, udp_len, seed);
-        if (udp_cksum == 0) udp_cksum = 0xFFFF;
-        if (bad_checksum) udp_cksum = udp_cksum ^ 0x00FF;  // corrupt it
+        if (udp_cksum == 0)
+            udp_cksum = 0xFFFF;
+        if (bad_checksum)
+            udp_cksum = udp_cksum ^ 0x00FF; // corrupt it
         pkt[26] = static_cast<std::uint8_t>((udp_cksum >> 8) & 0xFFu);
         pkt[27] = static_cast<std::uint8_t>(udp_cksum & 0xFFu);
     }
@@ -130,46 +124,48 @@ std::vector<std::uint8_t> BuildIpv4Udp(
 }
 
 /// Build a minimal IPv6+UDP packet.
-std::vector<std::uint8_t> BuildIpv6Udp(
-    const std::uint8_t src_ip[16], const std::uint8_t dst_ip[16],
-    std::uint16_t src_port, std::uint16_t dst_port,
-    const std::vector<std::uint8_t>& payload,
-    bool compute_correct_checksum = true,
-    bool bad_checksum = false) {
+std::vector<std::uint8_t> BuildIpv6Udp(const std::uint8_t src_ip[16], const std::uint8_t dst_ip[16],
+                                       std::uint16_t src_port, std::uint16_t dst_port,
+                                       const std::vector<std::uint8_t> &payload, bool compute_correct_checksum = true,
+                                       bool bad_checksum = false) {
 
     const std::size_t udp_len = 8 + payload.size();
-    const std::size_t payload_len = udp_len;  // IPv6 payload length = UDP length
+    const std::size_t payload_len = udp_len; // IPv6 payload length = UDP length
 
     std::vector<std::uint8_t> pkt;
     pkt.reserve(40 + udp_len);
 
     // IPv6 fixed header
-    pkt.push_back(0x60);  // version 6
+    pkt.push_back(0x60); // version 6
     pkt.push_back(0x00);
     pkt.push_back(0x00);
-    pkt.push_back(0x00);  // flow label
+    pkt.push_back(0x00); // flow label
     AppendU16(pkt, static_cast<std::uint16_t>(payload_len));
-    pkt.push_back(17);   // next header = UDP
-    pkt.push_back(64);   // hop limit
-    for (int i = 0; i < 16; ++i) pkt.push_back(src_ip[i]);
-    for (int i = 0; i < 16; ++i) pkt.push_back(dst_ip[i]);
+    pkt.push_back(17); // next header = UDP
+    pkt.push_back(64); // hop limit
+    for (int i = 0; i < 16; ++i)
+        pkt.push_back(src_ip[i]);
+    for (int i = 0; i < 16; ++i)
+        pkt.push_back(dst_ip[i]);
 
     // UDP header
     AppendU16(pkt, src_port);
     AppendU16(pkt, dst_port);
     AppendU16(pkt, static_cast<std::uint16_t>(udp_len));
-    AppendU16(pkt, 0);  // checksum placeholder
+    AppendU16(pkt, 0); // checksum placeholder
 
     // UDP payload
-    for (auto b : payload) pkt.push_back(b);
+    for (auto b : payload)
+        pkt.push_back(b);
 
     // Compute UDP checksum (mandatory for IPv6)
     if (compute_correct_checksum || bad_checksum) {
-        std::uint32_t seed = Ipv6PseudoHeaderSeed(src_ip, dst_ip, 17,
-                                     static_cast<std::uint32_t>(udp_len));
+        std::uint32_t seed = Ipv6PseudoHeaderSeed(src_ip, dst_ip, 17, static_cast<std::uint32_t>(udp_len));
         std::uint16_t udp_cksum = InlineChecksum(pkt.data() + 40, udp_len, seed);
-        if (udp_cksum == 0) udp_cksum = 0xFFFF;
-        if (bad_checksum) udp_cksum = udp_cksum ^ 0x00FF;
+        if (udp_cksum == 0)
+            udp_cksum = 0xFFFF;
+        if (bad_checksum)
+            udp_cksum = udp_cksum ^ 0x00FF;
         pkt[46] = static_cast<std::uint8_t>((udp_cksum >> 8) & 0xFFu);
         pkt[47] = static_cast<std::uint8_t>(udp_cksum & 0xFFu);
     }
@@ -179,10 +175,9 @@ std::vector<std::uint8_t> BuildIpv6Udp(
 
 /// Build IPv6 + a single 8-byte HopByHop extension header + UDP with a
 /// correct checksum (IPv6 pseudo-header over the UDP span).
-std::vector<std::uint8_t> BuildIpv6HopByHopUdp(
-    const std::uint8_t src_ip[16], const std::uint8_t dst_ip[16],
-    std::uint16_t src_port, std::uint16_t dst_port,
-    const std::vector<std::uint8_t>& payload) {
+std::vector<std::uint8_t> BuildIpv6HopByHopUdp(const std::uint8_t src_ip[16], const std::uint8_t dst_ip[16],
+                                               std::uint16_t src_port, std::uint16_t dst_port,
+                                               const std::vector<std::uint8_t> &payload) {
 
     const std::size_t udp_len = 8 + payload.size();
     std::vector<std::uint8_t> pkt;
@@ -194,34 +189,37 @@ std::vector<std::uint8_t> BuildIpv6HopByHopUdp(
     AppendU16(pkt, static_cast<std::uint16_t>(8 + udp_len));
     pkt.push_back(Ipv6ExtHeaderType::HopByHop);
     pkt.push_back(64);
-    for (int i = 0; i < 16; ++i) pkt.push_back(src_ip[i]);
-    for (int i = 0; i < 16; ++i) pkt.push_back(dst_ip[i]);
+    for (int i = 0; i < 16; ++i)
+        pkt.push_back(src_ip[i]);
+    for (int i = 0; i < 16; ++i)
+        pkt.push_back(dst_ip[i]);
     // HopByHop body: next header = UDP(17), hdr_ext_len = 0, six Pad1 bytes.
     pkt.push_back(17);
     pkt.push_back(0);
-    for (int i = 0; i < 6; ++i) pkt.push_back(0);
+    for (int i = 0; i < 6; ++i)
+        pkt.push_back(0);
 
     const std::size_t udp_offset = pkt.size();
     AppendU16(pkt, src_port);
     AppendU16(pkt, dst_port);
     AppendU16(pkt, static_cast<std::uint16_t>(udp_len));
-    AppendU16(pkt, 0);  // checksum placeholder
-    for (auto b : payload) pkt.push_back(b);
+    AppendU16(pkt, 0); // checksum placeholder
+    for (auto b : payload)
+        pkt.push_back(b);
 
-    const std::uint32_t seed = Ipv6PseudoHeaderSeed(src_ip, dst_ip, 17,
-                                                    static_cast<std::uint32_t>(udp_len));
+    const std::uint32_t seed = Ipv6PseudoHeaderSeed(src_ip, dst_ip, 17, static_cast<std::uint32_t>(udp_len));
     std::uint16_t cksum = InlineChecksum(pkt.data() + udp_offset, udp_len, seed);
-    if (cksum == 0) cksum = 0xFFFF;
+    if (cksum == 0)
+        cksum = 0xFFFF;
     pkt[udp_offset + 6] = static_cast<std::uint8_t>((cksum >> 8) & 0xFFu);
     pkt[udp_offset + 7] = static_cast<std::uint8_t>(cksum & 0xFFu);
     return pkt;
 }
 
 /// Build an IPv4 packet with a specified protocol (for NotUdp testing).
-std::vector<std::uint8_t> BuildIpv4WithProtocol(
-    std::uint32_t src_ip, std::uint32_t dst_ip, std::uint8_t protocol) {
+std::vector<std::uint8_t> BuildIpv4WithProtocol(std::uint32_t src_ip, std::uint32_t dst_ip, std::uint8_t protocol) {
 
-    const std::size_t total_len = 20 + 4;  // minimal payload
+    const std::size_t total_len = 20 + 4; // minimal payload
     std::vector<std::uint8_t> pkt;
     pkt.reserve(total_len);
     pkt.push_back(0x45);
@@ -256,15 +254,13 @@ std::vector<std::uint8_t> BuildIpv4WithProtocol(
 
 TCPIP2_TEST(UdpIpv4ValidParse) {
     const std::vector<std::uint8_t> payload = {0xDE, 0xAD, 0xBE, 0xEF};
-    const std::vector<std::uint8_t> pkt = BuildIpv4Udp(
-        0x0a000001u, 0x0a000002u, 12345, 53, payload);
+    const std::vector<std::uint8_t> pkt = BuildIpv4Udp(0x0a000001u, 0x0a000002u, 12345, 53, payload);
 
     const UdpInputResult result = ParseIpUdpPacket(pkt.data(), pkt.size());
-    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::None),
-                     static_cast<int>(result.error));
+    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::None), static_cast<int>(result.error));
     TCPIP2_EXPECT_EQ(std::uint16_t{12345}, result.datagram.header.src_port);
     TCPIP2_EXPECT_EQ(std::uint16_t{53}, result.datagram.header.dst_port);
-    TCPIP2_EXPECT_EQ(std::uint16_t{12}, result.datagram.header.length);  // 8 + 4
+    TCPIP2_EXPECT_EQ(std::uint16_t{12}, result.datagram.header.length); // 8 + 4
 }
 
 // ---------------------------------------------------------------------------
@@ -272,20 +268,16 @@ TCPIP2_TEST(UdpIpv4ValidParse) {
 // ---------------------------------------------------------------------------
 
 TCPIP2_TEST(UdpIpv6ValidParse) {
-    const std::uint8_t src_ip[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-    const std::uint8_t dst_ip[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+    const std::uint8_t src_ip[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t dst_ip[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
     const std::vector<std::uint8_t> payload = {0x01, 0x02, 0x03};
-    const std::vector<std::uint8_t> pkt = BuildIpv6Udp(
-        src_ip, dst_ip, 5353, 53, payload);
+    const std::vector<std::uint8_t> pkt = BuildIpv6Udp(src_ip, dst_ip, 5353, 53, payload);
 
     const UdpInputResult result = ParseIpUdpPacket(pkt.data(), pkt.size());
-    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::None),
-                     static_cast<int>(result.error));
+    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::None), static_cast<int>(result.error));
     TCPIP2_EXPECT_EQ(std::uint16_t{5353}, result.datagram.header.src_port);
     TCPIP2_EXPECT_EQ(std::uint16_t{53}, result.datagram.header.dst_port);
-    TCPIP2_EXPECT_EQ(std::uint16_t{11}, result.datagram.header.length);  // 8 + 3
+    TCPIP2_EXPECT_EQ(std::uint16_t{11}, result.datagram.header.length); // 8 + 3
 }
 
 // ---------------------------------------------------------------------------
@@ -297,8 +289,7 @@ TCPIP2_TEST(UdpTooShort) {
     const IpAddress dst = IpAddress::Ipv4(10, 0, 0, 2);
     const std::uint8_t data[7] = {0, 0, 0, 0, 0, 0, 0};
     const UdpParseResult result = ParseUdpDatagram(src, dst, data, 7, false);
-    TCPIP2_EXPECT_EQ(static_cast<int>(UdpParseError::TooShort),
-                     static_cast<int>(result.error));
+    TCPIP2_EXPECT_EQ(static_cast<int>(UdpParseError::TooShort), static_cast<int>(result.error));
 }
 
 // ---------------------------------------------------------------------------
@@ -310,13 +301,16 @@ TCPIP2_TEST(UdpLengthMismatch) {
     const IpAddress dst = IpAddress::Ipv4(10, 0, 0, 2);
     // 20 bytes of UDP data, but length field says 100
     std::uint8_t data[20] = {};
-    data[0] = 0; data[1] = 0;       // src port
-    data[2] = 0; data[3] = 53;      // dst port
-    data[4] = 0; data[5] = 100;     // length = 100
-    data[6] = 0; data[7] = 0;       // checksum = 0
+    data[0] = 0;
+    data[1] = 0; // src port
+    data[2] = 0;
+    data[3] = 53; // dst port
+    data[4] = 0;
+    data[5] = 100; // length = 100
+    data[6] = 0;
+    data[7] = 0; // checksum = 0
     const UdpParseResult result = ParseUdpDatagram(src, dst, data, 20, false);
-    TCPIP2_EXPECT_EQ(static_cast<int>(UdpParseError::LengthMismatch),
-                     static_cast<int>(result.error));
+    TCPIP2_EXPECT_EQ(static_cast<int>(UdpParseError::LengthMismatch), static_cast<int>(result.error));
 }
 
 // ---------------------------------------------------------------------------
@@ -326,12 +320,10 @@ TCPIP2_TEST(UdpLengthMismatch) {
 TCPIP2_TEST(UdpIpv4ZeroChecksumAccepted) {
     const std::vector<std::uint8_t> payload = {0x01, 0x02};
     // Build with no checksum (compute_correct_checksum=false, bad_checksum=false)
-    const std::vector<std::uint8_t> pkt = BuildIpv4Udp(
-        0x0a000001u, 0x0a000002u, 12345, 53, payload, false, false);
+    const std::vector<std::uint8_t> pkt = BuildIpv4Udp(0x0a000001u, 0x0a000002u, 12345, 53, payload, false, false);
 
     const UdpInputResult result = ParseIpUdpPacket(pkt.data(), pkt.size());
-    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::None),
-                     static_cast<int>(result.error));
+    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::None), static_cast<int>(result.error));
 }
 
 // ---------------------------------------------------------------------------
@@ -339,18 +331,14 @@ TCPIP2_TEST(UdpIpv4ZeroChecksumAccepted) {
 // ---------------------------------------------------------------------------
 
 TCPIP2_TEST(UdpIpv6ZeroChecksumRejected) {
-    const std::uint8_t src_ip[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-    const std::uint8_t dst_ip[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+    const std::uint8_t src_ip[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t dst_ip[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
     const std::vector<std::uint8_t> payload = {0x01, 0x02};
     // Build with no checksum (zero checksum)
-    const std::vector<std::uint8_t> pkt = BuildIpv6Udp(
-        src_ip, dst_ip, 5353, 53, payload, false, false);
+    const std::vector<std::uint8_t> pkt = BuildIpv6Udp(src_ip, dst_ip, 5353, 53, payload, false, false);
 
     const UdpInputResult result = ParseIpUdpPacket(pkt.data(), pkt.size());
-    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::BadChecksum),
-                     static_cast<int>(result.error));
+    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::BadChecksum), static_cast<int>(result.error));
 }
 
 // ---------------------------------------------------------------------------
@@ -359,12 +347,10 @@ TCPIP2_TEST(UdpIpv6ZeroChecksumRejected) {
 
 TCPIP2_TEST(UdpIpv4BadChecksumRejected) {
     const std::vector<std::uint8_t> payload = {0x01, 0x02, 0x03, 0x04};
-    const std::vector<std::uint8_t> pkt = BuildIpv4Udp(
-        0x0a000001u, 0x0a000002u, 12345, 53, payload, true, true);
+    const std::vector<std::uint8_t> pkt = BuildIpv4Udp(0x0a000001u, 0x0a000002u, 12345, 53, payload, true, true);
 
     const UdpInputResult result = ParseIpUdpPacket(pkt.data(), pkt.size());
-    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::BadChecksum),
-                     static_cast<int>(result.error));
+    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::BadChecksum), static_cast<int>(result.error));
 }
 
 // ---------------------------------------------------------------------------
@@ -372,17 +358,13 @@ TCPIP2_TEST(UdpIpv4BadChecksumRejected) {
 // ---------------------------------------------------------------------------
 
 TCPIP2_TEST(UdpIpv6BadChecksumRejected) {
-    const std::uint8_t src_ip[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-    const std::uint8_t dst_ip[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+    const std::uint8_t src_ip[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t dst_ip[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
     const std::vector<std::uint8_t> payload = {0x01, 0x02, 0x03, 0x04};
-    const std::vector<std::uint8_t> pkt = BuildIpv6Udp(
-        src_ip, dst_ip, 5353, 53, payload, true, true);
+    const std::vector<std::uint8_t> pkt = BuildIpv6Udp(src_ip, dst_ip, 5353, 53, payload, true, true);
 
     const UdpInputResult result = ParseIpUdpPacket(pkt.data(), pkt.size());
-    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::BadChecksum),
-                     static_cast<int>(result.error));
+    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::BadChecksum), static_cast<int>(result.error));
 }
 
 // ---------------------------------------------------------------------------
@@ -391,12 +373,10 @@ TCPIP2_TEST(UdpIpv6BadChecksumRejected) {
 
 TCPIP2_TEST(UdpPayloadExtracted) {
     const std::vector<std::uint8_t> payload = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
-    const std::vector<std::uint8_t> pkt = BuildIpv4Udp(
-        0x0a000001u, 0x0a000002u, 12345, 53, payload);
+    const std::vector<std::uint8_t> pkt = BuildIpv4Udp(0x0a000001u, 0x0a000002u, 12345, 53, payload);
 
     const UdpInputResult result = ParseIpUdpPacket(pkt.data(), pkt.size());
-    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::None),
-                     static_cast<int>(result.error));
+    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::None), static_cast<int>(result.error));
     TCPIP2_EXPECT_TRUE(result.datagram.payload != nullptr);
     TCPIP2_EXPECT_EQ(std::size_t{5}, result.datagram.payload_length);
     TCPIP2_EXPECT_EQ(std::uint8_t{0xAA}, result.datagram.payload[0]);
@@ -409,12 +389,10 @@ TCPIP2_TEST(UdpPayloadExtracted) {
 
 TCPIP2_TEST(UdpNotUdpProtocol) {
     // Build an IPv4 packet with protocol=6 (TCP)
-    const std::vector<std::uint8_t> pkt = BuildIpv4WithProtocol(
-        0x0a000001u, 0x0a000002u, 6);
+    const std::vector<std::uint8_t> pkt = BuildIpv4WithProtocol(0x0a000001u, 0x0a000002u, 6);
 
     const UdpInputResult result = ParseIpUdpPacket(pkt.data(), pkt.size());
-    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::NotUdp),
-                     static_cast<int>(result.error));
+    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::NotUdp), static_cast<int>(result.error));
 }
 
 // ---------------------------------------------------------------------------
@@ -422,17 +400,13 @@ TCPIP2_TEST(UdpNotUdpProtocol) {
 // ---------------------------------------------------------------------------
 
 TCPIP2_TEST(UdpIpv6HopByHopExtHeaderCarriesUdp) {
-    const std::uint8_t src_ip[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-    const std::uint8_t dst_ip[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+    const std::uint8_t src_ip[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t dst_ip[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
     const std::vector<std::uint8_t> payload = {0xDE, 0xAD, 0xBE, 0xEF};
-    const std::vector<std::uint8_t> pkt = BuildIpv6HopByHopUdp(
-        src_ip, dst_ip, 5353, 53, payload);
+    const std::vector<std::uint8_t> pkt = BuildIpv6HopByHopUdp(src_ip, dst_ip, 5353, 53, payload);
 
     const UdpInputResult result = ParseIpUdpPacket(pkt.data(), pkt.size());
-    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::None),
-                     static_cast<int>(result.error));
+    TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::None), static_cast<int>(result.error));
     TCPIP2_EXPECT_EQ(std::uint16_t{5353}, result.datagram.flow.source_port);
     TCPIP2_EXPECT_EQ(std::uint16_t{53}, result.datagram.flow.destination_port);
     TCPIP2_EXPECT_EQ(std::size_t{4}, result.datagram.payload_length);
@@ -444,14 +418,12 @@ TCPIP2_TEST(UdpIpv6HopByHopExtHeaderCarriesUdp) {
 // ---------------------------------------------------------------------------
 
 TCPIP2_TEST(UdpIpv6TerminalExtHeadersDoNotCarryUdp) {
-    const std::uint8_t src_ip[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-    const std::uint8_t dst_ip[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+    const std::uint8_t src_ip[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t dst_ip[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
 
-    for (std::uint8_t terminal : {static_cast<std::uint8_t>(Ipv6ExtHeaderType::Ah),
-                                  static_cast<std::uint8_t>(Ipv6ExtHeaderType::Esp),
-                                  static_cast<std::uint8_t>(Ipv6ExtHeaderType::Mobility)}) {
+    for (std::uint8_t terminal :
+         {static_cast<std::uint8_t>(Ipv6ExtHeaderType::Ah), static_cast<std::uint8_t>(Ipv6ExtHeaderType::Esp),
+          static_cast<std::uint8_t>(Ipv6ExtHeaderType::Mobility)}) {
         // Fixed header chains straight into the terminal header; whatever
         // follows is opaque and must never be parsed as UDP.
         std::vector<std::uint8_t> pkt;
@@ -463,8 +435,10 @@ TCPIP2_TEST(UdpIpv6TerminalExtHeadersDoNotCarryUdp) {
         AppendU16(pkt, 8);
         pkt.push_back(terminal);
         pkt.push_back(64);
-        for (int i = 0; i < 16; ++i) pkt.push_back(src_ip[i]);
-        for (int i = 0; i < 16; ++i) pkt.push_back(dst_ip[i]);
+        for (int i = 0; i < 16; ++i)
+            pkt.push_back(src_ip[i]);
+        for (int i = 0; i < 16; ++i)
+            pkt.push_back(dst_ip[i]);
         // UDP-shaped bytes after the terminal header — must be rejected.
         AppendU16(pkt, 5353);
         AppendU16(pkt, 53);
@@ -472,8 +446,7 @@ TCPIP2_TEST(UdpIpv6TerminalExtHeadersDoNotCarryUdp) {
         AppendU16(pkt, 0);
 
         const UdpInputResult result = ParseIpUdpPacket(pkt.data(), pkt.size());
-        TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::NotUdp),
-                         static_cast<int>(result.error));
+        TCPIP2_EXPECT_EQ(static_cast<int>(UdpInputResult::Error::NotUdp), static_cast<int>(result.error));
     }
 }
 

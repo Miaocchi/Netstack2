@@ -16,7 +16,7 @@ namespace tcpip2 {
 namespace test {
 
 class FakeClock final {
-public:
+  public:
     explicit FakeClock(std::uint64_t now_ms = 0) noexcept : now_(now_ms) {}
 
     std::uint64_t Now() const noexcept { return now_; }
@@ -24,7 +24,7 @@ public:
     void Advance(std::uint64_t ms) noexcept { now_ += ms; }
     void Set(std::uint64_t ms) noexcept { now_ = ms; }
 
-private:
+  private:
     std::uint64_t now_;
 };
 

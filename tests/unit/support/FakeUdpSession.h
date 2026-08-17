@@ -26,7 +26,7 @@ namespace tcpip2 {
 namespace test {
 
 class FakeDatagramSession final : public IDatagramSession {
-public:
+  public:
     SendResult Send(BufferView data) override {
         std::lock_guard<std::mutex> lock(mutex_);
         received_.assign(data.Data(), data.Data() + data.Size());
@@ -43,10 +43,10 @@ public:
     }
 
     /// Invoke the data callback with a lease holding @p payload.
-    ReceiveStatus PushRemote(const std::vector<std::uint8_t>& payload,
-                             PktBufferPool& pool) {
+    ReceiveStatus PushRemote(const std::vector<std::uint8_t> &payload, PktBufferPool &pool) {
         BufferLease lease = pool.Allocate();
-        if (!lease) return ReceiveStatus::Closed;
+        if (!lease)
+            return ReceiveStatus::Closed;
         std::memcpy(lease.Data(), payload.data(), payload.size());
         lease.Resize(payload.size());
         DataCallback cb;
@@ -54,7 +54,8 @@ public:
             std::lock_guard<std::mutex> lock(mutex_);
             cb = data_cb_;
         }
-        if (!cb) return ReceiveStatus::Closed;
+        if (!cb)
+            return ReceiveStatus::Closed;
         return cb(lease);
     }
 
@@ -64,7 +65,8 @@ public:
             std::lock_guard<std::mutex> lock(mutex_);
             cb = closed_cb_;
         }
-        if (cb) cb(error);
+        if (cb)
+            cb(error);
     }
 
     std::size_t SendCalls() const {
@@ -76,7 +78,7 @@ public:
         return received_;
     }
 
-private:
+  private:
     mutable std::mutex mutex_;
     std::vector<std::uint8_t> received_;
     std::size_t send_calls_ = 0;
@@ -85,10 +87,10 @@ private:
 };
 
 class FakeSessionFactory final : public ISessionFactory {
-public:
-    SessionOpenResult OpenTcp(const TcpOpenRequest&) override { return {}; }
+  public:
+    SessionOpenResult OpenTcp(const TcpOpenRequest &) override { return {}; }
 
-    DatagramOpenResult OpenUdp(const UdpOpenRequest& request) override {
+    DatagramOpenResult OpenUdp(const UdpOpenRequest &request) override {
         std::lock_guard<std::mutex> lock(mutex_);
         ++open_calls_;
         last_request = request;
@@ -120,7 +122,7 @@ public:
         return sessions_.at(i);
     }
 
-private:
+  private:
     mutable std::mutex mutex_;
     std::vector<std::shared_ptr<FakeDatagramSession>> sessions_;
     std::size_t open_calls_ = 0;

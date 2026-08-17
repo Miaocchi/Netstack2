@@ -7,8 +7,7 @@
 
 namespace tcpip2 {
 
-TcpInputResult ParseIpTcpPacket(const std::uint8_t* packet,
-                                std::size_t length) noexcept {
+TcpInputResult ParseIpTcpPacket(const std::uint8_t *packet, std::size_t length) noexcept {
     TcpInputResult result;
     if (packet == nullptr) {
         result.error = TcpInputError::NullData;
@@ -40,10 +39,8 @@ TcpInputResult ParseIpTcpPacket(const std::uint8_t* packet,
             return result;
         }
         tcp = ParseTcpSegment(
-            IpAddress::Ipv4(ip.header.src_ip[0], ip.header.src_ip[1],
-                            ip.header.src_ip[2], ip.header.src_ip[3]),
-            IpAddress::Ipv4(ip.header.dst_ip[0], ip.header.dst_ip[1],
-                            ip.header.dst_ip[2], ip.header.dst_ip[3]),
+            IpAddress::Ipv4(ip.header.src_ip[0], ip.header.src_ip[1], ip.header.src_ip[2], ip.header.src_ip[3]),
+            IpAddress::Ipv4(ip.header.dst_ip[0], ip.header.dst_ip[1], ip.header.dst_ip[2], ip.header.dst_ip[3]),
             ip.payload, ip.header.payload_length, ip.header.ecn);
     } else if (version == 6) {
         const Ipv6ParseResult ip = ParseIpv6(packet, length);
@@ -59,10 +56,8 @@ TcpInputResult ParseIpTcpPacket(const std::uint8_t* packet,
             result.error = TcpInputError::FragmentRequiresReassembly;
             return result;
         }
-        tcp = ParseTcpSegment(
-            IpAddress::Ipv6(ip.header.src_ip), IpAddress::Ipv6(ip.header.dst_ip),
-            ip.payload, ip.payload_length,
-            static_cast<std::uint8_t>(ip.header.traffic_class & 0x03u));
+        tcp = ParseTcpSegment(IpAddress::Ipv6(ip.header.src_ip), IpAddress::Ipv6(ip.header.dst_ip), ip.payload,
+                              ip.payload_length, static_cast<std::uint8_t>(ip.header.traffic_class & 0x03u));
     } else {
         result.error = TcpInputError::UnsupportedIpVersion;
         return result;
@@ -77,15 +72,16 @@ TcpInputResult ParseIpTcpPacket(const std::uint8_t* packet,
     return result;
 }
 
-FragmentInfo ExtractFragmentInfo(const std::uint8_t* packet,
-                                 std::size_t length) noexcept {
+FragmentInfo ExtractFragmentInfo(const std::uint8_t *packet, std::size_t length) noexcept {
     FragmentInfo info;
-    if (packet == nullptr || length == 0) return info;
+    if (packet == nullptr || length == 0)
+        return info;
 
     const std::uint8_t version = static_cast<std::uint8_t>(packet[0] >> 4);
     if (version == 4) {
         const Ipv4ParseResult ip = ParseIpv4(packet, length);
-        if (ip.error != Ipv4ParseError::None) return info;
+        if (ip.error != Ipv4ParseError::None)
+            return info;
         info.ip_version = 4;
         std::memcpy(info.src_ip, ip.header.src_ip, 4);
         std::memcpy(info.dst_ip, ip.header.dst_ip, 4);
@@ -99,8 +95,10 @@ FragmentInfo ExtractFragmentInfo(const std::uint8_t* packet,
         info.valid = true;
     } else if (version == 6) {
         const Ipv6ParseResult ip = ParseIpv6(packet, length);
-        if (ip.error != Ipv6ParseResult::Error::None) return info;
-        if (!ip.fragment_header_present) return info;
+        if (ip.error != Ipv6ParseResult::Error::None)
+            return info;
+        if (!ip.fragment_header_present)
+            return info;
         info.ip_version = 6;
         std::memcpy(info.src_ip, ip.header.src_ip, 16);
         std::memcpy(info.dst_ip, ip.header.dst_ip, 16);

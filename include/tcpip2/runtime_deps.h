@@ -30,24 +30,22 @@ namespace tcpip2 {
  */
 struct RuntimeDependencies {
     /// Packet I/O backend (TUN, AF_XDP, etc.). Must not be null.
-    IPacketIo* packet_io = nullptr;
+    IPacketIo *packet_io = nullptr;
 
     /// Session factory for creating transport sessions. Must not be null.
-    ISessionFactory* session_factory = nullptr;
+    ISessionFactory *session_factory = nullptr;
 
     /// Monotonic clock. If null, a process-wide SystemClock is used.
-    IClock* clock = nullptr;
+    IClock *clock = nullptr;
 
     /// Event/metrics sink. If null, events are silently dropped.
-    IEventSink* event_sink = nullptr;
+    IEventSink *event_sink = nullptr;
 
     /**
      * Validate that mandatory dependencies are present.
      * packet_io and session_factory must be non-null.
      */
-    bool Validate() const noexcept {
-        return packet_io != nullptr && session_factory != nullptr;
-    }
+    bool Validate() const noexcept { return packet_io != nullptr && session_factory != nullptr; }
 };
 
 } // namespace tcpip2

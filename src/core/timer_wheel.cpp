@@ -21,8 +21,7 @@
 namespace tcpip2 {
 
 TimerWheel::TimerWheel(std::size_t slot_count) noexcept
-    : slot_count_(slot_count == 0 ? 1 : slot_count),
-      slots_(slot_count_) {}
+    : slot_count_(slot_count == 0 ? 1 : slot_count), slots_(slot_count_) {}
 
 TimerWheel::~TimerWheel() = default;
 
@@ -36,10 +35,12 @@ TimerId TimerWheel::Schedule(std::uint64_t deadline_ms, TimerCallback cb) {
         deadline_ms = cursor_ms_ + 1;
     }
     TimerId id{next_id_++};
-    if (next_id_ == 0) next_id_ = 1;
+    if (next_id_ == 0)
+        next_id_ = 1;
     while (id.value == 0 || by_id_.find(id.value) != by_id_.end()) {
         id.value = next_id_++;
-        if (next_id_ == 0) next_id_ = 1;
+        if (next_id_ == 0)
+            next_id_ = 1;
     }
     const std::size_t slot = static_cast<std::size_t>(deadline_ms % slot_count_);
     slots_[slot].push_back(Entry{id, deadline_ms, std::move(cb)});
@@ -60,8 +61,9 @@ TimerId TimerWheel::Schedule(std::uint64_t deadline_ms, TimerCallback cb) {
 
 bool TimerWheel::Cancel(TimerId id) {
     auto found = by_id_.find(id.value);
-    if (found == by_id_.end()) return false;
-    SlotPos& pos = found->second;
+    if (found == by_id_.end())
+        return false;
+    SlotPos &pos = found->second;
     slots_[pos.slot].erase(pos.it);
     by_id_.erase(found);
     --pending_;
@@ -69,12 +71,13 @@ bool TimerWheel::Cancel(TimerId id) {
 }
 
 std::size_t TimerWheel::AdvanceTo(std::uint64_t now_ms) {
-    if (now_ms <= cursor_ms_) return 0;
+    if (now_ms <= cursor_ms_)
+        return 0;
     cursor_ms_ = now_ms;
 
     std::vector<Entry> due;
     due.reserve(pending_);
-    for (auto& list : slots_) {
+    for (auto &list : slots_) {
         for (auto it = list.begin(); it != list.end();) {
             if (it->deadline_ms <= now_ms) {
                 by_id_.erase(it->id.value);
@@ -87,8 +90,9 @@ std::size_t TimerWheel::AdvanceTo(std::uint64_t now_ms) {
         }
     }
 
-    for (auto& e : due) {
-        if (e.cb) e.cb();
+    for (auto &e : due) {
+        if (e.cb)
+            e.cb();
     }
     return due.size();
 }

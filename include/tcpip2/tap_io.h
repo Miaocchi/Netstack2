@@ -40,7 +40,7 @@ namespace tcpip2 {
  * readv/writev; batching is achieved by looping over individual syscalls.
  */
 class TapPacketIo final : public IPacketIo {
-public:
+  public:
     struct Config {
         /** Device name (e.g. "tun0"), or empty for auto-assign by the kernel. */
         std::string dev_name;
@@ -57,15 +57,15 @@ public:
     TapPacketIo() = default;
     ~TapPacketIo() override;
 
-    TapPacketIo(const TapPacketIo&) = delete;
-    TapPacketIo& operator=(const TapPacketIo&) = delete;
+    TapPacketIo(const TapPacketIo &) = delete;
+    TapPacketIo &operator=(const TapPacketIo &) = delete;
 
     /**
      * Open the TUN device and configure all queues per @p config.
      * Returns false on failure (no root, no /dev/net/tun, ioctl error).
      * On failure the object is in the closed state and safe to destruct.
      */
-    bool Open(const Config& config) noexcept;
+    bool Open(const Config &config) noexcept;
 
     // IPacketIo overrides
     std::size_t QueueCount() const noexcept override;
@@ -77,8 +77,8 @@ public:
     /** Close all fds and reset state. Idempotent. */
     void Close() noexcept;
 
-private:
-    int OpenOneQueue(std::size_t queue_id, const Config& config) noexcept;
+  private:
+    int OpenOneQueue(std::size_t queue_id, const Config &config) noexcept;
 
     Config config_;
     std::vector<int> fds_;

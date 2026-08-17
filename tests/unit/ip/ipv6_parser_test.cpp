@@ -16,9 +16,8 @@ namespace {
 /// @param after_fixed    raw bytes placed immediately after the 40-byte fixed header
 ///                        (extension headers, or payload if no ext headers)
 /// @param payload_len    number of zero-padded payload bytes to append after `after_fixed`
-static std::vector<std::uint8_t> BuildIpv6(std::uint8_t first_nh,
-                                             const std::vector<std::uint8_t>& after_fixed,
-                                             std::size_t payload_len) {
+static std::vector<std::uint8_t> BuildIpv6(std::uint8_t first_nh, const std::vector<std::uint8_t> &after_fixed,
+                                           std::size_t payload_len) {
     std::size_t total = 40 + after_fixed.size() + payload_len;
     std::vector<std::uint8_t> pkt(total, 0);
 
@@ -50,8 +49,7 @@ static std::vector<std::uint8_t> BuildIpv6(std::uint8_t first_nh,
 ///
 /// @param next_nh   next header value to place in byte[0] of this ext header
 /// @param size_bytes total size of this extension header in bytes
-static std::vector<std::uint8_t> BuildExtHeader(std::uint8_t next_nh,
-                                                  std::size_t size_bytes) {
+static std::vector<std::uint8_t> BuildExtHeader(std::uint8_t next_nh, std::size_t size_bytes) {
     std::vector<std::uint8_t> eh(size_bytes, 0);
     eh[0] = next_nh;
     eh[1] = static_cast<std::uint8_t>((size_bytes / 8) - 1); // hdr_ext_len
@@ -170,7 +168,7 @@ TCPIP2_TEST(MultipleExtHeaders) {
     // Fixed header (nh=0) → HopByHop (8 bytes, nh=43) → Routing (16 bytes, nh=6/TCP)
     std::vector<std::uint8_t> exts;
     std::vector<std::uint8_t> eh1 = BuildExtHeader(Ipv6ExtHeaderType::Routing, 8); // 8 bytes
-    std::vector<std::uint8_t> eh2 = BuildExtHeader(6, 16); // 16 bytes, next_nh=TCP
+    std::vector<std::uint8_t> eh2 = BuildExtHeader(6, 16);                         // 16 bytes, next_nh=TCP
     exts.insert(exts.end(), eh1.begin(), eh1.end());
     exts.insert(exts.end(), eh2.begin(), eh2.end());
 
@@ -192,7 +190,7 @@ TCPIP2_TEST(ExtHeaderLoop) {
     eh1[1] = 0;                          // hdr_ext_len=0 → 8 bytes
     std::vector<std::uint8_t> eh2(8, 0); // second HopByHop, next_nh=6
     eh2[0] = 6;
-    eh2[1] = 0;                          // hdr_ext_len=0 → 8 bytes
+    eh2[1] = 0; // hdr_ext_len=0 → 8 bytes
     exts.insert(exts.end(), eh1.begin(), eh1.end());
     exts.insert(exts.end(), eh2.begin(), eh2.end());
 
@@ -230,7 +228,7 @@ TCPIP2_TEST(ExtHeaderTooLong) {
     // The TooLong check fires before the bounds check, so we only need enough
     // buffer to read the 2-byte ext header prefix (offset 40 + 2 = 42 bytes).
     std::vector<std::uint8_t> pkt(42, 0);
-    pkt[0] = 0x60; // version 6
+    pkt[0] = 0x60;          // version 6
     std::uint16_t plen = 2; // payload_length claims 2 bytes (the ext header prefix)
     pkt[4] = static_cast<std::uint8_t>((plen >> 8) & 0xFF);
     pkt[5] = static_cast<std::uint8_t>(plen & 0xFF);

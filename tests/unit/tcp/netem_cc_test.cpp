@@ -44,13 +44,10 @@ namespace {
 // Factory helpers (mirror congestion_test.cpp).
 // -----------------------------------------------------------------------
 
-std::unique_ptr<TcpSendBuffer> MakeSendBuffer(
-    CongestionAlgorithm algo,
-    std::uint32_t initial_seq = 1000,
-    std::uint16_t mss = 1460) {
-    return std::make_unique<TcpSendBuffer>(
-        initial_seq, mss, 0, 1024 * 1024, 1024 * 1024,
-        1000, 200, 60000, 500, 60000, 15, 15, algo);
+std::unique_ptr<TcpSendBuffer> MakeSendBuffer(CongestionAlgorithm algo, std::uint32_t initial_seq = 1000,
+                                              std::uint16_t mss = 1460) {
+    return std::make_unique<TcpSendBuffer>(initial_seq, mss, 0, 1024 * 1024, 1024 * 1024, 1000, 200, 60000, 500, 60000,
+                                           15, 15, algo);
 }
 
 // -----------------------------------------------------------------------
@@ -61,10 +58,9 @@ struct TestEnv {
     PktBufferPool pool;
     std::uint64_t now_ms = 100;
 
-    explicit TestEnv(std::size_t slots = 64, std::size_t cap = 4096)
-        : pool(slots, cap) {}
+    explicit TestEnv(std::size_t slots = 64, std::size_t cap = 4096) : pool(slots, cap) {}
 
-    void SendSegment(TcpSendBuffer& send, const TcpSendNextResult& seg) {
+    void SendSegment(TcpSendBuffer &send, const TcpSendNextResult &seg) {
         TCPIP2_EXPECT_TRUE(seg.has_segment);
         BufferLease lease = pool.Allocate();
         TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
@@ -93,37 +89,33 @@ struct TestEnv {
 // -----------------------------------------------------------------------
 
 struct PendingAck {
-    std::uint32_t ack_number;      // seq + len (cumulative ACK value)
-    std::uint64_t deliver_at_ms;   // when this ACK "arrives"
+    std::uint32_t ack_number;    // seq + len (cumulative ACK value)
+    std::uint64_t deliver_at_ms; // when this ACK "arrives"
 };
 
 struct VirtualLink {
-    std::uint64_t base_rtt_ms;     // base round-trip time
-    std::uint64_t jitter_ms;       // max random jitter added to each delivery
-    double loss_rate;              // probability of dropping a segment [0, 1)
-    std::uint64_t next_loss_seed;  // LCG seed for deterministic loss
+    std::uint64_t base_rtt_ms;    // base round-trip time
+    std::uint64_t jitter_ms;      // max random jitter added to each delivery
+    double loss_rate;             // probability of dropping a segment [0, 1)
+    std::uint64_t next_loss_seed; // LCG seed for deterministic loss
 
     std::deque<PendingAck> pending;
 
-    explicit VirtualLink(std::uint64_t rtt = 100,
-                          std::uint64_t jitter = 0,
-                          double loss = 0.0)
-        : base_rtt_ms(rtt), jitter_ms(jitter), loss_rate(loss),
-          next_loss_seed(12345) {}
+    explicit VirtualLink(std::uint64_t rtt = 100, std::uint64_t jitter = 0, double loss = 0.0)
+        : base_rtt_ms(rtt), jitter_ms(jitter), loss_rate(loss), next_loss_seed(12345) {}
 
     // Pseudo-random number in [0, 1) using a simple LCG.
     double NextRandom() {
         // LCG constants from Numerical Recipes.
         next_loss_seed = next_loss_seed * 6364136223846793005ULL + 1442695040888963407ULL;
-        return static_cast<double>(next_loss_seed >> 11) /
-               static_cast<double>(1ULL << 53);
+        return static_cast<double>(next_loss_seed >> 11) / static_cast<double>(1ULL << 53);
     }
 
     // Place a segment on the virtual link. Returns true if the segment
     // was accepted for delivery, false if it was "lost."
     bool Transmit(std::uint32_t seq, std::uint32_t len, std::uint64_t now_ms) {
         if (loss_rate > 0.0 && NextRandom() < loss_rate) {
-            return false;  // dropped
+            return false; // dropped
         }
         std::uint64_t delay = base_rtt_ms / 2;
         if (jitter_ms > 0) {
@@ -135,10 +127,12 @@ struct VirtualLink {
 
     // Get the earliest delivery time among pending ACKs, or 0 if none.
     std::uint64_t NextDeliveryTime() const {
-        if (pending.empty()) return 0;
+        if (pending.empty())
+            return 0;
         std::uint64_t earliest = pending.front().deliver_at_ms;
-        for (const auto& p : pending) {
-            if (p.deliver_at_ms < earliest) earliest = p.deliver_at_ms;
+        for (const auto &p : pending) {
+            if (p.deliver_at_ms < earliest)
+                earliest = p.deliver_at_ms;
         }
         return earliest;
     }
@@ -160,9 +154,7 @@ struct VirtualLink {
         // Sort by ack_number so the highest cumulative ACK is applied last.
         // This simulates the receiver ACKing in sequence-number order.
         std::sort(due.begin(), due.end(),
-                  [](const PendingAck& a, const PendingAck& b) {
-                      return a.ack_number < b.ack_number;
-                  });
+                  [](const PendingAck &a, const PendingAck &b) { return a.ack_number < b.ack_number; });
         return due;
     }
 };
@@ -180,7 +172,7 @@ struct VirtualLink {
 
 struct NetemSimulator {
     TestEnv env;
-    TcpSendBuffer& send;
+    TcpSendBuffer &send;
     VirtualLink link;
     CongestionAlgorithm algo;
 
@@ -193,11 +185,10 @@ struct NetemSimulator {
     int max_steps;
 
     static constexpr std::uint32_t kPeerWindow = 65535;
-    static constexpr std::uint64_t kMaxCwnd = 1000000;  // sanity upper bound
-    static constexpr int kMaxRtoCount = 20;              // no timer storm
+    static constexpr std::uint64_t kMaxCwnd = 1000000; // sanity upper bound
+    static constexpr int kMaxRtoCount = 20;            // no timer storm
 
-    NetemSimulator(TcpSendBuffer& s, VirtualLink l, CongestionAlgorithm a,
-                   int max_steps = 5000)
+    NetemSimulator(TcpSendBuffer &s, VirtualLink l, CongestionAlgorithm a, int max_steps = 5000)
         : env(), send(s), link(std::move(l)), algo(a), max_steps(max_steps) {
         last_snd_una = send.SndUna();
     }
@@ -207,21 +198,22 @@ struct NetemSimulator {
         std::uint32_t cwnd = send.CongestionWindow();
         TCPIP2_EXPECT_TRUE(cwnd > 0);
         TCPIP2_EXPECT_TRUE(cwnd <= kMaxCwnd);
-        if (cwnd > max_cwnd_seen) max_cwnd_seen = cwnd;
+        if (cwnd > max_cwnd_seen)
+            max_cwnd_seen = cwnd;
 
         // 2. Pacing rate is bounded (no overflow/absurd values).
         std::uint32_t pr = send.PacingRate();
-        TCPIP2_EXPECT_TRUE(pr <= 100000000U);  // ≤ 100 MB/s
+        TCPIP2_EXPECT_TRUE(pr <= 100000000U); // ≤ 100 MB/s
 
         // 3. SndUna must not go backwards.
-        TCPIP2_EXPECT_TRUE(send.SndUna() >= last_snd_una ||
-                           send.IsClosed());
+        TCPIP2_EXPECT_TRUE(send.SndUna() >= last_snd_una || send.IsClosed());
         last_snd_una = send.SndUna();
 
         // 4. RTO count bounded (no timer storm).
         std::size_t rto_count = send.RetransmissionCount();
         TCPIP2_EXPECT_TRUE(rto_count <= static_cast<std::size_t>(kMaxRtoCount));
-        if (rto_count > total_rto_count) total_rto_count = rto_count;
+        if (rto_count > total_rto_count)
+            total_rto_count = rto_count;
     }
 
     // Advance time to the next event: earliest of next ACK delivery,
@@ -229,9 +221,11 @@ struct NetemSimulator {
     std::uint64_t NextEventTime() const {
         std::uint64_t t = link.NextDeliveryTime();
         std::uint64_t rto = send.RetransmitDeadline();
-        if (rto > 0 && (t == 0 || rto < t)) t = rto;
+        if (rto > 0 && (t == 0 || rto < t))
+            t = rto;
         std::uint64_t pacing = send.PacingDeadline();
-        if (pacing > 0 && (t == 0 || pacing < t)) t = pacing;
+        if (pacing > 0 && (t == 0 || pacing < t))
+            t = pacing;
         return t;
     }
 
@@ -242,27 +236,28 @@ struct NetemSimulator {
             steps = step;
             CheckInvariants();
 
-            if (send.IsClosed()) break;
-            if (send.AllAcked() && link.pending.empty()) break;
+            if (send.IsClosed())
+                break;
+            if (send.AllAcked() && link.pending.empty())
+                break;
 
             // 1. Process due ACKs FIRST.  ACKs free window space, clear
             //    pacing gates, and update cwnd — all of which may allow
             //    new segments to be sent in the same step.
             auto acks = link.PopDueAcks(env.now_ms);
-            for (const auto& ack : acks) {
+            for (const auto &ack : acks) {
                 send.OnAck(ack.ack_number, kPeerWindow, env.now_ms);
             }
 
             // 2. Pull and transmit as many segments as the window allows.
-            int send_budget = 64;  // safety cap per step
+            int send_budget = 64; // safety cap per step
             while (send_budget-- > 0) {
                 auto seg = send.NextSegment(kPeerWindow, env.now_ms);
-                if (!seg.has_segment) break;
+                if (!seg.has_segment)
+                    break;
 
                 env.SendSegment(send, seg);
-                link.Transmit(seg.sequence,
-                              static_cast<std::uint32_t>(seg.payload_length),
-                              env.now_ms);
+                link.Transmit(seg.sequence, static_cast<std::uint32_t>(seg.payload_length), env.now_ms);
             }
 
             // 3. Always advance time to the next event so the next step
@@ -295,7 +290,7 @@ TCPIP2_TEST(NetemHybridStableLinkNoLoss) {
     std::vector<std::uint8_t> data(200000, 'x');
     send->Enqueue(data.data(), data.size());
 
-    VirtualLink link(50, 0, 0.0);  // 50ms RTT, no jitter, no loss
+    VirtualLink link(50, 0, 0.0); // 50ms RTT, no jitter, no loss
     NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd);
     sim.Run(data.size());
 
@@ -319,7 +314,7 @@ TCPIP2_TEST(NetemHybridModerateLoss) {
     std::vector<std::uint8_t> data(200000, 'x');
     send->Enqueue(data.data(), data.size());
 
-    VirtualLink link(100, 0, 0.01);  // 100ms RTT, 1% loss
+    VirtualLink link(100, 0, 0.01); // 100ms RTT, 1% loss
     NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd);
     sim.Run(data.size());
 
@@ -341,7 +336,7 @@ TCPIP2_TEST(NetemHybridHighLoss) {
     std::vector<std::uint8_t> data(200000, 'x');
     send->Enqueue(data.data(), data.size());
 
-    VirtualLink link(100, 0, 0.05);  // 100ms RTT, 5% loss
+    VirtualLink link(100, 0, 0.05); // 100ms RTT, 5% loss
     NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd);
     sim.Run(data.size());
 
@@ -365,7 +360,7 @@ TCPIP2_TEST(NetemHybridJitterReordering) {
     std::vector<std::uint8_t> data(200000, 'x');
     send->Enqueue(data.data(), data.size());
 
-    VirtualLink link(100, 30, 0.0);  // 100ms RTT, 30ms jitter, no loss
+    VirtualLink link(100, 30, 0.0); // 100ms RTT, 30ms jitter, no loss
     NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd);
     sim.Run(data.size());
 
@@ -384,7 +379,7 @@ TCPIP2_TEST(NetemBbrStableLinkNoLoss) {
     std::vector<std::uint8_t> data(200000, 'x');
     send->Enqueue(data.data(), data.size());
 
-    VirtualLink link(50, 0, 0.0);  // 50ms RTT, no loss
+    VirtualLink link(50, 0, 0.0); // 50ms RTT, no loss
     NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::Bbr);
     sim.Run(data.size());
 
@@ -457,9 +452,9 @@ TCPIP2_TEST(NetemHybridHighRtt) {
     std::vector<std::uint8_t> data(200000, 'x');
     send->Enqueue(data.data(), data.size());
 
-    VirtualLink link(200, 0, 0.0);  // 200ms RTT
+    VirtualLink link(200, 0, 0.0); // 200ms RTT
     NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd,
-                       8000);  // more steps for high RTT
+                       8000); // more steps for high RTT
     sim.Run(data.size());
 
     TCPIP2_EXPECT_FALSE(send->IsClosed());
@@ -474,9 +469,8 @@ TCPIP2_TEST(NetemHybridLossAndJitter) {
     std::vector<std::uint8_t> data(300000, 'x');
     send->Enqueue(data.data(), data.size());
 
-    VirtualLink link(80, 20, 0.02);  // 80ms RTT, 20ms jitter, 2% loss
-    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd,
-                       8000);
+    VirtualLink link(80, 20, 0.02); // 80ms RTT, 20ms jitter, 2% loss
+    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd, 8000);
     sim.Run(data.size());
 
     TCPIP2_EXPECT_FALSE(send->IsClosed());
@@ -529,8 +523,7 @@ TCPIP2_TEST(NetemBbrLossAndJitter) {
     send->Enqueue(data.data(), data.size());
 
     VirtualLink link(80, 20, 0.02);
-    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::Bbr,
-                       8000);
+    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::Bbr, 8000);
     sim.Run(data.size());
 
     TCPIP2_EXPECT_FALSE(send->IsClosed());
@@ -547,8 +540,7 @@ TCPIP2_TEST(NetemAimdLossAndJitter) {
     send->Enqueue(data.data(), data.size());
 
     VirtualLink link(80, 20, 0.02);
-    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::Aimd,
-                       8000);
+    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::Aimd, 8000);
     sim.Run(data.size());
 
     TCPIP2_EXPECT_FALSE(send->IsClosed());
@@ -567,8 +559,7 @@ TCPIP2_TEST(NetemHybridCwndConvergesTowardBdp) {
     // 50ms RTT, no loss, no jitter — deterministic link.
     // With ~1 MSS per ms delivery rate, BDP ≈ 50 * 1460 = 73000 bytes.
     VirtualLink link(50, 0, 0.0);
-    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd,
-                       10000);
+    NetemSimulator sim(*send, std::move(link), CongestionAlgorithm::HybridBdpAimd, 10000);
     sim.Run(data.size());
 
     TCPIP2_EXPECT_FALSE(send->IsClosed());

@@ -17,12 +17,12 @@
 
 namespace tcpip2 {
 
-bool ThreadOwnershipGuard::AssertOwner(const char* file, int line) noexcept {
-    if (IsOwner()) return true;
+bool ThreadOwnershipGuard::AssertOwner(const char *file, int line) noexcept {
+    if (IsOwner())
+        return true;
     std::ostringstream os;
-    os << "tcpip2: ownership violation at " << file << ':' << line
-       << ": object owned by thread " << owner_.load(std::memory_order_relaxed)
-       << " but accessed from thread " << std::this_thread::get_id() << '\n';
+    os << "tcpip2: ownership violation at " << file << ':' << line << ": object owned by thread "
+       << owner_.load(std::memory_order_relaxed) << " but accessed from thread " << std::this_thread::get_id() << '\n';
     std::fprintf(stderr, "%s", os.str().c_str());
     std::fflush(stderr);
     std::abort();

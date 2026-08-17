@@ -36,25 +36,25 @@ struct Icmpv4DestUnreachableCode {
 struct Icmpv4Header {
     std::uint8_t type = 0;
     std::uint8_t code = 0;
-    std::uint16_t checksum = 0;       // raw checksum from the wire
-    std::uint16_t id = 0;             // for Echo / Echo Reply
-    std::uint16_t sequence = 0;       // for Echo / Echo Reply
-    std::uint16_t mtu = 0;            // for Destination Unreachable, code 4
-    const std::uint8_t* quoted_payload = nullptr;  // points into input buffer
+    std::uint16_t checksum = 0;                   // raw checksum from the wire
+    std::uint16_t id = 0;                         // for Echo / Echo Reply
+    std::uint16_t sequence = 0;                   // for Echo / Echo Reply
+    std::uint16_t mtu = 0;                        // for Destination Unreachable, code 4
+    const std::uint8_t *quoted_payload = nullptr; // points into input buffer
     std::size_t quoted_payload_len = 0;
 };
 
 enum class Icmpv4ParseError {
-    None,       // success
-    TooShort,   // fewer than 8 bytes
+    None,        // success
+    TooShort,    // fewer than 8 bytes
     BadChecksum, // reported via checksum_ok flag, not a parse failure
 };
 
 struct Icmpv4ParseResult {
     Icmpv4ParseError error = Icmpv4ParseError::None;
     Icmpv4Header header;
-    bool checksum_ok = false;         // true if internet checksum validates
-    const std::uint8_t* payload = nullptr; // data after the 8-byte header (for echo)
+    bool checksum_ok = false;              // true if internet checksum validates
+    const std::uint8_t *payload = nullptr; // data after the 8-byte header (for echo)
     std::size_t payload_length = 0;
 };
 
@@ -62,6 +62,6 @@ struct Icmpv4ParseResult {
 /// @param data pointer to the first byte of the ICMP header
 /// @param len number of bytes available
 /// @return parse result; on success, payload/quoted_payload point into the input buffer
-Icmpv4ParseResult ParseIcmpv4(const std::uint8_t* data, std::size_t len) noexcept;
+Icmpv4ParseResult ParseIcmpv4(const std::uint8_t *data, std::size_t len) noexcept;
 
 } // namespace tcpip2

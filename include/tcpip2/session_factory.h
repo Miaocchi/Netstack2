@@ -30,8 +30,8 @@ namespace tcpip2 {
 struct FlowId {
     std::uint64_t value = 0;
 
-    bool operator==(const FlowId& o) const noexcept { return value == o.value; }
-    bool operator!=(const FlowId& o) const noexcept { return value != o.value; }
+    bool operator==(const FlowId &o) const noexcept { return value == o.value; }
+    bool operator!=(const FlowId &o) const noexcept { return value != o.value; }
 };
 
 /** IP address + port — a network endpoint. */
@@ -39,10 +39,8 @@ struct IpEndpoint {
     IpAddress address;
     std::uint16_t port = 0;
 
-    bool operator==(const IpEndpoint& o) const noexcept {
-        return address == o.address && port == o.port;
-    }
-    bool operator!=(const IpEndpoint& o) const noexcept { return !(*this == o); }
+    bool operator==(const IpEndpoint &o) const noexcept { return address == o.address && port == o.port; }
+    bool operator!=(const IpEndpoint &o) const noexcept { return !(*this == o); }
 };
 
 /** Parameters for opening a TCP session. */
@@ -73,7 +71,7 @@ struct SessionOpenResult {
 
 /** Result of a UDP datagram channel open attempt. */
 struct DatagramOpenResult {
-    void* handle = nullptr;
+    void *handle = nullptr;
     SessionError error = SessionError::None;
 };
 
@@ -86,11 +84,11 @@ struct DatagramOpenResult {
  * in the Netstack2 core.
  */
 class ISessionFactory {
-public:
+  public:
     virtual ~ISessionFactory() = default;
 
-    virtual SessionOpenResult OpenTcp(const TcpOpenRequest& request) = 0;
-    virtual DatagramOpenResult OpenUdp(const UdpOpenRequest& request) = 0;
+    virtual SessionOpenResult OpenTcp(const TcpOpenRequest &request) = 0;
+    virtual DatagramOpenResult OpenUdp(const UdpOpenRequest &request) = 0;
 };
 
 } // namespace tcpip2

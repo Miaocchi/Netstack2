@@ -44,49 +44,49 @@ class StackShard;
 class PacketDispatcher;
 
 class Runtime {
-public:
+  public:
     Runtime() noexcept;
     ~Runtime();
 
-    Runtime(const Runtime&) = delete;
-    Runtime& operator=(const Runtime&) = delete;
+    Runtime(const Runtime &) = delete;
+    Runtime &operator=(const Runtime &) = delete;
 
     /**
      * Start with given config and packet I/O (legacy entry point — does not
      * inject session factory, clock, or event sink). Returns false on error.
      */
-    bool Start(NetstackConfig config, IPacketIo* packet_io) noexcept;
+    bool Start(NetstackConfig config, IPacketIo *packet_io) noexcept;
 
     /**
      * Start with given config and structured runtime dependencies (ADR-005).
      * Requires deps.Validate() (packet_io + session_factory non-null).
      * Returns false on error.
      */
-    bool Start(NetstackConfig config, const RuntimeDependencies& deps) noexcept;
+    bool Start(NetstackConfig config, const RuntimeDependencies &deps) noexcept;
 
     /** Stop all shards and drain TX under @p options. Retryable on failure. */
-    StopResult Stop(const StopOptions& options = {}) noexcept;
+    StopResult Stop(const StopOptions &options = {}) noexcept;
 
     bool IsRunning() const noexcept;
     bool IsStopping() const noexcept;
 
     // Access for testing
     std::size_t ShardCount() const noexcept { return shards_.size(); }
-    StackShard* Shard(std::size_t i) const noexcept;
-    PacketDispatcher* Dispatcher() const noexcept { return dispatcher_.get(); }
+    StackShard *Shard(std::size_t i) const noexcept;
+    PacketDispatcher *Dispatcher() const noexcept { return dispatcher_.get(); }
 
     /**
      * Access shard i's buffer pool (for test assertions). Returns nullptr
      * if the runtime is not started or i is out of range.
      */
-    PktBufferPool* ShardPool(std::size_t i) const noexcept;
+    PktBufferPool *ShardPool(std::size_t i) const noexcept;
 
     // Dependency accessors (valid after Start, before Stop)
-    IClock* Clock() const noexcept { return clock_; }
-    ISessionFactory* SessionFactory() const noexcept { return session_factory_; }
-    IEventSink* EventSink() const noexcept { return event_sink_; }
+    IClock *Clock() const noexcept { return clock_; }
+    ISessionFactory *SessionFactory() const noexcept { return session_factory_; }
+    IEventSink *EventSink() const noexcept { return event_sink_; }
 
-private:
+  private:
     enum class State {
         Stopped,
         Starting,
@@ -94,17 +94,17 @@ private:
         Stopping,
     };
 
-    bool DoStart(NetstackConfig config, const RuntimeDependencies& deps) noexcept;
-    StopResult DoStop(const StopOptions& options) noexcept;
+    bool DoStart(NetstackConfig config, const RuntimeDependencies &deps) noexcept;
+    StopResult DoStop(const StopOptions &options) noexcept;
     void QuiesceShards() noexcept;
-    StopResult DrainTxAndFinalize(const StopOptions& options) noexcept;
+    StopResult DrainTxAndFinalize(const StopOptions &options) noexcept;
     StopResult FinalizeResources(IoError drain_error, std::size_t queue_id) noexcept;
 
     NetstackConfig config_;
-    IPacketIo* packet_io_ = nullptr;
-    ISessionFactory* session_factory_ = nullptr;
-    IClock* clock_ = nullptr;
-    IEventSink* event_sink_ = nullptr;
+    IPacketIo *packet_io_ = nullptr;
+    ISessionFactory *session_factory_ = nullptr;
+    IClock *clock_ = nullptr;
+    IEventSink *event_sink_ = nullptr;
     std::vector<std::unique_ptr<PktBufferPool>> shard_pools_;
     std::vector<std::unique_ptr<StackShard>> shards_;
     std::unique_ptr<PacketDispatcher> dispatcher_;

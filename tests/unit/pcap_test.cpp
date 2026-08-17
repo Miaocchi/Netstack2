@@ -13,11 +13,10 @@ TCPIP2_TEST(PcapHeaderFormat) {
     TCPIP2_EXPECT_EQ(std::size_t{0}, w.Bytes().size());
     TCPIP2_EXPECT_EQ(std::size_t{0}, w.RecordCount());
 
-    const std::vector<std::uint8_t> pkt =
-        PacketBuilder::BuildIpv4Tcp(1, 2, 3, 4, 5, 6, TcpFlags::Ack, {0xAA, 0xBB});
+    const std::vector<std::uint8_t> pkt = PacketBuilder::BuildIpv4Tcp(1, 2, 3, 4, 5, 6, TcpFlags::Ack, {0xAA, 0xBB});
     w.Append(0, pkt);
     TCPIP2_EXPECT_EQ(std::size_t{1}, w.RecordCount());
-    const std::vector<std::uint8_t>& bytes = w.Bytes();
+    const std::vector<std::uint8_t> &bytes = w.Bytes();
     TCPIP2_EXPECT_EQ(std::size_t{24 + 16 + pkt.size()}, bytes.size());
 
     // magic 0xa1b2c3d4 little-endian
@@ -53,7 +52,7 @@ TCPIP2_TEST(PcapMultipleRecords) {
     w.Append(1'000'000, {1, 2, 3});
     w.Append(2'500'000, {4, 5, 6, 7});
     TCPIP2_EXPECT_EQ(std::size_t{2}, w.RecordCount());
-    const std::vector<std::uint8_t>& b = w.Bytes();
+    const std::vector<std::uint8_t> &b = w.Bytes();
     TCPIP2_EXPECT_EQ(std::size_t{24 + 16 + 3 + 16 + 4}, b.size());
 
     // record 1: ts_sec=1, ts_usec=0, incl_len=3
@@ -68,10 +67,10 @@ TCPIP2_TEST(PcapMultipleRecords) {
     TCPIP2_EXPECT_EQ(std::uint8_t{2}, b[r2 + 0]);
     TCPIP2_EXPECT_EQ(std::uint8_t{0x20}, b[r2 + 4]); // ts_usec low byte (500000)
     TCPIP2_EXPECT_EQ(std::uint8_t{0xA1}, b[r2 + 5]);
-    TCPIP2_EXPECT_EQ(std::uint8_t{4}, b[r2 + 8]);    // incl_len
+    TCPIP2_EXPECT_EQ(std::uint8_t{4}, b[r2 + 8]); // incl_len
     // record 2 data {4,5,6,7} begins after its 16-byte header
-    TCPIP2_EXPECT_EQ(std::uint8_t{4}, b[r2 + 16]);   // first data byte
-    TCPIP2_EXPECT_EQ(std::uint8_t{7}, b[r2 + 19]);   // last data byte
+    TCPIP2_EXPECT_EQ(std::uint8_t{4}, b[r2 + 16]); // first data byte
+    TCPIP2_EXPECT_EQ(std::uint8_t{7}, b[r2 + 19]); // last data byte
 }
 
 TCPIP2_TEST(PcapClearResets) {

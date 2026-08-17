@@ -16,16 +16,17 @@ namespace {
 
 /// Integer square root (Newton-free loop; CoDel counts stay small).
 std::uint32_t Isqrt32(std::uint32_t x) noexcept {
-    if (x == 0) return 0;
+    if (x == 0)
+        return 0;
     std::uint32_t r = 1;
-    while ((r + 1) <= x / (r + 1)) ++r;
+    while ((r + 1) <= x / (r + 1))
+        ++r;
     return r;
 }
 
 } // namespace
 
-FqCoDelScheduler::FqCoDelScheduler(const FqCoDelConfig& config) noexcept
-    : config_(config) {
+FqCoDelScheduler::FqCoDelScheduler(const FqCoDelConfig &config) noexcept : config_(config) {
     // reserve + emplace_back avoids vector reallocation (which would require
     // Flow to be nothrow_move_constructible — undesirable given Flow holds a
     // deque of move-only QueuedPacket/BufferLease objects).
@@ -35,8 +36,7 @@ FqCoDelScheduler::FqCoDelScheduler(const FqCoDelConfig& config) noexcept
     }
 }
 
-FqCoDelScheduler::Flow* FqCoDelScheduler::FindOrCreateFlow(
-    std::uint32_t flow_hash) noexcept {
+FqCoDelScheduler::Flow *FqCoDelScheduler::FindOrCreateFlow(std::uint32_t flow_hash) noexcept {
     if (flows_.empty()) {
         return nullptr;
     }
@@ -46,7 +46,7 @@ FqCoDelScheduler::Flow* FqCoDelScheduler::FindOrCreateFlow(
 
     // Linear probing to find an existing flow or an empty slot.
     for (std::uint32_t i = 0; i < flows_.size(); ++i) {
-        Flow& flow = flows_[slot];
+        Flow &flow = flows_[slot];
         if (flow.queue.empty() && flow.flow_hash == 0) {
             flow.flow_hash = flow_hash;
             return &flow;
@@ -60,7 +60,7 @@ FqCoDelScheduler::Flow* FqCoDelScheduler::FindOrCreateFlow(
 }
 
 void FqCoDelScheduler::ReleaseFlowSlot(std::uint32_t idx) noexcept {
-    Flow& flow = flows_[idx];
+    Flow &flow = flows_[idx];
     flow.queue.clear();
     flow.queue_bytes = 0;
     flow.deficit = 0;
@@ -73,25 +73,22 @@ void FqCoDelScheduler::ReleaseFlowSlot(std::uint32_t idx) noexcept {
     flow.drop_count = 0;
 }
 
-bool FqCoDelScheduler::Enqueue(BufferLease lease, std::uint32_t flow_hash,
-                                std::uint64_t now_ms) noexcept {
+bool FqCoDelScheduler::Enqueue(BufferLease lease, std::uint32_t flow_hash, std::uint64_t now_ms) noexcept {
     if (!lease) {
         return false;
     }
     const std::size_t bytes = lease.Size();
 
     // Scheduler-wide hard limits (R6: packet AND byte bounds).
-    if (total_packets_ + 1 > config_.max_total_packets ||
-        total_bytes_ + bytes > config_.max_total_bytes) {
+    if (total_packets_ + 1 > config_.max_total_packets || total_bytes_ + bytes > config_.max_total_bytes) {
         return false;
     }
 
-    Flow* flow = FindOrCreateFlow(flow_hash);
+    Flow *flow = FindOrCreateFlow(flow_hash);
     if (flow == nullptr) {
         return false;
     }
-    if (flow->queue.size() >= config_.max_queue_length ||
-        flow->queue_bytes + bytes > config_.max_flow_queue_bytes) {
+    if (flow->queue.size() >= config_.max_queue_length || flow->queue_bytes + bytes > config_.max_flow_queue_bytes) {
         return false;
     }
 
@@ -114,8 +111,7 @@ bool FqCoDelScheduler::Enqueue(BufferLease lease, std::uint32_t flow_hash,
     return true;
 }
 
-bool FqCoDelScheduler::CodelShouldDrop(Flow& flow, std::uint64_t sojourn_ms,
-                                        std::uint64_t now_ms) noexcept {
+bool FqCoDelScheduler::CodelShouldDrop(Flow &flow, std::uint64_t sojourn_ms, std::uint64_t now_ms) noexcept {
     const std::uint32_t target = config_.target_ms;
     const std::uint32_t interval = config_.interval_ms;
 
@@ -153,8 +149,7 @@ bool FqCoDelScheduler::CodelShouldDrop(Flow& flow, std::uint64_t sojourn_ms,
 
     // Enter the dropping state; drop the current packet.
     flow.in_dropping = true;
-    if (flow.last_drop_time != 0 && flow.drop_count > 1 &&
-        now_ms - flow.last_drop_time < interval) {
+    if (flow.last_drop_time != 0 && flow.drop_count > 1 && now_ms - flow.last_drop_time < interval) {
         // Phase shift (RFC 8289 §4.2): resume the previous cycle's count and
         // replay the control law forwards until the next drop is in the
         // future, rather than restarting at count = 1.
@@ -162,7 +157,8 @@ bool FqCoDelScheduler::CodelShouldDrop(Flow& flow, std::uint64_t sojourn_ms,
         std::uint64_t next = flow.last_drop_time;
         while (count > 1) {
             const std::uint64_t step = next_drop_delay(count);
-            if (next + step > now_ms) break;
+            if (next + step > now_ms)
+                break;
             next += step;
             --count;
         }
@@ -176,9 +172,9 @@ bool FqCoDelScheduler::CodelShouldDrop(Flow& flow, std::uint64_t sojourn_ms,
     return true;
 }
 
-bool FqCoDelScheduler::MarkCe(QueuedPacket& pkt) noexcept {
+bool FqCoDelScheduler::MarkCe(QueuedPacket &pkt) noexcept {
     const std::size_t length = pkt.lease.Size();
-    std::uint8_t* const data = pkt.lease.Data();
+    std::uint8_t *const data = pkt.lease.Data();
     if (data == nullptr || length < 20) {
         return false;
     }
@@ -192,8 +188,7 @@ bool FqCoDelScheduler::MarkCe(QueuedPacket& pkt) noexcept {
         }
         data[1] = static_cast<std::uint8_t>((data[1] & 0xFCu) | 0x03u);
         // CE marking changed the header — refresh the IPv4 header checksum.
-        const std::size_t header_length =
-            static_cast<std::size_t>(data[0] & 0x0Fu) * 4;
+        const std::size_t header_length = static_cast<std::size_t>(data[0] & 0x0Fu) * 4;
         if (header_length >= 20 && header_length <= length) {
             data[10] = 0;
             data[11] = 0;
@@ -221,9 +216,9 @@ bool FqCoDelScheduler::MarkCe(QueuedPacket& pkt) noexcept {
     return false;
 }
 
-std::optional<FqCoDelPacket> FqCoDelScheduler::ServeFlow(
-    std::uint32_t idx, FlowList list, std::uint64_t now_ms) noexcept {
-    Flow& flow = flows_[idx];
+std::optional<FqCoDelPacket> FqCoDelScheduler::ServeFlow(std::uint32_t idx, FlowList list,
+                                                         std::uint64_t now_ms) noexcept {
+    Flow &flow = flows_[idx];
     const std::uint32_t flow_hash = flow.flow_hash;
 
     while (!flow.queue.empty()) {
@@ -236,8 +231,7 @@ std::optional<FqCoDelPacket> FqCoDelScheduler::ServeFlow(
         total_bytes_ -= size;
         flow.deficit -= static_cast<std::int64_t>(size);
 
-        const std::uint64_t sojourn = (now_ms >= pkt.enqueue_time_ms)
-            ? (now_ms - pkt.enqueue_time_ms) : 0;
+        const std::uint64_t sojourn = (now_ms >= pkt.enqueue_time_ms) ? (now_ms - pkt.enqueue_time_ms) : 0;
 
         if (!CodelShouldDrop(flow, sojourn, now_ms)) {
             FqCoDelPacket out;
@@ -265,13 +259,12 @@ std::optional<FqCoDelPacket> FqCoDelScheduler::ServeFlow(
     return std::nullopt;
 }
 
-std::optional<FqCoDelPacket> FqCoDelScheduler::Dequeue(
-    std::uint64_t now_ms) noexcept {
+std::optional<FqCoDelPacket> FqCoDelScheduler::Dequeue(std::uint64_t now_ms) noexcept {
     // New flows first (RFC 8290): serviced with priority, one packet per
     // call, until they drain and move to the old-flow list.
     while (!new_flows_.empty()) {
         const std::uint32_t idx = new_flows_.front();
-        Flow& flow = flows_[idx];
+        Flow &flow = flows_[idx];
         if (flow.queue.empty()) {
             new_flows_.pop_front();
             ReleaseFlowSlot(idx);
@@ -281,8 +274,7 @@ std::optional<FqCoDelPacket> FqCoDelScheduler::Dequeue(
         if (flow.deficit <= 0) {
             flow.deficit += static_cast<std::int64_t>(config_.quantum);
         }
-        if (flow.deficit <
-            static_cast<std::int64_t>(flow.queue.front().lease.Size())) {
+        if (flow.deficit < static_cast<std::int64_t>(flow.queue.front().lease.Size())) {
             // Not enough credit yet — mature into the old-flow DRR list.
             new_flows_.pop_front();
             flow.list = FlowList::Old;
@@ -306,15 +298,14 @@ std::optional<FqCoDelPacket> FqCoDelScheduler::Dequeue(
     // Old flows: deficit round-robin with CoDel gating.
     while (!old_flows_.empty()) {
         const std::uint32_t idx = old_flows_.front();
-        Flow& flow = flows_[idx];
+        Flow &flow = flows_[idx];
         if (flow.queue.empty()) {
             old_flows_.pop_front();
             ReleaseFlowSlot(idx);
             continue;
         }
 
-        if (flow.deficit <
-            static_cast<std::int64_t>(flow.queue.front().lease.Size())) {
+        if (flow.deficit < static_cast<std::int64_t>(flow.queue.front().lease.Size())) {
             flow.deficit += static_cast<std::int64_t>(config_.quantum);
             old_flows_.pop_front();
             old_flows_.push_back(idx);
@@ -334,9 +325,7 @@ std::optional<FqCoDelPacket> FqCoDelScheduler::Dequeue(
     return std::nullopt;
 }
 
-bool FqCoDelScheduler::Empty() const noexcept {
-    return total_packets_ == 0;
-}
+bool FqCoDelScheduler::Empty() const noexcept { return total_packets_ == 0; }
 
 void FqCoDelScheduler::Reset() noexcept {
     for (std::uint32_t i = 0; i < flows_.size(); ++i) {
@@ -350,7 +339,7 @@ void FqCoDelScheduler::Reset() noexcept {
 
 std::size_t FqCoDelScheduler::ActiveFlowCount() const noexcept {
     std::size_t count = 0;
-    for (const auto& flow : flows_) {
+    for (const auto &flow : flows_) {
         if (!flow.queue.empty()) {
             ++count;
         }

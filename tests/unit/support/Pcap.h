@@ -18,17 +18,17 @@ namespace tcpip2 {
 namespace test {
 
 class PcapWriter final {
-public:
-    void Append(std::uint64_t ts_usec, const std::vector<std::uint8_t>& packet);
+  public:
+    void Append(std::uint64_t ts_usec, const std::vector<std::uint8_t> &packet);
     void Clear() {
         bytes_.clear();
         record_count_ = 0;
     }
 
-    const std::vector<std::uint8_t>& Bytes() const noexcept { return bytes_; }
+    const std::vector<std::uint8_t> &Bytes() const noexcept { return bytes_; }
     std::size_t RecordCount() const noexcept { return record_count_; }
 
-private:
+  private:
     std::vector<std::uint8_t> bytes_;
     std::size_t record_count_ = 0;
 };

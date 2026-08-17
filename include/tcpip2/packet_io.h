@@ -47,7 +47,7 @@ enum class IoError {
 };
 
 class IPacketQueue {
-public:
+  public:
     virtual ~IPacketQueue() = default;
 
     /**
@@ -58,7 +58,7 @@ public:
      * available the backend reports 0 with either IoError::None or
      * IoError::WouldBlock (poll-based backends report WouldBlock).
      */
-    virtual std::size_t RecvBatch(BufferLease out[], std::size_t capacity, IoError& error) noexcept = 0;
+    virtual std::size_t RecvBatch(BufferLease out[], std::size_t capacity, IoError &error) noexcept = 0;
 
     /**
      * Transmit up to @p count packets from @p packets.
@@ -68,7 +68,7 @@ public:
      * (n < count with IoError::None) is legal: the caller keeps the tail and
      * may resubmit it later. On error no leases are transferred.
      */
-    virtual std::size_t SendBatch(BufferLease packets[], std::size_t count, IoError& error) noexcept = 0;
+    virtual std::size_t SendBatch(BufferLease packets[], std::size_t count, IoError &error) noexcept = 0;
 
     virtual std::size_t QueueId() const noexcept = 0;
 
@@ -90,7 +90,7 @@ public:
      * must belong to the same pool the shard drains via DrainReturnQueue(),
      * otherwise foreign-thread returns accumulate in an undrained pool.
      */
-    virtual void SetBufferPool(PktBufferPool* pool) noexcept = 0;
+    virtual void SetBufferPool(PktBufferPool *pool) noexcept = 0;
 
     /**
      * Stop new RX delivery before the runtime tears down owner shards.
@@ -117,7 +117,7 @@ public:
 };
 
 class IPacketIo {
-public:
+  public:
     virtual ~IPacketIo() = default;
 
     virtual std::size_t QueueCount() const noexcept = 0;
@@ -145,7 +145,7 @@ public:
  *     to the owner pool at completion instead of inside SendBatch().
  */
 class NullPacketIo final : public IPacketIo {
-public:
+  public:
     explicit NullPacketIo(std::size_t queue_count = 1);
     ~NullPacketIo() override;
 
@@ -156,7 +156,7 @@ public:
      * Inject a packet into @p queue_id's receive backlog.
      * The backend becomes the owner of @p lease on success.
      */
-    bool Inject(std::size_t queue_id, BufferLease&& lease);
+    bool Inject(std::size_t queue_id, BufferLease &&lease);
 
     /**
      * Test knob: cap the number of leases SendBatch() accepts per call
@@ -203,7 +203,7 @@ public:
      * after `Stop()`). For concurrent access while the runtime is running,
      * use `EgressSnapshot()` instead.
      */
-    const std::vector<std::vector<std::uint8_t>>& Egress(std::size_t queue_id) const;
+    const std::vector<std::vector<std::uint8_t>> &Egress(std::size_t queue_id) const;
 
     /**
      * Thread-safe snapshot of egress records for @p queue_id.
@@ -218,7 +218,7 @@ public:
     /** Backend state; definition lives in src/packetio/null_io.cpp. */
     struct Impl;
 
-private:
+  private:
     std::shared_ptr<Impl> impl_;
 };
 

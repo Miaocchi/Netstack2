@@ -16,7 +16,7 @@
 namespace tcpip2 {
 
 class ThreadOwnershipGuard final {
-public:
+  public:
     ThreadOwnershipGuard() noexcept = default;
 
     void SetOwner(std::thread::id owner = std::this_thread::get_id()) noexcept {
@@ -25,14 +25,12 @@ public:
     void ClearOwner() noexcept { owner_.store(std::thread::id{}, std::memory_order_relaxed); }
 
     std::thread::id OwnerId() const noexcept { return owner_.load(std::memory_order_relaxed); }
-    bool IsOwner() const noexcept {
-        return owner_.load(std::memory_order_relaxed) == std::this_thread::get_id();
-    }
+    bool IsOwner() const noexcept { return owner_.load(std::memory_order_relaxed) == std::this_thread::get_id(); }
 
     /** Returns true on the owner thread; aborts the process otherwise. */
-    bool AssertOwner(const char* file, int line) noexcept;
+    bool AssertOwner(const char *file, int line) noexcept;
 
-private:
+  private:
     std::atomic<std::thread::id> owner_{};
 };
 

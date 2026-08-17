@@ -16,8 +16,7 @@ using namespace tcpip2;
 
 namespace {
 
-FlowKey MakeUdpFlow(std::uint16_t src_port = 12345,
-                    std::uint16_t dst_port = 53) {
+FlowKey MakeUdpFlow(std::uint16_t src_port = 12345, std::uint16_t dst_port = 53) {
     FlowKey flow;
     flow.source = IpAddress::Ipv4(10, 0, 0, 1);
     flow.destination = IpAddress::Ipv4(10, 0, 0, 2);
@@ -31,14 +30,14 @@ FlowKey MakeUdpFlow(std::uint16_t src_port = 12345,
 /// through OnRemoteData (simulating shard processing). State lives in a
 /// shared_ptr because std::function stores a copy of the callable.
 class PostRecorder {
-public:
+  public:
     struct State {
         ShardMessageType last_type = ShardMessageType::kControl;
         std::uint64_t last_flow_id = 0;
     };
     std::shared_ptr<State> state = std::make_shared<State>();
 
-    bool operator()(ShardMessage&& msg) noexcept {
+    bool operator()(ShardMessage &&msg) noexcept {
         state->last_type = msg.type;
         state->last_flow_id = msg.flow_id.value;
         return true;
@@ -60,8 +59,7 @@ TCPIP2_TEST(UdpFlowOpensSessionOnFirstDatagram) {
 
     const FlowKey flow = MakeUdpFlow();
     const auto payload = Payload(4);
-    const UdpFlowTable::Dispatch d = table.OnClientDatagram(
-        flow, payload.data(), payload.size(), 1000);
+    const UdpFlowTable::Dispatch d = table.OnClientDatagram(flow, payload.data(), payload.size(), 1000);
     TCPIP2_EXPECT_EQ(UdpFlowTable::Dispatch::Accepted, d);
     TCPIP2_EXPECT_EQ(std::size_t{1}, factory.OpenCalls());
     TCPIP2_EXPECT_EQ(std::size_t{1}, factory.SessionCount());
@@ -89,16 +87,14 @@ TCPIP2_TEST(UdpFlowRejectsWithoutSession) {
     UdpFlowTable table(config, nullptr, DefaultClock(), post);
     const FlowKey flow = MakeUdpFlow();
     const auto payload = Payload(4);
-    const UdpFlowTable::Dispatch d = table.OnClientDatagram(
-        flow, payload.data(), payload.size(), 1000);
+    const UdpFlowTable::Dispatch d = table.OnClientDatagram(flow, payload.data(), payload.size(), 1000);
     TCPIP2_EXPECT_EQ(UdpFlowTable::Dispatch::Rejected, d);
 
     // Factory refusal also rejects.
     test::FakeSessionFactory factory;
     factory.RejectNext();
     UdpFlowTable table2(config, &factory, DefaultClock(), post);
-    const UdpFlowTable::Dispatch d2 = table2.OnClientDatagram(
-        flow, payload.data(), payload.size(), 2000);
+    const UdpFlowTable::Dispatch d2 = table2.OnClientDatagram(flow, payload.data(), payload.size(), 2000);
     TCPIP2_EXPECT_EQ(UdpFlowTable::Dispatch::Rejected, d2);
 }
 
@@ -115,7 +111,7 @@ TCPIP2_TEST(UdpFlowRemoteDatagramEmitsViaEmitter) {
     // Remote datagram arrives via the session's data callback.
     PktBufferPool pool(8, 2048);
     const auto remote = Payload(5, 0x11);
-    test::FakeDatagramSession& session = *factory.Session(0);
+    test::FakeDatagramSession &session = *factory.Session(0);
     const ReceiveStatus st = session.PushRemote(remote, pool);
     TCPIP2_EXPECT_EQ(ReceiveStatus::Accepted, st);
     TCPIP2_EXPECT_EQ(ShardMessageType::kUdpSessionData, post.state->last_type);
@@ -123,7 +119,7 @@ TCPIP2_TEST(UdpFlowRemoteDatagramEmitsViaEmitter) {
     // Simulate the shard processing the message: emitter receives the flow.
     bool emitted = false;
     FlowKey emitted_flow;
-    table.SetEgressEmitter([&](const FlowKey& f, BufferLease& lease) {
+    table.SetEgressEmitter([&](const FlowKey &f, BufferLease &lease) {
         emitted = true;
         emitted_flow = f;
         TCPIP2_EXPECT_EQ(remote.size(), lease.Size());
@@ -225,16 +221,13 @@ TCPIP2_TEST(UdpFlowIgnoresNonUdpOrMismatchedFamily) {
     FlowKey tcp = MakeUdpFlow();
     tcp.protocol = 6;
     const auto payload = Payload(2);
-    TCPIP2_EXPECT_EQ(UdpFlowTable::Dispatch::Ignored,
-                     table.OnClientDatagram(tcp, payload.data(), payload.size(), 0));
+    TCPIP2_EXPECT_EQ(UdpFlowTable::Dispatch::Ignored, table.OnClientDatagram(tcp, payload.data(), payload.size(), 0));
 
     // IPv4 src with IPv6 dst.
     FlowKey mixed = MakeUdpFlow();
-    std::uint8_t v6[16] = {0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0,
-                           0, 0, 0, 0, 0, 0, 0, 1};
+    std::uint8_t v6[16] = {0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
     mixed.destination = IpAddress::Ipv6(v6);
-    TCPIP2_EXPECT_EQ(UdpFlowTable::Dispatch::Ignored,
-                     table.OnClientDatagram(mixed, payload.data(), payload.size(), 0));
+    TCPIP2_EXPECT_EQ(UdpFlowTable::Dispatch::Ignored, table.OnClientDatagram(mixed, payload.data(), payload.size(), 0));
     TCPIP2_EXPECT_EQ(std::size_t{0}, table.Size());
 }
 

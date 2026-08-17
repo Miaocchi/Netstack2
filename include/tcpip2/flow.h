@@ -28,15 +28,12 @@ struct FlowKey {
     std::uint16_t destination_port = 0;
     std::uint8_t protocol = 0;
 
-    bool operator==(const FlowKey& o) const noexcept {
-        return source == o.source &&
-               destination == o.destination &&
-               source_port == o.source_port &&
-               destination_port == o.destination_port &&
-               protocol == o.protocol;
+    bool operator==(const FlowKey &o) const noexcept {
+        return source == o.source && destination == o.destination && source_port == o.source_port &&
+               destination_port == o.destination_port && protocol == o.protocol;
     }
 
-    bool operator!=(const FlowKey& o) const noexcept { return !(*this == o); }
+    bool operator!=(const FlowKey &o) const noexcept { return !(*this == o); }
 
     /**
      * Canonical form: ensures bidirectional flows hash to the same value.
@@ -49,9 +46,9 @@ struct FlowKey {
  * Fixed hash function — deterministic, NOT std::hash.
  * Uses FNV-1a variant over canonical bytes. Returns shard index via modulo.
  */
-std::uint64_t FlowHash(const FlowKey& key) noexcept;
+std::uint64_t FlowHash(const FlowKey &key) noexcept;
 
 /** Map a flow to a shard in [0, shard_count). */
-std::size_t FlowToShard(const FlowKey& key, std::size_t shard_count) noexcept;
+std::size_t FlowToShard(const FlowKey &key, std::size_t shard_count) noexcept;
 
 } // namespace tcpip2

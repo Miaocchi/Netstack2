@@ -2,11 +2,11 @@
 
 namespace tcpip2 {
 
-TcpDeliveryResult DrainTcpReceiveBuffer(TcpReceiveBuffer& receive,
-                                        const DeliverFn& deliver,
+TcpDeliveryResult DrainTcpReceiveBuffer(TcpReceiveBuffer &receive, const DeliverFn &deliver,
                                         std::size_t call_budget) noexcept {
     TcpDeliveryResult result;
-    if (receive.ReadyBytes() == 0) return result;
+    if (receive.ReadyBytes() == 0)
+        return result;
     if (call_budget == 0) {
         result.status = TcpDeliveryStatus::BudgetExhausted;
         return result;

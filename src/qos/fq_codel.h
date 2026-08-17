@@ -82,7 +82,7 @@ struct FqCoDelPacket {
     /// drop CoDel otherwise demanded.
     bool ce_marked = false;
 
-    const std::uint8_t* Data() const noexcept { return lease.Data(); }
+    const std::uint8_t *Data() const noexcept { return lease.Data(); }
     std::size_t Size() const noexcept { return lease.Size(); }
     bool Empty() const noexcept { return !lease; }
 };
@@ -95,12 +95,12 @@ struct FqCoDelPacket {
  * Dequeue() to pull the next scheduled packet.
  */
 class FqCoDelScheduler final {
-public:
+  public:
     FqCoDelScheduler() noexcept : FqCoDelScheduler(FqCoDelConfig{}) {}
-    explicit FqCoDelScheduler(const FqCoDelConfig& config) noexcept;
+    explicit FqCoDelScheduler(const FqCoDelConfig &config) noexcept;
 
-    FqCoDelScheduler(const FqCoDelScheduler&) = delete;
-    FqCoDelScheduler& operator=(const FqCoDelScheduler&) = delete;
+    FqCoDelScheduler(const FqCoDelScheduler &) = delete;
+    FqCoDelScheduler &operator=(const FqCoDelScheduler &) = delete;
 
     /**
      * Enqueue @p lease on the flow identified by @p flow_hash. The scheduler
@@ -109,8 +109,7 @@ public:
      * scheduler-wide limits are exceeded, or the lease is empty; on failure
      * the lease is released (buffer returned to pool).
      */
-    bool Enqueue(BufferLease lease, std::uint32_t flow_hash,
-                 std::uint64_t now_ms) noexcept;
+    bool Enqueue(BufferLease lease, std::uint32_t flow_hash, std::uint64_t now_ms) noexcept;
 
     /**
      * Dequeue the next packet according to the RFC 8290 new/old flow
@@ -135,7 +134,7 @@ public:
     /// Number of currently tracked (non-empty) flows.
     std::size_t ActiveFlowCount() const noexcept;
 
-private:
+  private:
     enum class FlowList : std::uint8_t { None, New, Old };
 
     struct QueuedPacket {
@@ -151,18 +150,16 @@ private:
      * but keeps the capacity. Growth is bounded by max_queue_length.
      */
     class FlowQueue {
-    public:
+      public:
         FlowQueue() = default;
-        FlowQueue(const FlowQueue&) = delete;
-        FlowQueue& operator=(const FlowQueue&) = delete;
-        FlowQueue(FlowQueue&& other) noexcept
-            : slots_(std::move(other.slots_)),
-              head_(other.head_),
-              count_(other.count_) {
+        FlowQueue(const FlowQueue &) = delete;
+        FlowQueue &operator=(const FlowQueue &) = delete;
+        FlowQueue(FlowQueue &&other) noexcept
+            : slots_(std::move(other.slots_)), head_(other.head_), count_(other.count_) {
             other.head_ = 0;
             other.count_ = 0;
         }
-        FlowQueue& operator=(FlowQueue&& other) noexcept {
+        FlowQueue &operator=(FlowQueue &&other) noexcept {
             slots_ = std::move(other.slots_);
             head_ = other.head_;
             count_ = other.count_;
@@ -175,15 +172,16 @@ private:
         bool empty() const noexcept { return count_ == 0; }
         std::size_t size() const noexcept { return count_; }
 
-        void push_back(QueuedPacket&& pkt) noexcept {
-            if (count_ == slots_.size()) Grow();
+        void push_back(QueuedPacket &&pkt) noexcept {
+            if (count_ == slots_.size())
+                Grow();
             const std::size_t idx = (head_ + count_) % slots_.size();
             slots_[idx] = std::move(pkt);
             ++count_;
         }
 
-        QueuedPacket& front() noexcept { return slots_[head_]; }
-        const QueuedPacket& front() const noexcept { return slots_[head_]; }
+        QueuedPacket &front() noexcept { return slots_[head_]; }
+        const QueuedPacket &front() const noexcept { return slots_[head_]; }
 
         QueuedPacket pop_front() noexcept {
             QueuedPacket out = std::move(slots_[head_]);
@@ -203,7 +201,7 @@ private:
             head_ = 0;
         }
 
-    private:
+      private:
         void Grow() noexcept {
             const std::size_t new_cap = slots_.empty() ? 8 : slots_.size() * 2;
             std::vector<QueuedPacket> grown;
@@ -236,38 +234,36 @@ private:
         std::uint32_t drop_count = 0;
 
         Flow() noexcept = default;
-        Flow(const Flow&) = delete;
-        Flow& operator=(const Flow&) = delete;
-        Flow(Flow&&) noexcept = default;
-        Flow& operator=(Flow&&) noexcept = default;
+        Flow(const Flow &) = delete;
+        Flow &operator=(const Flow &) = delete;
+        Flow(Flow &&) noexcept = default;
+        Flow &operator=(Flow &&) noexcept = default;
         ~Flow() = default;
     };
 
     FqCoDelConfig config_;
-    std::vector<Flow> flows_;                 // hash table with linear probing
-    std::deque<std::uint32_t> new_flows_;     // indices into flows_
+    std::vector<Flow> flows_;             // hash table with linear probing
+    std::deque<std::uint32_t> new_flows_; // indices into flows_
     std::deque<std::uint32_t> old_flows_;
     std::size_t total_packets_ = 0;
     std::size_t total_bytes_ = 0;
 
-    Flow* FindOrCreateFlow(std::uint32_t flow_hash) noexcept;
+    Flow *FindOrCreateFlow(std::uint32_t flow_hash) noexcept;
     void ReleaseFlowSlot(std::uint32_t idx) noexcept;
 
     /// Serve the flow at @p idx (which must sit at the front of @p list).
     /// Returns a packet when one survived CoDel, std::nullopt when the flow
     /// contributed nothing this round. Updates deficit/list placement.
-    std::optional<FqCoDelPacket> ServeFlow(std::uint32_t idx, FlowList list,
-                                           std::uint64_t now_ms) noexcept;
+    std::optional<FqCoDelPacket> ServeFlow(std::uint32_t idx, FlowList list, std::uint64_t now_ms) noexcept;
 
     /// CoDel verdict for the head packet: false = deliver (possibly after
     /// CE-marking), true = drop. May transition the dropping state machine.
-    bool CodelShouldDrop(Flow& flow, std::uint64_t sojourn_ms,
-                         std::uint64_t now_ms) noexcept;
+    bool CodelShouldDrop(Flow &flow, std::uint64_t sojourn_ms, std::uint64_t now_ms) noexcept;
 
     /// Mark CE on an ECT(0)/ECT(1) packet in place (refreshing the IPv4
     /// header checksum); returns false when the packet is Not-ECT or
     /// unparseable.
-    static bool MarkCe(QueuedPacket& pkt) noexcept;
+    static bool MarkCe(QueuedPacket &pkt) noexcept;
 };
 
 } // namespace tcpip2

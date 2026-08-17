@@ -54,17 +54,14 @@ struct TcpSegmentView;
 struct TcpResponse;
 
 class StackShard {
-public:
-    StackShard(std::size_t shard_id, PktBufferPool& pool, IPacketQueue* queue,
-                std::size_t inbox_capacity = 1024,
-                ISessionFactory* session_factory = nullptr,
-                IClock* clock = nullptr,
-                IEventSink* event_sink = nullptr,
-                TcpHandshakeConfig tcp_config = {}) noexcept;
+  public:
+    StackShard(std::size_t shard_id, PktBufferPool &pool, IPacketQueue *queue, std::size_t inbox_capacity = 1024,
+               ISessionFactory *session_factory = nullptr, IClock *clock = nullptr, IEventSink *event_sink = nullptr,
+               TcpHandshakeConfig tcp_config = {}) noexcept;
     ~StackShard();
 
-    StackShard(const StackShard&) = delete;
-    StackShard& operator=(const StackShard&) = delete;
+    StackShard(const StackShard &) = delete;
+    StackShard &operator=(const StackShard &) = delete;
 
     /** Start the shard thread. Returns false if already running. */
     bool Start() noexcept;
@@ -73,32 +70,31 @@ public:
     void Stop() noexcept;
 
     /** Post a message to the control inbox (any thread). */
-    bool PostMessage(ShardMessage&& msg) noexcept;
+    bool PostMessage(ShardMessage &&msg) noexcept;
 
     /** Post a packet to the legacy single-producer inbox (test-only). */
-    bool PostPacket(BufferLease&& lease) noexcept;
+    bool PostPacket(BufferLease &&lease) noexcept;
 
     /**
      * Assign the RX queues polled by this shard before Start(). An empty list
      * leaves the constructor-supplied queue in place for legacy unit tests.
      */
-    bool SetRxQueues(const std::vector<IPacketQueue*>& queues) noexcept;
+    bool SetRxQueues(const std::vector<IPacketQueue *> &queues) noexcept;
 
     /** Configure dedicated source->target packet lanes before Start(). */
-    bool SetPacketLanes(PacketDispatcher* dispatcher,
-                        const std::vector<ShardPacketLane*>& inbound,
-                        const std::vector<ShardPacketLane*>& outbound,
-                        const std::vector<StackShard*>& targets) noexcept;
+    bool SetPacketLanes(PacketDispatcher *dispatcher, const std::vector<ShardPacketLane *> &inbound,
+                        const std::vector<ShardPacketLane *> &outbound,
+                        const std::vector<StackShard *> &targets) noexcept;
 
     /**
      * Configure queue-owner-only TX access before Start(). Entries for queues
      * owned by another shard must be null; their packets use egress lanes.
      */
-    bool SetTxQueues(const std::vector<IPacketQueue*>& queues) noexcept;
+    bool SetTxQueues(const std::vector<IPacketQueue *> &queues) noexcept;
 
     /** Configure dedicated protocol-owner -> queue-owner TX lanes before Start(). */
-    bool SetEgressLanes(const std::vector<ShardEgressLane*>& inbound,
-                        const std::vector<ShardEgressLane*>& outbound) noexcept;
+    bool SetEgressLanes(const std::vector<ShardEgressLane *> &inbound,
+                        const std::vector<ShardEgressLane *> &outbound) noexcept;
 
     std::size_t ShardId() const noexcept { return shard_id_; }
     bool IsRunning() const noexcept { return running_.load(std::memory_order_relaxed); }
@@ -108,43 +104,23 @@ public:
     void Wake() noexcept { control_inbox_.Wake(); }
 
     // Counters (atomic: written on the shard thread, read from any thread)
-    std::size_t PacketsReceived() const noexcept {
-        return packets_received_.load(std::memory_order_relaxed);
-    }
-    std::size_t PacketsDropped() const noexcept {
-        return packets_dropped_.load(std::memory_order_relaxed);
-    }
-    std::size_t MessagesProcessed() const noexcept {
-        return messages_processed_.load(std::memory_order_relaxed);
-    }
-    std::size_t TcpPcbCount() const noexcept {
-        return tcp_pcb_count_.load(std::memory_order_relaxed);
-    }
-    std::size_t TcpHalfOpenCount() const noexcept {
-        return tcp_half_open_count_.load(std::memory_order_relaxed);
-    }
+    std::size_t PacketsReceived() const noexcept { return packets_received_.load(std::memory_order_relaxed); }
+    std::size_t PacketsDropped() const noexcept { return packets_dropped_.load(std::memory_order_relaxed); }
+    std::size_t MessagesProcessed() const noexcept { return messages_processed_.load(std::memory_order_relaxed); }
+    std::size_t TcpPcbCount() const noexcept { return tcp_pcb_count_.load(std::memory_order_relaxed); }
+    std::size_t TcpHalfOpenCount() const noexcept { return tcp_half_open_count_.load(std::memory_order_relaxed); }
     std::size_t UdpDatagramsReceived() const noexcept {
         return udp_datagrams_received_.load(std::memory_order_relaxed);
     }
-    std::size_t UdpFlowCount() const noexcept {
-        return udp_ != nullptr ? udp_->Size() : 0;
-    }
-    std::size_t UdpRejectedCount() const noexcept {
-        return udp_rejected_.load(std::memory_order_relaxed);
-    }
-    std::size_t UdpOversizeCount() const noexcept {
-        return udp_oversize_.load(std::memory_order_relaxed);
-    }
-    std::size_t RedirectedPackets() const noexcept {
-        return redirected_packets_.load(std::memory_order_relaxed);
-    }
-    std::size_t RedirectDrops() const noexcept {
-        return redirect_drops_.load(std::memory_order_relaxed);
-    }
-    const TcpHandshakeConfig& TcpConfig() const noexcept { return tcp_config_; }
+    std::size_t UdpFlowCount() const noexcept { return udp_ != nullptr ? udp_->Size() : 0; }
+    std::size_t UdpRejectedCount() const noexcept { return udp_rejected_.load(std::memory_order_relaxed); }
+    std::size_t UdpOversizeCount() const noexcept { return udp_oversize_.load(std::memory_order_relaxed); }
+    std::size_t RedirectedPackets() const noexcept { return redirected_packets_.load(std::memory_order_relaxed); }
+    std::size_t RedirectDrops() const noexcept { return redirect_drops_.load(std::memory_order_relaxed); }
+    const TcpHandshakeConfig &TcpConfig() const noexcept { return tcp_config_; }
 
     /// Look up the cached PMTU for a destination.
-    PmtuLookupResult LookupPmtu(const std::uint8_t* dst_ip, std::uint8_t ip_version,
+    PmtuLookupResult LookupPmtu(const std::uint8_t *dst_ip, std::uint8_t ip_version,
                                 std::uint64_t now_ms) const noexcept {
         return pmtu_cache_.Lookup(dst_ip, ip_version, now_ms);
     }
@@ -156,69 +132,65 @@ public:
     static constexpr std::size_t kTcpTxBudget = 64;
     static constexpr std::size_t kRemoteReceiveLowWatermarkDivisor = 2;
 
-private:
+  private:
     void Run() noexcept;
     void EventLoopIteration() noexcept;
-    void RouteRxPacket(BufferLease&& lease, std::uint64_t now_ms) noexcept;
-    void ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexcept;
-    void ProcessEnvelope(PacketEnvelope&& envelope, std::uint64_t now_ms) noexcept;
-    void ProcessTcpSegment(const TcpSegmentView& segment, std::uint64_t now_ms) noexcept;
-    void HandleFragment(const std::uint8_t* packet, std::size_t length,
-                         std::uint64_t now_ms) noexcept;
-    void HandleIcmp(BufferLease& lease, std::uint64_t now_ms) noexcept;
+    void RouteRxPacket(BufferLease &&lease, std::uint64_t now_ms) noexcept;
+    void ProcessPacket(BufferLease &&lease, std::uint64_t now_ms) noexcept;
+    void ProcessEnvelope(PacketEnvelope &&envelope, std::uint64_t now_ms) noexcept;
+    void ProcessTcpSegment(const TcpSegmentView &segment, std::uint64_t now_ms) noexcept;
+    void HandleFragment(const std::uint8_t *packet, std::size_t length, std::uint64_t now_ms) noexcept;
+    void HandleIcmp(BufferLease &lease, std::uint64_t now_ms) noexcept;
     /// After an ICMP error lowered the cached PMTU for @p peer, tell the TCP
     /// engine so established flows to that peer reduce their send MSS.
-    void NotifyTcpPmtuLowered(const IpAddress& peer, std::uint64_t now_ms) noexcept;
+    void NotifyTcpPmtuLowered(const IpAddress &peer, std::uint64_t now_ms) noexcept;
     /// RFC 1191 §6 / RFC 4443 §2.4 attribution: reconstruct the reverse
     /// flow of the ICMP-quoted original packet and require a matching TCP
     /// PCB before the ICMP error may touch PMTU state.
-    bool QuotedPacketMatchesFlow(const std::uint8_t* quoted,
-                                 std::size_t quoted_len,
+    bool QuotedPacketMatchesFlow(const std::uint8_t *quoted, std::size_t quoted_len,
                                  std::uint8_t family) const noexcept;
     /// Enqueue an in-place-built ICMP echo reply through the generic FQ-CoDel
     /// egress scheduler. The lease is consumed (sent or dropped on failure).
-    void SendEchoReply(BufferLease lease, const FlowKey& reply_flow) noexcept;
-    void HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept;
-    void HandleReassembledUdp(const IpAddress& source, const IpAddress& destination,
-                               BufferLease&& lease, std::uint64_t now_ms) noexcept;
+    void SendEchoReply(BufferLease lease, const FlowKey &reply_flow) noexcept;
+    void HandleUdp(BufferLease &&lease, std::uint64_t now_ms) noexcept;
+    void HandleReassembledUdp(const IpAddress &source, const IpAddress &destination, BufferLease &&lease,
+                              std::uint64_t now_ms) noexcept;
     /// Emit an ICMP destination-unreachable (port unreachable) back to the
     /// sender of a rejected UDP datagram (R7 step 9). @p original is the full
     /// original IP packet used for the quote; @p reply_flow is the ICMP
     /// response's (already reversed) flow for egress hashing.
-    void EmitUdpUnreachable(const std::uint8_t* original, std::size_t original_len,
-                            std::uint8_t version,
-                            const FlowKey& reply_flow) noexcept;
+    void EmitUdpUnreachable(const std::uint8_t *original, std::size_t original_len, std::uint8_t version,
+                            const FlowKey &reply_flow) noexcept;
     /// Emit an ICMP Fragmentation Needed (IPv4) / Packet Too Big (IPv6) for a
     /// client datagram that exceeds the learned path MTU (R7 step 8).
-    void EmitUdpPmtuError(const std::uint8_t* original, std::size_t original_len,
-                          std::uint8_t version, std::uint32_t pmtu,
-                          const FlowKey& reply_flow) noexcept;
-    bool RedirectPacket(std::size_t target_shard, PacketEnvelope&& envelope) noexcept;
-    bool EnqueueTcpResponse(const TcpResponse& response) noexcept;
+    void EmitUdpPmtuError(const std::uint8_t *original, std::size_t original_len, std::uint8_t version,
+                          std::uint32_t pmtu, const FlowKey &reply_flow) noexcept;
+    bool RedirectPacket(std::size_t target_shard, PacketEnvelope &&envelope) noexcept;
+    bool EnqueueTcpResponse(const TcpResponse &response) noexcept;
     void DrainEgressLanes() noexcept;
-    bool RouteEgressPacket(FqCoDelPacket& packet) noexcept;
+    bool RouteEgressPacket(FqCoDelPacket &packet) noexcept;
     void FlushTcpTx() noexcept;
     void PumpTcpSendPaths(std::uint64_t now_ms) noexcept;
 
     std::size_t shard_id_;
-    PktBufferPool& pool_;
+    PktBufferPool &pool_;
     // Primary egress queue and legacy single-RX fallback; may be nullptr for tests.
-    IPacketQueue* queue_;
-    std::vector<IPacketQueue*> rx_queues_;
+    IPacketQueue *queue_;
+    std::vector<IPacketQueue *> rx_queues_;
     std::size_t next_rx_queue_ = 0;
-    PacketDispatcher* dispatcher_ = nullptr;
-    std::vector<ShardPacketLane*> inbound_lanes_;
-    std::vector<ShardPacketLane*> outbound_lanes_;
-    std::vector<StackShard*> redirect_targets_;
+    PacketDispatcher *dispatcher_ = nullptr;
+    std::vector<ShardPacketLane *> inbound_lanes_;
+    std::vector<ShardPacketLane *> outbound_lanes_;
+    std::vector<StackShard *> redirect_targets_;
     std::size_t next_inbound_lane_ = 0;
     // Indexed by queue id. Only queues owned by this shard are non-null.
-    std::vector<IPacketQueue*> tx_queues_;
-    std::vector<ShardEgressLane*> inbound_egress_lanes_;
-    std::vector<ShardEgressLane*> outbound_egress_lanes_;
+    std::vector<IPacketQueue *> tx_queues_;
+    std::vector<ShardEgressLane *> inbound_egress_lanes_;
+    std::vector<ShardEgressLane *> outbound_egress_lanes_;
     std::size_t next_inbound_egress_lane_ = 0;
-    ISessionFactory* session_factory_;  // may be nullptr (legacy Start)
-    IClock* clock_;  // never null after construction (defaults to DefaultClock)
-    IEventSink* event_sink_;  // may be nullptr (events silently dropped)
+    ISessionFactory *session_factory_; // may be nullptr (legacy Start)
+    IClock *clock_;                    // never null after construction (defaults to DefaultClock)
+    IEventSink *event_sink_;           // may be nullptr (events silently dropped)
     TcpHandshakeConfig tcp_config_;
     /// Per-shard cross-connection bandwidth filter for KCC (ADR-010). Owned
     /// by the shard, touched only on the shard thread; shared with all KCC

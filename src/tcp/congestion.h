@@ -24,10 +24,10 @@ namespace tcpip2 {
 
 /// Algorithm selection (set at flow creation, immutable thereafter).
 enum class CongestionAlgorithm {
-    Aimd,            ///< RFC 5681 baseline (default, no pacing).
-    Bbr,             ///< BBRv1 (with pacing).
-    HybridBdpAimd,   ///< Hybrid: BDP-based (BBR-style) cwnd with AIMD loss response.
-    Kcc,             ///< KCC v2.0 geodesic congestion control (ported from tcp_kcc.c).
+    Aimd,          ///< RFC 5681 baseline (default, no pacing).
+    Bbr,           ///< BBRv1 (with pacing).
+    HybridBdpAimd, ///< Hybrid: BDP-based (BBR-style) cwnd with AIMD loss response.
+    Kcc,           ///< KCC v2.0 geodesic congestion control (ported from tcp_kcc.c).
 };
 
 /// Information about a loss event passed to the controller.
@@ -45,12 +45,12 @@ struct LossEvent {
 /// Reproduces exactly the behaviour that was previously inlined in
 /// TcpSendBuffer, so existing tests remain green.
 class AimdController {
-public:
+  public:
     AimdController(std::uint16_t mss) noexcept;
 
     void OnPacketSent(std::uint64_t /*bytes*/) noexcept {}
-    void OnAck(const RateSample& rs) noexcept;
-    void OnLoss(const LossEvent& ev) noexcept;
+    void OnAck(const RateSample &rs) noexcept;
+    void OnLoss(const LossEvent &ev) noexcept;
     void OnRto() noexcept;
     /// RFC 3168 §6.1.2: an ECE on an ACK is a congestion signal — halve the
     /// window as for a packet loss (the sender then echoes CWR).
@@ -75,7 +75,7 @@ public:
     /// Reset to initial state.
     void Reset() noexcept;
 
-private:
+  private:
     std::uint32_t cwnd_;
     std::uint32_t ssthresh_;
     std::uint16_t mss_;
@@ -89,12 +89,12 @@ private:
 ///
 /// Telemetry ID is "bbr_v1" to prevent confusion with BBRv2/v3.
 class BbrController {
-public:
+  public:
     BbrController(std::uint16_t mss) noexcept;
 
     void OnPacketSent(std::uint64_t bytes) noexcept;
-    void OnAck(const RateSample& rs) noexcept;
-    void OnLoss(const LossEvent& ev) noexcept;
+    void OnAck(const RateSample &rs) noexcept;
+    void OnLoss(const LossEvent &ev) noexcept;
     void OnRto() noexcept;
     /// RFC 3168 §6.1.2 ECE congestion response: cut cwnd.
     void OnEcnCe() noexcept;
@@ -103,7 +103,7 @@ public:
     std::uint32_t PacingRate() const noexcept;
 
     /// Telemetry string (always "bbr_v1").
-    static const char* AlgorithmId() noexcept { return "bbr_v1"; }
+    static const char *AlgorithmId() noexcept { return "bbr_v1"; }
     /// Reset to initial state.
     void Reset() noexcept;
 
@@ -113,9 +113,9 @@ public:
     std::uint64_t BtlBw() const noexcept { return btlbw_; }
     std::uint64_t RTprop() const noexcept { return rtprop_; }
 
-private:
-    void UpdateBtlBw(const RateSample& rs) noexcept;
-    void UpdateRTprop(const RateSample& rs) noexcept;
+  private:
+    void UpdateBtlBw(const RateSample &rs) noexcept;
+    void UpdateRTprop(const RateSample &rs) noexcept;
     void CheckStartupDone() noexcept;
     void CheckDrainDone() noexcept;
     void EnterProbeRtt(std::uint64_t now_ms) noexcept;
@@ -132,7 +132,7 @@ private:
     // Timestamped min filter over the last ~kRtpropSampleCount samples;
     // samples older than kRtpropWindowMs expire so the estimate re-measures
     // after path changes (R5 requirement: not a lifetime monotonic minimum).
-    std::uint64_t rtprop_ = 0;  // 0 means "unknown"
+    std::uint64_t rtprop_ = 0; // 0 means "unknown"
     std::uint64_t rtprop_stamp_ms_ = 0;
     static constexpr std::uint64_t kRtpropWindowMs = 10000;
     static constexpr std::uint8_t kRtpropSampleCount = 16;
@@ -187,12 +187,12 @@ private:
 ///
 /// Telemetry ID is "hybrid_bdp_aimd_v1".
 class HybridBdpAimdController {
-public:
+  public:
     HybridBdpAimdController(std::uint16_t mss) noexcept;
 
     void OnPacketSent(std::uint64_t bytes) noexcept;
-    void OnAck(const RateSample& rs) noexcept;
-    void OnLoss(const LossEvent& ev) noexcept;
+    void OnAck(const RateSample &rs) noexcept;
+    void OnLoss(const LossEvent &ev) noexcept;
     void OnRto() noexcept;
     /// RFC 3168 §6.1.2 ECE congestion response: halve cwnd as for a loss.
     void OnEcnCe() noexcept;
@@ -202,7 +202,7 @@ public:
     std::uint32_t PacingRate() const noexcept;
 
     /// Telemetry string (always "hybrid_bdp_aimd_v1").
-    static const char* AlgorithmId() noexcept { return "hybrid_bdp_aimd_v1"; }
+    static const char *AlgorithmId() noexcept { return "hybrid_bdp_aimd_v1"; }
     /// Called by TcpSendBuffer when entering fast recovery.
     void OnFastRecoveryEntry(std::uint32_t flight) noexcept;
     /// Called by TcpSendBuffer for each dup-ACK during recovery (inflate).
@@ -221,12 +221,12 @@ public:
     std::uint64_t BtlBw() const noexcept { return btlbw_; }
     std::uint64_t RTprop() const noexcept { return rtprop_; }
 
-private:
-    void UpdateBtlBw(const RateSample& rs) noexcept;
+  private:
+    void UpdateBtlBw(const RateSample &rs) noexcept;
     /// Advance to the next filter round: fold the current round's max
     /// bandwidth into the windowed max filter and recompute BtlBw.
     void EndRound() noexcept;
-    void UpdateRTprop(const RateSample& rs) noexcept;
+    void UpdateRTprop(const RateSample &rs) noexcept;
     std::uint64_t Bdp() const noexcept;
     void RecomputeCwnd() noexcept;
 
@@ -290,7 +290,7 @@ struct KccConfig {
     /// proactive cwnd_gain backoff is functional rather than dead code.
     bool ecn = true;
     /// Per-shard cross-connection bandwidth filter (may be null = disabled).
-    KccKalmanFilter* kf = nullptr;
+    KccKalmanFilter *kf = nullptr;
 };
 
 /// Per-shard cross-connection bandwidth estimator (KCC Forwarding, KF).
@@ -305,7 +305,7 @@ struct KccConfig {
 /// Disabled by default (matches upstream `kcc_kf_enable = 0`); enable via
 /// `KccConfig::kf` pointing at an instance with `enabled = true`.
 class KccKalmanFilter {
-public:
+  public:
     /// Master switch (upstream kcc_kf_enable).
     bool enabled = false;
     /// 0 = peak-tracking, 1 = instant (upstream kcc_kf_steady_mode).
@@ -331,10 +331,10 @@ public:
     /// Reset filter state (e.g. on shard restart).
     void Reset() noexcept;
 
-private:
-    std::uint64_t x_ = 0;       ///< state estimate (BW_UNIT)
-    std::uint64_t p_ = 0;       ///< error covariance
-    std::uint64_t peak_ = 0;    ///< steady-mode peak (BW_UNIT)
+  private:
+    std::uint64_t x_ = 0;    ///< state estimate (BW_UNIT)
+    std::uint64_t p_ = 0;    ///< error covariance
+    std::uint64_t peak_ = 0; ///< steady-mode peak (BW_UNIT)
     bool active_ = false;
 };
 
@@ -366,13 +366,12 @@ private:
 ///
 /// Telemetry ID is "kcc" (the canonical upstream algorithm name).
 class KccController {
-public:
-    explicit KccController(std::uint16_t mss,
-                           KccConfig config = {}) noexcept;
+  public:
+    explicit KccController(std::uint16_t mss, KccConfig config = {}) noexcept;
 
     void OnPacketSent(std::uint64_t bytes) noexcept;
-    void OnAck(const RateSample& rs) noexcept;
-    void OnLoss(const LossEvent& ev) noexcept;
+    void OnAck(const RateSample &rs) noexcept;
+    void OnLoss(const LossEvent &ev) noexcept;
     void OnRto() noexcept;
     /// KCC keeps ECN disabled by default (upstream KCC_ECN_ENABLE=0); ECE is
     /// not reacted to by the controller itself.
@@ -383,7 +382,7 @@ public:
     std::uint32_t PacingRate() const noexcept;
 
     /// Telemetry string (always "kcc").
-    static const char* AlgorithmId() noexcept { return "kcc"; }
+    static const char *AlgorithmId() noexcept { return "kcc"; }
 
     void OnFastRecoveryEntry(std::uint32_t flight) noexcept;
     void OnDupAck() noexcept;
@@ -408,7 +407,7 @@ public:
     std::uint32_t RoundRttMinUs() const noexcept { return round_rtt_min_; }
     std::uint32_t PrevRoundRttMinUs() const noexcept { return prev_round_rtt_min_; }
 
-private:
+  private:
     // win_minmax sliding-window max (Linux include/linux/win_minmax.h).
     struct MinmaxSample {
         std::uint32_t t = 0;
@@ -418,8 +417,7 @@ private:
         MinmaxSample s[3];
         void Reset(std::uint32_t t, std::uint32_t meas) noexcept;
         std::uint32_t Get() const noexcept { return s[2].v; }
-        void RunningMax(std::uint32_t win, std::uint32_t t,
-                        std::uint32_t meas) noexcept;
+        void RunningMax(std::uint32_t win, std::uint32_t t, std::uint32_t meas) noexcept;
     };
 
     // Scale constants (upstream #defines).
@@ -468,8 +466,8 @@ private:
     static constexpr std::uint32_t kQdelayFloorUs = 500;
 
     // FSM gains / AI-MD.
-    static constexpr std::uint32_t kStartupGain = (kBbrUnit * 289u) / 100u;      // 2.89x
-    static constexpr std::uint32_t kCwndPulseInit = (kBbrUnit * 125u) / 100u;    // 1.25x
+    static constexpr std::uint32_t kStartupGain = (kBbrUnit * 289u) / 100u;   // 2.89x
+    static constexpr std::uint32_t kCwndPulseInit = (kBbrUnit * 125u) / 100u; // 1.25x
     static constexpr std::uint32_t kCwndPulseGrowthNum = 125;
     static constexpr std::uint32_t kCwndPulseGrowthDen = 100;
     static constexpr std::uint32_t kCwndPulseMax = kBbrUnit * 2u;
@@ -537,15 +535,13 @@ private:
     static constexpr std::uint32_t kBwRtCycleLen = 10;
     static constexpr std::uint32_t kTsoHeadroomMult = 3;
     static constexpr std::uint32_t kProbeCwndBonus = 2;
-    static constexpr std::uint32_t kTsoSegsGoal = 1;   // no TSO/GSO in Netstack2
+    static constexpr std::uint32_t kTsoSegsGoal = 1; // no TSO/GSO in Netstack2
 
     // CA states (subset of Linux TCP_CA_*).
     enum class CaState { Open, Recovery, Loss };
 
     static std::uint32_t Segments(std::uint64_t bytes, std::uint16_t mss) noexcept;
-    static bool Before(std::uint32_t a, std::uint32_t b) noexcept {
-        return static_cast<std::int32_t>(a - b) < 0;
-    }
+    static bool Before(std::uint32_t a, std::uint32_t b) noexcept { return static_cast<std::int32_t>(a - b) < 0; }
     std::uint64_t RateBytesPerSec(std::uint64_t rate, std::uint32_t gain) const noexcept;
     std::uint32_t MaxBw() const noexcept { return bw_.Get(); }
     std::uint32_t ActiveBw() const noexcept { return lt_use_bw_ ? lt_bw_ : MaxBw(); }
@@ -562,37 +558,28 @@ private:
     void ResetLtBwSampling() noexcept;
     void LtBwIntervalDone(std::uint64_t bw) noexcept;
     void LtBwSampling(std::uint32_t lost_seg, bool is_app_limited) noexcept;
-    void UpdateBw(const RateSample& rs, std::uint32_t acked_seg,
-                  std::uint32_t prior_delivered_seg) noexcept;
-    void Update(const RateSample& rs) noexcept;
-    void UpdateMinRtt(const RateSample& rs) noexcept;
-    void UpdateAckAggregation(const RateSample& rs,
-                              std::uint32_t acked_seg) noexcept;
+    void UpdateBw(const RateSample &rs, std::uint32_t acked_seg, std::uint32_t prior_delivered_seg) noexcept;
+    void Update(const RateSample &rs) noexcept;
+    void UpdateMinRtt(const RateSample &rs) noexcept;
+    void UpdateAckAggregation(const RateSample &rs, std::uint32_t acked_seg) noexcept;
     std::uint32_t AckAggregationCwnd(std::uint32_t bw) noexcept;
-    std::uint32_t MeasureAckAggregation(const RateSample& rs,
-                                        std::uint32_t acked_seg) noexcept;
-    std::uint16_t EvaluateAggConfidence(std::uint32_t extra_acked,
-                                        std::uint32_t pre_max) const noexcept;
+    std::uint32_t MeasureAckAggregation(const RateSample &rs, std::uint32_t acked_seg) noexcept;
+    std::uint16_t EvaluateAggConfidence(std::uint32_t extra_acked, std::uint32_t pre_max) const noexcept;
     std::uint8_t AggStateFromConfidence(std::uint16_t confidence) const noexcept;
     bool AggSafetyCheck(std::uint32_t bw) const noexcept;
-    std::uint32_t AggCwndCompensation(std::uint32_t extra_acked,
-                                      std::uint16_t confidence,
+    std::uint32_t AggCwndCompensation(std::uint32_t extra_acked, std::uint16_t confidence,
                                       std::uint32_t bw) const noexcept;
     void AggWatchdog() noexcept;
-    void UpdateEcnEwma(const RateSample& rs) noexcept;
+    void UpdateEcnEwma(const RateSample &rs) noexcept;
     void EcnBackoff() noexcept;
     void UpdateGainsV2() noexcept;
-    void UpdateModel(const RateSample& rs, std::uint32_t acked_seg,
-                     std::uint32_t prior_delivered_seg) noexcept;
+    void UpdateModel(const RateSample &rs, std::uint32_t acked_seg, std::uint32_t prior_delivered_seg) noexcept;
     void AloneOnPathEval() noexcept;
-    bool SetCwndToRecoverOrRestore(std::uint32_t acked_seg,
-                                   std::uint32_t lost_seg,
-                                   std::uint32_t* new_cwnd) noexcept;
-    void SetCwnd(const RateSample& rs, std::uint32_t acked_seg,
-                 std::uint32_t bw, std::uint32_t gain) noexcept;
+    bool SetCwndToRecoverOrRestore(std::uint32_t acked_seg, std::uint32_t lost_seg, std::uint32_t *new_cwnd) noexcept;
+    void SetCwnd(const RateSample &rs, std::uint32_t acked_seg, std::uint32_t bw, std::uint32_t gain) noexcept;
     void ApplyCwndConstraints() noexcept;
     void RecomputePacingRate(std::uint32_t bw) noexcept;
-    void FeedKalman(const RateSample& rs, std::uint32_t acked_seg) noexcept;
+    void FeedKalman(const RateSample &rs, std::uint32_t acked_seg) noexcept;
     void SeedFromKf() noexcept;
 
     std::uint16_t mss_;
@@ -656,15 +643,15 @@ private:
     std::uint8_t alone_exit_cnt_ = 0;
 
     // ---- Netstack2 adapters (kernel tp/sk field equivalents) ----
-    KccConfig config_;            ///< tunables (turbo/ai_num/ecn/kf)
-    bool kf_seeded_ = false;      ///< KF fair-share bootstrap already applied
-    std::uint32_t cwnd_ = 0;                 // tp->snd_cwnd (segments)
-    std::uint64_t pacing_rate_ = 0;          // sk->sk_pacing_rate (bytes/sec)
-    std::uint32_t srtt_us_ = 0;              // tp->srtt_us >> 3 (us)
-    std::uint32_t delivered_segments_ = 0;   // tp->delivered (cumulative segments)
-    std::uint32_t lost_segments_ = 0;        // tp->lost (cumulative segments)
-    std::uint64_t delivered_mstamp_us_ = 0;  // tp->delivered_mstamp (us)
-    std::uint32_t inflight_segments_ = 0;    // tcp_packets_in_flight(tp)
+    KccConfig config_;                      ///< tunables (turbo/ai_num/ecn/kf)
+    bool kf_seeded_ = false;                ///< KF fair-share bootstrap already applied
+    std::uint32_t cwnd_ = 0;                // tp->snd_cwnd (segments)
+    std::uint64_t pacing_rate_ = 0;         // sk->sk_pacing_rate (bytes/sec)
+    std::uint32_t srtt_us_ = 0;             // tp->srtt_us >> 3 (us)
+    std::uint32_t delivered_segments_ = 0;  // tp->delivered (cumulative segments)
+    std::uint32_t lost_segments_ = 0;       // tp->lost (cumulative segments)
+    std::uint64_t delivered_mstamp_us_ = 0; // tp->delivered_mstamp (us)
+    std::uint32_t inflight_segments_ = 0;   // tcp_packets_in_flight(tp)
     bool initialized_ = false;
 };
 

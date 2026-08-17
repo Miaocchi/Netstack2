@@ -26,9 +26,11 @@ struct Endpoint {
     IpAddress addr;
     std::uint16_t port;
 
-    bool operator<(const Endpoint& o) const noexcept {
-        if (addr < o.addr) return true;
-        if (o.addr < addr) return false;
+    bool operator<(const Endpoint &o) const noexcept {
+        if (addr < o.addr)
+            return true;
+        if (o.addr < addr)
+            return false;
         return port < o.port;
     }
 };
@@ -55,7 +57,7 @@ FlowKey FlowKey::Canonical() const noexcept {
     return result;
 }
 
-std::uint64_t FlowHash(const FlowKey& key) noexcept {
+std::uint64_t FlowHash(const FlowKey &key) noexcept {
     const FlowKey canon = key.Canonical();
 
     // Serialize to a deterministic byte buffer.
@@ -69,14 +71,16 @@ std::uint64_t FlowHash(const FlowKey& key) noexcept {
 
     // Pad IPv4 to 16 bytes so both families have the same layout width.
     if (canon.source.IsIpv4()) {
-        for (std::size_t i = 4; i < 16; ++i) buf[pos++] = 0;
+        for (std::size_t i = 4; i < 16; ++i)
+            buf[pos++] = 0;
     }
 
     std::memcpy(buf + pos, canon.destination.Bytes(), canon.destination.ByteCount());
     pos += canon.destination.ByteCount();
 
     if (canon.destination.IsIpv4()) {
-        for (std::size_t i = 4; i < 16; ++i) buf[pos++] = 0;
+        for (std::size_t i = 4; i < 16; ++i)
+            buf[pos++] = 0;
     }
 
     buf[pos++] = static_cast<std::uint8_t>((canon.source_port >> 8) & 0xFF);
@@ -95,8 +99,9 @@ std::uint64_t FlowHash(const FlowKey& key) noexcept {
     return hash;
 }
 
-std::size_t FlowToShard(const FlowKey& key, std::size_t shard_count) noexcept {
-    if (shard_count == 0) return 0;
+std::size_t FlowToShard(const FlowKey &key, std::size_t shard_count) noexcept {
+    if (shard_count == 0)
+        return 0;
     const std::uint64_t h = FlowHash(key);
     return static_cast<std::size_t>(h % shard_count);
 }

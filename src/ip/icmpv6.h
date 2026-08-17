@@ -37,11 +37,11 @@ struct Icmpv6Header {
     std::uint8_t type = 0;
     std::uint8_t code = 0;
     std::uint16_t checksum = 0;
-    std::uint32_t mtu = 0;        // Packet Too Big (type 2)
-    std::uint32_t pointer = 0;    // Parameter Problem (type 4)
-    std::uint16_t id = 0;         // Echo Request/Reply
-    std::uint16_t sequence = 0;   // Echo Request/Reply
-    const std::uint8_t* quoted_payload = nullptr; // error messages: points into input
+    std::uint32_t mtu = 0;                        // Packet Too Big (type 2)
+    std::uint32_t pointer = 0;                    // Parameter Problem (type 4)
+    std::uint16_t id = 0;                         // Echo Request/Reply
+    std::uint16_t sequence = 0;                   // Echo Request/Reply
+    const std::uint8_t *quoted_payload = nullptr; // error messages: points into input
     std::size_t quoted_payload_len = 0;
 };
 
@@ -49,13 +49,13 @@ struct Icmpv6Header {
 struct Icmpv6ParseResult {
     enum class Error {
         None,
-        TooShort,   // fewer than 8 bytes
+        TooShort, // fewer than 8 bytes
     };
 
     Error error = Error::None;
     Icmpv6Header header;
-    bool checksum_ok = true;        // placeholder; use VerifyIcmpv6Checksum
-    const std::uint8_t* payload = nullptr;       // echo: data after 8-byte header
+    bool checksum_ok = true;               // placeholder; use VerifyIcmpv6Checksum
+    const std::uint8_t *payload = nullptr; // echo: data after 8-byte header
     std::size_t payload_length = 0;
 };
 
@@ -63,7 +63,7 @@ struct Icmpv6ParseResult {
 /// @param data pointer to the first byte of the ICMPv6 message
 /// @param len number of bytes available
 /// @return parse result with payload/quoted_payload pointing into the input buffer on success
-Icmpv6ParseResult ParseIcmpv6(const std::uint8_t* data, std::size_t len) noexcept;
+Icmpv6ParseResult ParseIcmpv6(const std::uint8_t *data, std::size_t len) noexcept;
 
 /// Verify the ICMPv6 checksum (includes the IPv6 pseudo-header).
 /// @param data pointer to the first byte of the ICMPv6 message
@@ -71,8 +71,7 @@ Icmpv6ParseResult ParseIcmpv6(const std::uint8_t* data, std::size_t len) noexcep
 /// @param src_ip source IPv6 address (16 bytes)
 /// @param dst_ip destination IPv6 address (16 bytes)
 /// @return true if the checksum is valid
-bool VerifyIcmpv6Checksum(const std::uint8_t* data, std::size_t len,
-                          const std::uint8_t src_ip[16],
+bool VerifyIcmpv6Checksum(const std::uint8_t *data, std::size_t len, const std::uint8_t src_ip[16],
                           const std::uint8_t dst_ip[16]) noexcept;
 
 } // namespace tcpip2

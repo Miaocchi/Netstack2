@@ -31,7 +31,7 @@
 using namespace tcpip2;
 
 // Helper: open a single-queue TUN with a deterministic name.
-static bool OpenTestTap(TapPacketIo& tap) {
+static bool OpenTestTap(TapPacketIo &tap) {
     TapPacketIo::Config cfg;
     cfg.dev_name = "tun-ns2-test";
     cfg.queue_count = 1;
@@ -129,14 +129,14 @@ TCPIP2_TEST(TapSendAndRecvEcho) {
     // Minimal IPv4 header: version/IHL=0x45, tot_len=20, proto=255 (reserved),
     // src=10.0.0.1, dst=10.0.0.2. Checksum left zero (TUN won't validate).
     std::memset(pkt.Data(), 0, 20);
-    pkt.Data()[0] = 0x45;      // version 4, IHL 5
-    pkt.Data()[1] = 0x00;      // DSCP/ECN
-    pkt.Data()[2] = 0x00;      // total length hi
-    pkt.Data()[3] = 0x14;      // total length lo = 20
-    pkt.Data()[8] = 64;        // TTL
-    pkt.Data()[9] = 255;       // protocol (reserved)
-    pkt.Data()[12] = 10;       // src IP
-    pkt.Data()[16] = 10;       // dst IP
+    pkt.Data()[0] = 0x45; // version 4, IHL 5
+    pkt.Data()[1] = 0x00; // DSCP/ECN
+    pkt.Data()[2] = 0x00; // total length hi
+    pkt.Data()[3] = 0x14; // total length lo = 20
+    pkt.Data()[8] = 64;   // TTL
+    pkt.Data()[9] = 255;  // protocol (reserved)
+    pkt.Data()[12] = 10;  // src IP
+    pkt.Data()[16] = 10;  // dst IP
     pkt.Data()[17] = 2;
     pkt.Resize(20);
 
@@ -151,8 +151,7 @@ TCPIP2_TEST(TapSendAndRecvEcho) {
         TCPIP2_EXPECT_FALSE(static_cast<bool>(pkt));
     } else {
         // Write failed: lease must stay with the caller (no transfer on error).
-        TCPIP2_EXPECT_TRUE(err == IoError::Closed || err == IoError::Internal ||
-                           err == IoError::WouldBlock);
+        TCPIP2_EXPECT_TRUE(err == IoError::Closed || err == IoError::Internal || err == IoError::WouldBlock);
         TCPIP2_EXPECT_TRUE(static_cast<bool>(pkt));
         pkt.Reset();
     }
@@ -168,8 +167,7 @@ TCPIP2_TEST(TapSendAndRecvEcho) {
         TCPIP2_EXPECT_EQ(std::uint8_t{0x45}, out[0].Data()[0]);
         out[0].Reset();
     } else {
-        TCPIP2_EXPECT_TRUE(err == IoError::WouldBlock || err == IoError::None ||
-                           err == IoError::Closed);
+        TCPIP2_EXPECT_TRUE(err == IoError::WouldBlock || err == IoError::None || err == IoError::Closed);
     }
     tap.Close();
 }
@@ -276,8 +274,7 @@ TCPIP2_TEST(TapMultiqueueTier2RootTest) {
     cfg.queue_count = 4;
     cfg.no_pi = true;
     if (!tap.Open(cfg)) {
-        std::fprintf(stderr,
-                     "SKIP: TapMultiqueueTier2RootTest Open() failed (no TUN?)\n");
+        std::fprintf(stderr, "SKIP: TapMultiqueueTier2RootTest Open() failed (no TUN?)\n");
         TCPIP2_EXPECT_FALSE(tap.IsOpen());
         return;
     }
@@ -356,9 +353,7 @@ TCPIP2_TEST(TapMultiqueueTier2RootTest) {
         dst.sin_family = AF_INET;
         dst.sin_port = htons(9999);
         dst.sin_addr.s_addr = htonl(0x0ADE0001U); // 10.222.0.1
-        const ssize_t nsent = ::sendto(udp_fd, "mq", 2, 0,
-                                       reinterpret_cast<struct sockaddr*>(&dst),
-                                       sizeof(dst));
+        const ssize_t nsent = ::sendto(udp_fd, "mq", 2, 0, reinterpret_cast<struct sockaddr *>(&dst), sizeof(dst));
         TCPIP2_EXPECT_TRUE(nsent == 2);
     }
     ::close(udp_fd);
@@ -385,7 +380,8 @@ TCPIP2_TEST(TapMultiqueueTier2RootTest) {
                 break;
             }
         }
-        if (got) break;
+        if (got)
+            break;
         // 1 ms sleep between polling rounds.
         struct timespec ts;
         ts.tv_sec = 0;

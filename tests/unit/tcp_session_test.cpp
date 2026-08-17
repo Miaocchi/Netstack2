@@ -23,8 +23,7 @@
 namespace {
 
 /// Allocate a BufferLease filled with @p fill, capacity @p size.
-tcpip2::BufferLease MakeLease(tcpip2::PktBufferPool& pool,
-                              std::uint8_t fill, std::size_t size) {
+tcpip2::BufferLease MakeLease(tcpip2::PktBufferPool &pool, std::uint8_t fill, std::size_t size) {
     auto lease = pool.Allocate();
     if (lease) {
         std::memset(lease.Data(), fill, size);
@@ -120,7 +119,7 @@ TCPIP2_TEST(TcpSessionSetDataCallbackReceivesData) {
 
     std::vector<std::uint8_t> received;
     tcpip2::BufferLease accepted;
-    session.SetDataCallback([&received, &accepted](tcpip2::BufferLease& lease) {
+    session.SetDataCallback([&received, &accepted](tcpip2::BufferLease &lease) {
         if (lease) {
             received.assign(lease.Data(), lease.Data() + lease.Size());
         }
@@ -143,16 +142,16 @@ TCPIP2_TEST(TcpSessionRetainsWouldBlockLeaseUntilResume) {
     bool accept = false;
     std::vector<std::uint8_t> received;
     tcpip2::BufferLease accepted;
-    session.SetDataCallback([&](tcpip2::BufferLease& lease) {
-        if (!accept) return tcpip2::ReceiveStatus::WouldBlock;
+    session.SetDataCallback([&](tcpip2::BufferLease &lease) {
+        if (!accept)
+            return tcpip2::ReceiveStatus::WouldBlock;
         received.assign(lease.Data(), lease.Data() + lease.Size());
         accepted = std::move(lease);
         return tcpip2::ReceiveStatus::Accepted;
     });
 
     auto lease = MakeLease(pool, 0xCD, 32);
-    TCPIP2_EXPECT_EQ(tcpip2::ReceiveStatus::WouldBlock,
-                     session.OnDataReceived(std::move(lease)));
+    TCPIP2_EXPECT_EQ(tcpip2::ReceiveStatus::WouldBlock, session.OnDataReceived(std::move(lease)));
 
     session.ResumeReceive();
     TCPIP2_EXPECT_EQ(std::size_t{0}, received.size());
@@ -166,9 +165,7 @@ TCPIP2_TEST(TcpSessionRetainsWouldBlockLeaseUntilResume) {
 TCPIP2_TEST(TcpSessionSetWritableCallbackFiresOnDrain) {
     tcpip2::TcpSession session(8);
     int writable_count = 0;
-    session.SetWritableCallback([&writable_count]() {
-        ++writable_count;
-    });
+    session.SetWritableCallback([&writable_count]() { ++writable_count; });
 
     // SetWritableCallback fires immediately when the session is already writable.
     TCPIP2_EXPECT_EQ(writable_count, 1);
@@ -193,9 +190,7 @@ TCPIP2_TEST(TcpSessionSetClosedCallbackFiresOnAbort) {
     tcpip2::TcpSession session;
 
     tcpip2::SessionError received_error = tcpip2::SessionError::None;
-    session.SetClosedCallback([&received_error](tcpip2::SessionError e) {
-        received_error = e;
-    });
+    session.SetClosedCallback([&received_error](tcpip2::SessionError e) { received_error = e; });
 
     session.Abort(tcpip2::SessionError::Reset);
     TCPIP2_EXPECT_EQ(received_error, tcpip2::SessionError::Reset);
@@ -205,9 +200,7 @@ TCPIP2_TEST(TcpSessionSetClosedCallbackFiresOnOnClosed) {
     tcpip2::TcpSession session;
 
     tcpip2::SessionError received_error = tcpip2::SessionError::None;
-    session.SetClosedCallback([&received_error](tcpip2::SessionError e) {
-        received_error = e;
-    });
+    session.SetClosedCallback([&received_error](tcpip2::SessionError e) { received_error = e; });
 
     session.OnClosed(tcpip2::SessionError::RemoteClosed);
     TCPIP2_EXPECT_EQ(received_error, tcpip2::SessionError::RemoteClosed);
@@ -307,7 +300,7 @@ TCPIP2_TEST(TcpSessionClearDataCallbackWaitsForInFlightInvocation) {
     std::atomic<bool> cleared{false};
     std::atomic<tcpip2::ReceiveStatus> receive_status{tcpip2::ReceiveStatus::Closed};
 
-    session.SetDataCallback([&](tcpip2::BufferLease& lease) {
+    session.SetDataCallback([&](tcpip2::BufferLease &lease) {
         {
             std::unique_lock<std::mutex> lock(mutex);
             entered = true;
@@ -318,10 +311,8 @@ TCPIP2_TEST(TcpSessionClearDataCallbackWaitsForInFlightInvocation) {
         return tcpip2::ReceiveStatus::Accepted;
     });
 
-    std::thread receiver([&] {
-        receive_status.store(session.OnDataReceived(MakeLease(pool, 0xAB, 16)),
-                             std::memory_order_relaxed);
-    });
+    std::thread receiver(
+        [&] { receive_status.store(session.OnDataReceived(MakeLease(pool, 0xAB, 16)), std::memory_order_relaxed); });
     {
         std::unique_lock<std::mutex> lock(mutex);
         callback_cv.wait(lock, [&] { return entered; });
@@ -347,8 +338,7 @@ TCPIP2_TEST(TcpSessionClearDataCallbackWaitsForInFlightInvocation) {
     clearer.join();
 
     TCPIP2_EXPECT_TRUE(cleared.load(std::memory_order_acquire));
-    TCPIP2_EXPECT_EQ(tcpip2::ReceiveStatus::Accepted,
-                     receive_status.load(std::memory_order_relaxed));
+    TCPIP2_EXPECT_EQ(tcpip2::ReceiveStatus::Accepted, receive_status.load(std::memory_order_relaxed));
     pool.DrainReturnQueue();
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
 }

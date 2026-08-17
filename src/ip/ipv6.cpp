@@ -7,17 +7,14 @@ namespace {
 /// Returns true if the given next-header value is an extension header
 /// that should be walked (as opposed to a terminal upper-layer protocol).
 bool IsExtensionHeader(std::uint8_t nh) noexcept {
-    return nh == Ipv6ExtHeaderType::HopByHop ||
-           nh == Ipv6ExtHeaderType::Routing ||
-           nh == Ipv6ExtHeaderType::Fragment ||
+    return nh == Ipv6ExtHeaderType::HopByHop || nh == Ipv6ExtHeaderType::Routing || nh == Ipv6ExtHeaderType::Fragment ||
            nh == Ipv6ExtHeaderType::DestinationOptions;
 }
 
 /// Search parsed HopByHop options for a Jumbo Payload option (RFC 2675).
 /// If found, decode the 4-byte big-endian length into @p jumbo_len.
 /// @return true if the Jumbo option was found and decoded.
-bool FindJumboPayload(const Ipv6Option* opts, std::size_t count,
-                      std::uint32_t& jumbo_len) noexcept {
+bool FindJumboPayload(const Ipv6Option *opts, std::size_t count, std::uint32_t &jumbo_len) noexcept {
     for (std::size_t i = 0; i < count; ++i) {
         if (opts[i].type == Ipv6OptionType::JumboPayload) {
             if (opts[i].length != 4 || opts[i].data == nullptr) {
@@ -35,7 +32,7 @@ bool FindJumboPayload(const Ipv6Option* opts, std::size_t count,
 
 } // namespace
 
-Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
+Ipv6ParseResult ParseIpv6(const std::uint8_t *data, std::size_t len) noexcept {
     Ipv6ParseResult result;
 
     // Need at least 40 bytes for the fixed IPv6 header.
@@ -56,12 +53,10 @@ Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
         return result;
     }
 
-    result.header.traffic_class = static_cast<std::uint8_t>(
-        ((static_cast<std::uint16_t>(vtf[0]) & 0x0F) << 4) | (vtf[1] >> 4));
-    result.header.flow_label =
-        ((static_cast<std::uint32_t>(vtf[1]) & 0x0F) << 16) |
-        (static_cast<std::uint32_t>(vtf[2]) << 8) |
-        static_cast<std::uint32_t>(vtf[3]);
+    result.header.traffic_class =
+        static_cast<std::uint8_t>(((static_cast<std::uint16_t>(vtf[0]) & 0x0F) << 4) | (vtf[1] >> 4));
+    result.header.flow_label = ((static_cast<std::uint32_t>(vtf[1]) & 0x0F) << 16) |
+                               (static_cast<std::uint32_t>(vtf[2]) << 8) | static_cast<std::uint32_t>(vtf[3]);
 
     // Payload length (2 bytes) — 0 for jumbograms.
     cur.ReadU16(result.header.payload_length);
@@ -95,20 +90,17 @@ Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
         std::uint32_t jumbo_len = 0;
         bool jumbo_found = false;
 
-        if (result.header.next_header == Ipv6ExtHeaderType::HopByHop &&
-            available_payload >= 2) {
+        if (result.header.next_header == Ipv6ExtHeaderType::HopByHop && available_payload >= 2) {
             // Read the HopByHop header: next_header(1) + hdr_ext_len(1) + options.
             std::uint8_t hbh_nh = data[40];
             std::uint8_t hbh_ext_len = data[41];
             std::size_t hbh_size;
-            if (CheckedMul<std::size_t>(
-                    static_cast<std::size_t>(hbh_ext_len) + 1, std::size_t{8}, hbh_size) &&
+            if (CheckedMul<std::size_t>(static_cast<std::size_t>(hbh_ext_len) + 1, std::size_t{8}, hbh_size) &&
                 hbh_size >= 2 && hbh_size <= available_payload) {
                 // Parse options within the HopByHop body.
                 Ipv6Option tmp_opts[kIpv6MaxOptions];
                 std::size_t tmp_count = 0;
-                if (ParseIpv6Options(data + 40 + 2, hbh_size - 2,
-                                     tmp_opts, tmp_count)) {
+                if (ParseIpv6Options(data + 40 + 2, hbh_size - 2, tmp_opts, tmp_count)) {
                     if (FindJumboPayload(tmp_opts, tmp_count, jumbo_len)) {
                         jumbo_found = true;
                     }
@@ -156,15 +148,13 @@ Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
                 result.error = Ipv6ParseResult::Error::TruncatedExtHeader;
                 return result;
             }
-            const std::uint16_t ff =
-                static_cast<std::uint16_t>((data[offset + 2] << 8) | data[offset + 3]);
+            const std::uint16_t ff = static_cast<std::uint16_t>((data[offset + 2] << 8) | data[offset + 3]);
             result.fragment_offset = static_cast<std::uint16_t>(ff >> 3);
             result.fragment_more = (ff & 0x01u) != 0;
-            result.fragment_identification =
-                (static_cast<std::uint32_t>(data[offset + 4]) << 24) |
-                (static_cast<std::uint32_t>(data[offset + 5]) << 16) |
-                (static_cast<std::uint32_t>(data[offset + 6]) << 8) |
-                static_cast<std::uint32_t>(data[offset + 7]);
+            result.fragment_identification = (static_cast<std::uint32_t>(data[offset + 4]) << 24) |
+                                             (static_cast<std::uint32_t>(data[offset + 5]) << 16) |
+                                             (static_cast<std::uint32_t>(data[offset + 6]) << 8) |
+                                             static_cast<std::uint32_t>(data[offset + 7]);
             // The fragmentable payload is everything after the Fragment header
             // (i.e. from ext_end to the end of the packet's declared payload).
             const std::size_t frag_payload_end = 40 + total_after_fixed;
@@ -213,8 +203,7 @@ Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
         } else {
             // Other extension headers: (ext_len + 1) * 8 bytes.
             std::size_t mul;
-            if (!CheckedMul<std::size_t>(
-                    static_cast<std::size_t>(ext_len) + 1, std::size_t{8}, mul)) {
+            if (!CheckedMul<std::size_t>(static_cast<std::size_t>(ext_len) + 1, std::size_t{8}, mul)) {
                 result.error = Ipv6ParseResult::Error::TruncatedExtHeader;
                 return result;
             }
@@ -248,8 +237,7 @@ Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
         // The option/routing data starts at offset+2 (after next_header + hdr_ext_len)
         // and extends for ext_size-2 bytes.
         if (current_nh == Ipv6ExtHeaderType::HopByHop) {
-            if (!ParseIpv6Options(data + offset + 2, ext_size - 2,
-                                  result.hopbyhop_options,
+            if (!ParseIpv6Options(data + offset + 2, ext_size - 2, result.hopbyhop_options,
                                   result.hopbyhop_option_count)) {
                 result.error = Ipv6ParseResult::Error::BadExtHeaderOption;
                 return result;
@@ -257,8 +245,7 @@ Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
             // Validate JumboPayload consistency (RFC 2675): the option is only
             // valid when the fixed-header payload_length is 0.
             std::uint32_t jlen = 0;
-            if (FindJumboPayload(result.hopbyhop_options,
-                                 result.hopbyhop_option_count, jlen)) {
+            if (FindJumboPayload(result.hopbyhop_options, result.hopbyhop_option_count, jlen)) {
                 if (result.header.payload_length != 0) {
                     result.error = Ipv6ParseResult::Error::BadJumboPayload;
                     return result;
@@ -269,12 +256,9 @@ Ipv6ParseResult ParseIpv6(const std::uint8_t* data, std::size_t len) noexcept {
             }
         } else if (current_nh == Ipv6ExtHeaderType::Routing) {
             result.routing_header_present = true;
-            result.routing_header =
-                ParseIpv6RoutingHeader(data + offset + 2, ext_size - 2);
+            result.routing_header = ParseIpv6RoutingHeader(data + offset + 2, ext_size - 2);
         } else if (current_nh == Ipv6ExtHeaderType::DestinationOptions) {
-            if (!ParseIpv6Options(data + offset + 2, ext_size - 2,
-                                  result.dest_options,
-                                  result.dest_option_count)) {
+            if (!ParseIpv6Options(data + offset + 2, ext_size - 2, result.dest_options, result.dest_option_count)) {
                 result.error = Ipv6ParseResult::Error::BadExtHeaderOption;
                 return result;
             }

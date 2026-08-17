@@ -17,7 +17,7 @@ namespace {
 
 /// Pool used by every test. Slot count and capacity are generous so that
 /// none of the tests hits pool exhaustion.
-tcpip2::PktBufferPool& TestPool() {
+tcpip2::PktBufferPool &TestPool() {
     static tcpip2::PktBufferPool pool(256, 2048);
     return pool;
 }
@@ -111,8 +111,10 @@ TCPIP2_TEST(FqCoDelMultipleFlowRoundRobin) {
     // Verify both flows are represented: should have 3 'A'-'C' and 3 'a'-'c'.
     int upper = 0, lower = 0;
     for (auto b : first_byte) {
-        if (b >= 'A' && b <= 'C') ++upper;
-        else if (b >= 'a' && b <= 'c') ++lower;
+        if (b >= 'A' && b <= 'C')
+            ++upper;
+        else if (b >= 'a' && b <= 'c')
+            ++lower;
     }
     TCPIP2_EXPECT_EQ(upper, 3);
     TCPIP2_EXPECT_EQ(lower, 3);
@@ -142,7 +144,8 @@ TCPIP2_TEST(FqCoDelCoDelDropsHighSojourn) {
     std::uint64_t now = 100;
     while (true) {
         auto pkt = sched.Dequeue(now);
-        if (!pkt) break;
+        if (!pkt)
+            break;
         ++delivered;
         now += 15; // advance past interval to trigger drops
     }
@@ -161,14 +164,14 @@ TCPIP2_TEST(FqCoDelNoDropsWhenLowSojourn) {
 
     for (int i = 0; i < 10; ++i) {
         auto lease = MakeLease(static_cast<std::uint8_t>(i), 32);
-        TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(lease), flow,
-                                         static_cast<std::uint64_t>(i)));
+        TCPIP2_EXPECT_TRUE(sched.Enqueue(std::move(lease), flow, static_cast<std::uint64_t>(i)));
     }
 
     std::size_t delivered = 0;
     for (int i = 0; i < 10; ++i) {
         auto pkt = sched.Dequeue(static_cast<std::uint64_t>(i + 1));
-        if (pkt) ++delivered;
+        if (pkt)
+            ++delivered;
     }
     TCPIP2_EXPECT_EQ(delivered, static_cast<std::size_t>(10));
 }
@@ -288,7 +291,8 @@ TCPIP2_TEST(FqCoDelCoDelExitDroppingOnLowSojourn) {
     std::uint64_t now = 100;
     while (true) {
         auto pkt = sched.Dequeue(now);
-        if (!pkt) break;
+        if (!pkt)
+            break;
         ++first_round;
         now += 15;
     }
@@ -306,7 +310,8 @@ TCPIP2_TEST(FqCoDelCoDelExitDroppingOnLowSojourn) {
     std::size_t second_round = 0;
     while (true) {
         auto pkt = sched.Dequeue(501);
-        if (!pkt) break;
+        if (!pkt)
+            break;
         ++second_round;
     }
 
@@ -371,9 +376,12 @@ TCPIP2_TEST(FqCoDelMixedSizesFairByBytes) {
     int flow_a = 0, flow_b = 0;
     for (int i = 0; i < 10; ++i) {
         auto pkt = sched.Dequeue(1);
-        if (!pkt) break;
-        if (pkt->Data()[0] == 0xA0) ++flow_a;
-        else ++flow_b;
+        if (!pkt)
+            break;
+        if (pkt->Data()[0] == 0xA0)
+            ++flow_a;
+        else
+            ++flow_b;
     }
 
     // Both flows should have delivered all 5 packets.
@@ -470,8 +478,7 @@ TCPIP2_TEST(FqCoDelControlLawDropsOnSchedule) {
 
     const std::uint32_t flow = 7;
     for (int i = 0; i < 14; ++i) {
-        TCPIP2_EXPECT_TRUE(sched.Enqueue(MakeLease(static_cast<std::uint8_t>(i), 32),
-                                         flow, 0));
+        TCPIP2_EXPECT_TRUE(sched.Enqueue(MakeLease(static_cast<std::uint8_t>(i), 32), flow, 0));
     }
 
     std::size_t delivered = 0;
@@ -497,12 +504,13 @@ namespace {
 /// valid header checksum.
 tcpip2::BufferLease MakeIpv4Lease(std::uint8_t ecn_bits, std::uint8_t fill) {
     auto lease = TestPool().Allocate();
-    if (!lease) return lease;
+    if (!lease)
+        return lease;
     const std::size_t len = 40; // 20 IPv4 + 20 TCP placeholder
     lease.Resize(len);
     std::memset(lease.Data(), fill, len);
-    std::uint8_t* const p = lease.Data();
-    p[0] = 0x45;                           // version 4, IHL 5
+    std::uint8_t *const p = lease.Data();
+    p[0] = 0x45; // version 4, IHL 5
     p[1] = static_cast<std::uint8_t>(ecn_bits & 0x03u);
     p[2] = 0x00;
     p[3] = static_cast<std::uint8_t>(len); // total length
@@ -520,17 +528,18 @@ tcpip2::BufferLease MakeIpv4Lease(std::uint8_t ecn_bits, std::uint8_t fill) {
 /// (bits 4-5 of the second byte).
 tcpip2::BufferLease MakeIpv6Lease(std::uint8_t ecn_bits, std::uint8_t fill) {
     auto lease = TestPool().Allocate();
-    if (!lease) return lease;
+    if (!lease)
+        return lease;
     const std::size_t len = 48; // 40 fixed header + 8 placeholder
     lease.Resize(len);
     std::memset(lease.Data(), fill, len);
-    std::uint8_t* const p = lease.Data();
-    p[0] = 0x60;                                          // version 6
+    std::uint8_t *const p = lease.Data();
+    p[0] = 0x60; // version 6
     p[1] = static_cast<std::uint8_t>((ecn_bits & 0x03u) << 4);
     p[4] = 0x00;
-    p[5] = 0x08;                                          // payload length
-    p[6] = 6;                                             // next header TCP
-    p[7] = 64;                                            // hop limit
+    p[5] = 0x08; // payload length
+    p[6] = 6;    // next header TCP
+    p[7] = 64;   // hop limit
     return lease;
 }
 
@@ -549,8 +558,7 @@ TCPIP2_TEST(FqCoDelMarksCeInsteadOfDropForEct) {
 
     const std::uint32_t flow = 9;
     for (int i = 0; i < 4; ++i) {
-        TCPIP2_EXPECT_TRUE(sched.Enqueue(
-            MakeIpv4Lease(0x02, static_cast<std::uint8_t>(0xC1 + i)), flow, 0));
+        TCPIP2_EXPECT_TRUE(sched.Enqueue(MakeIpv4Lease(0x02, static_cast<std::uint8_t>(0xC1 + i)), flow, 0));
     }
 
     std::size_t delivered = 0;
@@ -559,20 +567,18 @@ TCPIP2_TEST(FqCoDelMarksCeInsteadOfDropForEct) {
     for (std::uint64_t t : times) {
         auto pkt = sched.Dequeue(t);
         TCPIP2_EXPECT_TRUE(pkt.has_value());
-        if (!pkt) continue;
+        if (!pkt)
+            continue;
         ++delivered;
         if (pkt->ce_marked) {
             ++marked;
             // ECN bits flipped to CE (0x03) and IPv4 header checksum valid.
-            const std::uint8_t* p = pkt->Data();
-            TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(p[1] & 0x03u),
-                             static_cast<std::uint8_t>(0x03));
-            TCPIP2_EXPECT_EQ(tcpip2::InternetChecksum(p, 20, 0),
-                             static_cast<std::uint16_t>(0));
+            const std::uint8_t *p = pkt->Data();
+            TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(p[1] & 0x03u), static_cast<std::uint8_t>(0x03));
+            TCPIP2_EXPECT_EQ(tcpip2::InternetChecksum(p, 20, 0), static_cast<std::uint16_t>(0));
         } else {
             // The first packet carries the original ECT(0) bits.
-            TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(pkt->Data()[1] & 0x03u),
-                             static_cast<std::uint8_t>(0x02));
+            TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(pkt->Data()[1] & 0x03u), static_cast<std::uint8_t>(0x02));
         }
     }
     // Delivered instead of dropped: all four arrive, three CE-marked.
@@ -603,8 +609,7 @@ TCPIP2_TEST(FqCoDelMarksCeOnIpv6Ect) {
     TCPIP2_EXPECT_TRUE(second.has_value());
     if (second) {
         TCPIP2_EXPECT_TRUE(second->ce_marked);
-        TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>((second->Data()[1] >> 4) & 0x03u),
-                         static_cast<std::uint8_t>(0x03));
+        TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>((second->Data()[1] >> 4) & 0x03u), static_cast<std::uint8_t>(0x03));
     }
 }
 
@@ -640,8 +645,7 @@ TCPIP2_TEST(FqCoDelNotEctPacketsAreDroppedNotMarked) {
 
     const std::uint32_t flow = 13;
     for (int i = 0; i < 8; ++i) {
-        TCPIP2_EXPECT_TRUE(sched.Enqueue(MakeIpv4Lease(0x00, static_cast<std::uint8_t>(i)),
-                                         flow, 0));
+        TCPIP2_EXPECT_TRUE(sched.Enqueue(MakeIpv4Lease(0x00, static_cast<std::uint8_t>(i)), flow, 0));
     }
 
     std::size_t delivered = 0;

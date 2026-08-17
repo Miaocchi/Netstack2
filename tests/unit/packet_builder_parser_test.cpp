@@ -10,8 +10,7 @@ using namespace tcpip2::test;
 TCPIP2_TEST(RoundTripSyn) {
     const std::uint32_t src = 0x0A000001u;
     const std::uint32_t dst = 0x0A000002u;
-    std::vector<std::uint8_t> bytes =
-        PacketBuilder::BuildIpv4Tcp(src, dst, 1234, 443, 1000, 0, TcpFlags::Syn, {});
+    std::vector<std::uint8_t> bytes = PacketBuilder::BuildIpv4Tcp(src, dst, 1234, 443, 1000, 0, TcpFlags::Syn, {});
     TCPIP2_EXPECT_EQ(std::size_t{40}, bytes.size());
     ParsedPacket p = PacketParser::ParseIpv4Tcp(bytes);
     TCPIP2_EXPECT_TRUE(p.valid);
@@ -28,11 +27,10 @@ TCPIP2_TEST(RoundTripSyn) {
 }
 
 TCPIP2_TEST(RoundTripWithPayload) {
-    const std::vector<std::uint8_t> payload = {0x01, 0x02, 0x03, 0x04, 0x05,
-                                               'h',  'e',  'l',  'l',  'o'};
-    const std::vector<std::uint8_t> bytes = PacketBuilder::BuildIpv4Tcp(
-        0xC0A80001u, 0xC0A80064u, 80, 8080, 1, 2,
-        static_cast<std::uint8_t>(TcpFlags::Ack | TcpFlags::Psh), payload, 7, 32);
+    const std::vector<std::uint8_t> payload = {0x01, 0x02, 0x03, 0x04, 0x05, 'h', 'e', 'l', 'l', 'o'};
+    const std::vector<std::uint8_t> bytes =
+        PacketBuilder::BuildIpv4Tcp(0xC0A80001u, 0xC0A80064u, 80, 8080, 1, 2,
+                                    static_cast<std::uint8_t>(TcpFlags::Ack | TcpFlags::Psh), payload, 7, 32);
     ParsedPacket p = PacketParser::ParseIpv4Tcp(bytes);
     TCPIP2_EXPECT_TRUE(p.valid);
     TCPIP2_EXPECT_TRUE(p.ip_checksum_ok);
@@ -51,8 +49,7 @@ TCPIP2_TEST(RoundTripWithPayload) {
 
 TCPIP2_TEST(RoundTripRstFin) {
     const std::vector<std::uint8_t> bytes = PacketBuilder::BuildIpv4Tcp(
-        0, 0, 1111, 2222, 0xFFFFFFFFu, 0x7FFFFFFFu,
-        static_cast<std::uint8_t>(TcpFlags::Rst | TcpFlags::Fin), {0xAB});
+        0, 0, 1111, 2222, 0xFFFFFFFFu, 0x7FFFFFFFu, static_cast<std::uint8_t>(TcpFlags::Rst | TcpFlags::Fin), {0xAB});
     ParsedPacket p = PacketParser::ParseIpv4Tcp(bytes);
     TCPIP2_EXPECT_TRUE(p.valid);
     TCPIP2_EXPECT_EQ(std::uint32_t{0xFFFFFFFFu}, p.seq);
@@ -69,8 +66,7 @@ TCPIP2_TEST(TooShortIsInvalid) {
 }
 
 TCPIP2_TEST(TruncatedPayloadFailsChecksum) {
-    std::vector<std::uint8_t> bytes =
-        PacketBuilder::BuildIpv4Tcp(1, 2, 3, 4, 5, 6, TcpFlags::Ack, {0xDE, 0xAD});
+    std::vector<std::uint8_t> bytes = PacketBuilder::BuildIpv4Tcp(1, 2, 3, 4, 5, 6, TcpFlags::Ack, {0xDE, 0xAD});
     bytes.pop_back();
     ParsedPacket p = PacketParser::ParseIpv4Tcp(bytes);
     TCPIP2_EXPECT_FALSE(p.valid);
@@ -78,8 +74,7 @@ TCPIP2_TEST(TruncatedPayloadFailsChecksum) {
 }
 
 TCPIP2_TEST(WrongProtocolIsInvalid) {
-    std::vector<std::uint8_t> bytes =
-        PacketBuilder::BuildIpv4Tcp(1, 2, 3, 4, 5, 6, TcpFlags::Ack, {0x01});
+    std::vector<std::uint8_t> bytes = PacketBuilder::BuildIpv4Tcp(1, 2, 3, 4, 5, 6, TcpFlags::Ack, {0x01});
     bytes[9] = 0x11; // UDP protocol number
     ParsedPacket p = PacketParser::ParseIpv4Tcp(bytes);
     TCPIP2_EXPECT_FALSE(p.valid);

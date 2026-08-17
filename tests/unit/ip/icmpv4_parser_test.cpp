@@ -11,14 +11,13 @@ using namespace tcpip2;
 namespace {
 
 /// Build an ICMP Echo request with a valid checksum and optional payload.
-static std::vector<std::uint8_t> BuildEcho(std::uint8_t type = Icmpv4Type::Echo,
-                                           std::uint16_t id = 0x1234,
-                                           std::uint16_t seq = 1,
-                                           const std::vector<std::uint8_t>& payload = {}) {
+static std::vector<std::uint8_t> BuildEcho(std::uint8_t type = Icmpv4Type::Echo, std::uint16_t id = 0x1234,
+                                           std::uint16_t seq = 1, const std::vector<std::uint8_t> &payload = {}) {
     std::vector<std::uint8_t> msg(8 + payload.size(), 0);
     msg[0] = type;
     msg[1] = 0; // code
-    msg[2] = 0; msg[3] = 0; // checksum placeholder
+    msg[2] = 0;
+    msg[3] = 0; // checksum placeholder
     msg[4] = static_cast<std::uint8_t>((id >> 8) & 0xFF);
     msg[5] = static_cast<std::uint8_t>(id & 0xFF);
     msg[6] = static_cast<std::uint8_t>((seq >> 8) & 0xFF);
@@ -34,16 +33,17 @@ static std::vector<std::uint8_t> BuildEcho(std::uint8_t type = Icmpv4Type::Echo,
 }
 
 /// Build a Destination Unreachable message with quoted payload.
-static std::vector<std::uint8_t> BuildDestUnreachable(
-    std::uint8_t code = Icmpv4DestUnreachableCode::Port,
-    std::uint16_t mtu = 0,
-    const std::vector<std::uint8_t>& quoted = {}) {
+static std::vector<std::uint8_t> BuildDestUnreachable(std::uint8_t code = Icmpv4DestUnreachableCode::Port,
+                                                      std::uint16_t mtu = 0,
+                                                      const std::vector<std::uint8_t> &quoted = {}) {
     std::vector<std::uint8_t> msg(8 + quoted.size(), 0);
     msg[0] = Icmpv4Type::DestinationUnreachable;
     msg[1] = code;
-    msg[2] = 0; msg[3] = 0; // checksum placeholder
+    msg[2] = 0;
+    msg[3] = 0; // checksum placeholder
     if (code == Icmpv4DestUnreachableCode::FragmentationNeeded) {
-        msg[4] = 0; msg[5] = 0; // unused
+        msg[4] = 0;
+        msg[5] = 0; // unused
         msg[6] = static_cast<std::uint8_t>((mtu >> 8) & 0xFF);
         msg[7] = static_cast<std::uint8_t>(mtu & 0xFF);
     }
@@ -150,9 +150,14 @@ TCPIP2_TEST(TimeExceeded) {
     std::vector<std::uint8_t> msg(8 + quoted.size(), 0);
     msg[0] = Icmpv4Type::TimeExceeded;
     msg[1] = 0; // code
-    msg[2] = 0; msg[3] = 0;
-    msg[4] = 0; msg[5] = 0; msg[6] = 0; msg[7] = 0; // unused
-    msg[8] = 0x45; msg[9] = 0x00;
+    msg[2] = 0;
+    msg[3] = 0;
+    msg[4] = 0;
+    msg[5] = 0;
+    msg[6] = 0;
+    msg[7] = 0; // unused
+    msg[8] = 0x45;
+    msg[9] = 0x00;
 
     std::uint16_t cs = InternetChecksum(msg.data(), msg.size(), 0);
     msg[2] = static_cast<std::uint8_t>((cs >> 8) & 0xFF);
@@ -171,10 +176,14 @@ TCPIP2_TEST(ParameterProblem) {
     std::vector<std::uint8_t> msg(8 + quoted.size(), 0);
     msg[0] = Icmpv4Type::ParameterProblem;
     msg[1] = 0; // code
-    msg[2] = 0; msg[3] = 0;
+    msg[2] = 0;
+    msg[3] = 0;
     msg[4] = 5; // pointer = 5
-    msg[5] = 0; msg[6] = 0; msg[7] = 0; // unused
-    msg[8] = 0x45; msg[9] = 0x00;
+    msg[5] = 0;
+    msg[6] = 0;
+    msg[7] = 0; // unused
+    msg[8] = 0x45;
+    msg[9] = 0x00;
 
     std::uint16_t cs = InternetChecksum(msg.data(), msg.size(), 0);
     msg[2] = static_cast<std::uint8_t>((cs >> 8) & 0xFF);

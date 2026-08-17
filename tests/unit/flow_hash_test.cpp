@@ -20,7 +20,7 @@ TCPIP2_TEST(IpAddressDefaultIsIpv4Zero) {
 }
 
 TCPIP2_TEST(IpAddressIpv4FromUint32) {
-    IpAddress ip = IpAddress::Ipv4(static_cast<std::uint32_t>(0xC0A80101));  // 192.168.1.1
+    IpAddress ip = IpAddress::Ipv4(static_cast<std::uint32_t>(0xC0A80101)); // 192.168.1.1
     TCPIP2_EXPECT_TRUE(ip.IsIpv4());
     TCPIP2_EXPECT_EQ(std::uint8_t{192}, ip.Bytes()[0]);
     TCPIP2_EXPECT_EQ(std::uint8_t{168}, ip.Bytes()[1]);
@@ -191,14 +191,11 @@ TCPIP2_TEST(FlowToShardDistribution) {
     const std::size_t N = 10000;
     for (std::size_t i = 0; i < N; ++i) {
         FlowKey fk;
-        fk.source = IpAddress::Ipv4(static_cast<std::uint8_t>(i & 0xFF),
-                                    static_cast<std::uint8_t>((i >> 8) & 0xFF),
-                                    static_cast<std::uint8_t>(i & 0x7F),
-                                    static_cast<std::uint8_t>(i % 200 + 1));
-        fk.destination = IpAddress::Ipv4(static_cast<std::uint8_t>((i * 7) & 0xFF),
-                                    static_cast<std::uint8_t>((i * 13) & 0xFF),
-                                    static_cast<std::uint8_t>((i * 3) & 0xFF),
-                                    static_cast<std::uint8_t>((i % 250) + 1));
+        fk.source = IpAddress::Ipv4(static_cast<std::uint8_t>(i & 0xFF), static_cast<std::uint8_t>((i >> 8) & 0xFF),
+                                    static_cast<std::uint8_t>(i & 0x7F), static_cast<std::uint8_t>(i % 200 + 1));
+        fk.destination =
+            IpAddress::Ipv4(static_cast<std::uint8_t>((i * 7) & 0xFF), static_cast<std::uint8_t>((i * 13) & 0xFF),
+                            static_cast<std::uint8_t>((i * 3) & 0xFF), static_cast<std::uint8_t>((i % 250) + 1));
         fk.source_port = static_cast<std::uint16_t>(i + 1024);
         fk.destination_port = static_cast<std::uint16_t>((i * 17) % 60000 + 1);
         fk.protocol = 6;

@@ -20,7 +20,7 @@ namespace {
 
 // A shard with no queue — packets arrive only via the SPSC inbox.
 // Each shard gets its own pool (per-shard pool model, ADR-001).
-std::unique_ptr<StackShard> MakeShard(std::size_t id, PktBufferPool& pool) {
+std::unique_ptr<StackShard> MakeShard(std::size_t id, PktBufferPool &pool) {
     return std::unique_ptr<StackShard>(new StackShard(id, pool, nullptr, 128));
 }
 
@@ -118,16 +118,20 @@ TCPIP2_TEST(ShardMultipleShardsStartStop) {
     PktBufferPool pool1(32, 256);
     PktBufferPool pool2(32, 256);
     PktBufferPool pool3(32, 256);
-    PktBufferPool* pools[] = {&pool0, &pool1, &pool2, &pool3};
+    PktBufferPool *pools[] = {&pool0, &pool1, &pool2, &pool3};
 
     std::vector<std::unique_ptr<StackShard>> shards;
     for (std::size_t i = 0; i < 4; ++i) {
         shards.push_back(MakeShard(i, *pools[i]));
     }
-    for (auto& s : shards) s->Start();
-    for (auto& s : shards) TCPIP2_EXPECT_TRUE(s->IsRunning());
-    for (auto& s : shards) s->Stop();
-    for (auto& s : shards) TCPIP2_EXPECT_FALSE(s->IsRunning());
+    for (auto &s : shards)
+        s->Start();
+    for (auto &s : shards)
+        TCPIP2_EXPECT_TRUE(s->IsRunning());
+    for (auto &s : shards)
+        s->Stop();
+    for (auto &s : shards)
+        TCPIP2_EXPECT_FALSE(s->IsRunning());
 }
 
 TCPIP2_TEST(ShardConcurrentMessages) {
@@ -150,7 +154,8 @@ TCPIP2_TEST(ShardConcurrentMessages) {
             }
         });
     }
-    for (auto& t : threads) t.join();
+    for (auto &t : threads)
+        t.join();
 
     // Wait for processing.
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -227,7 +232,8 @@ TCPIP2_TEST(ShardStressConcurrent) {
         });
     }
 
-    for (auto& t : producers) t.join();
+    for (auto &t : producers)
+        t.join();
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     shard->Stop();
     pool.DrainReturnQueue();
@@ -243,9 +249,8 @@ TCPIP2_TEST(ShardProcessesSynAndRetainsWouldBlockTx) {
     io.SetSendWouldBlock(true);
     TCPIP2_EXPECT_TRUE(shard.Start());
 
-    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
-        0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0,
-        test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> syn =
+        test::PacketBuilder::BuildIpv4Tcp(0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
     BufferLease lease = pool.Allocate();
     TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
     std::memcpy(lease.Data(), syn.data(), syn.size());
@@ -258,7 +263,7 @@ TCPIP2_TEST(ShardProcessesSynAndRetainsWouldBlockTx) {
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
     shard.Stop();
 
-    const auto& egress = io.Egress(0);
+    const auto &egress = io.Egress(0);
     TCPIP2_EXPECT_EQ(std::size_t{1}, egress.size());
     if (!egress.empty()) {
         const test::ParsedPacket response = test::PacketParser::ParseIpv4Tcp(egress[0]);
@@ -268,9 +273,7 @@ TCPIP2_TEST(ShardProcessesSynAndRetainsWouldBlockTx) {
         TCPIP2_EXPECT_EQ(std::uint16_t{443}, response.src_port);
         TCPIP2_EXPECT_EQ(std::uint16_t{40000}, response.dst_port);
         TCPIP2_EXPECT_EQ(std::uint32_t{1001}, response.ack);
-        TCPIP2_EXPECT_EQ(
-            static_cast<std::uint8_t>(test::TcpFlags::Syn | test::TcpFlags::Ack),
-            response.flags);
+        TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(test::TcpFlags::Syn | test::TcpFlags::Ack), response.flags);
     }
     pool.DrainReturnQueue();
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
@@ -286,23 +289,20 @@ TCPIP2_TEST(ShardProcessesIpv4FragmentsAndReassembles) {
 
     // Build a complete IPv4+SYN packet, then extract just the TCP segment
     // (skip 20-byte IPv4 header) and fragment it into two pieces.
-    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
-        0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0,
-        test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> syn =
+        test::PacketBuilder::BuildIpv4Tcp(0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
     std::vector<std::uint8_t> tcp_segment(syn.begin() + 20, syn.end());
 
     // Fragment the TCP segment into non-overlapping 8-byte chunks.
     // frag1: offset 0, MF=1, payload = first 8 bytes
     // frag2: offset 1, MF=0, payload = remaining bytes
     const std::size_t split = std::min(tcp_segment.size(), std::size_t{8});
-    std::vector<std::uint8_t> frag1_payload(tcp_segment.begin(),
-                                             tcp_segment.begin() + split);
-    std::vector<std::uint8_t> frag2_payload(tcp_segment.begin() + split,
-                                             tcp_segment.end());
-    const std::vector<std::uint8_t> frag1 = test::PacketBuilder::BuildIpv4TcpFragment(
-        0x0a000001u, 0x0a000002u, 0x1234, 0, true, frag1_payload);
-    const std::vector<std::uint8_t> frag2 = test::PacketBuilder::BuildIpv4TcpFragment(
-        0x0a000001u, 0x0a000002u, 0x1234, 1, false, frag2_payload);
+    std::vector<std::uint8_t> frag1_payload(tcp_segment.begin(), tcp_segment.begin() + split);
+    std::vector<std::uint8_t> frag2_payload(tcp_segment.begin() + split, tcp_segment.end());
+    const std::vector<std::uint8_t> frag1 =
+        test::PacketBuilder::BuildIpv4TcpFragment(0x0a000001u, 0x0a000002u, 0x1234, 0, true, frag1_payload);
+    const std::vector<std::uint8_t> frag2 =
+        test::PacketBuilder::BuildIpv4TcpFragment(0x0a000001u, 0x0a000002u, 0x1234, 1, false, frag2_payload);
 
     BufferLease lease1 = pool.Allocate();
     TCPIP2_EXPECT_TRUE(static_cast<bool>(lease1));
@@ -320,7 +320,7 @@ TCPIP2_TEST(ShardProcessesIpv4FragmentsAndReassembles) {
     TCPIP2_EXPECT_EQ(std::size_t{1}, shard.TcpHalfOpenCount());
     shard.Stop();
 
-    const auto& egress = io.Egress(0);
+    const auto &egress = io.Egress(0);
     TCPIP2_EXPECT_EQ(std::size_t{1}, egress.size());
     if (!egress.empty()) {
         const test::ParsedPacket response = test::PacketParser::ParseIpv4Tcp(egress[0]);
@@ -330,19 +330,15 @@ TCPIP2_TEST(ShardProcessesIpv4FragmentsAndReassembles) {
         TCPIP2_EXPECT_EQ(std::uint16_t{443}, response.src_port);
         TCPIP2_EXPECT_EQ(std::uint16_t{40000}, response.dst_port);
         TCPIP2_EXPECT_EQ(std::uint32_t{1001}, response.ack);
-        TCPIP2_EXPECT_EQ(
-            static_cast<std::uint8_t>(test::TcpFlags::Syn | test::TcpFlags::Ack),
-            response.flags);
+        TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(test::TcpFlags::Syn | test::TcpFlags::Ack), response.flags);
     }
     pool.DrainReturnQueue();
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
 }
 
 TCPIP2_TEST(ShardProcessesIpv6FragmentsAndReassembles) {
-    const std::uint8_t src_ip6[16] = {
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-    const std::uint8_t dst_ip6[16] = {
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+    const std::uint8_t src_ip6[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t dst_ip6[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
 
     NullPacketIo io(1);
     PktBufferPool pool(16, 256);
@@ -353,21 +349,18 @@ TCPIP2_TEST(ShardProcessesIpv6FragmentsAndReassembles) {
 
     // Build a complete IPv6+SYN, extract the TCP segment (skip 40-byte IPv6
     // header), and fragment it at byte offset 8.
-    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv6Tcp(
-        src_ip6, dst_ip6, 40000, 443, 1000, 0,
-        test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> syn =
+        test::PacketBuilder::BuildIpv6Tcp(src_ip6, dst_ip6, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
     std::vector<std::uint8_t> tcp_segment(syn.begin() + 40, syn.end());
 
     // Fragment the TCP segment into non-overlapping 8-byte chunks.
     const std::size_t split = std::min(tcp_segment.size(), std::size_t{8});
-    std::vector<std::uint8_t> frag1_payload(tcp_segment.begin(),
-                                             tcp_segment.begin() + split);
-    std::vector<std::uint8_t> frag2_payload(tcp_segment.begin() + split,
-                                             tcp_segment.end());
-    const std::vector<std::uint8_t> frag1 = test::PacketBuilder::BuildIpv6TcpFragment(
-        src_ip6, dst_ip6, 0xABCD, 0, true, frag1_payload);
-    const std::vector<std::uint8_t> frag2 = test::PacketBuilder::BuildIpv6TcpFragment(
-        src_ip6, dst_ip6, 0xABCD, 1, false, frag2_payload);
+    std::vector<std::uint8_t> frag1_payload(tcp_segment.begin(), tcp_segment.begin() + split);
+    std::vector<std::uint8_t> frag2_payload(tcp_segment.begin() + split, tcp_segment.end());
+    const std::vector<std::uint8_t> frag1 =
+        test::PacketBuilder::BuildIpv6TcpFragment(src_ip6, dst_ip6, 0xABCD, 0, true, frag1_payload);
+    const std::vector<std::uint8_t> frag2 =
+        test::PacketBuilder::BuildIpv6TcpFragment(src_ip6, dst_ip6, 0xABCD, 1, false, frag2_payload);
 
     BufferLease lease1 = pool.Allocate();
     TCPIP2_EXPECT_TRUE(static_cast<bool>(lease1));
@@ -385,7 +378,7 @@ TCPIP2_TEST(ShardProcessesIpv6FragmentsAndReassembles) {
     TCPIP2_EXPECT_EQ(std::size_t{1}, shard.TcpHalfOpenCount());
     shard.Stop();
 
-    const auto& egress = io.Egress(0);
+    const auto &egress = io.Egress(0);
     TCPIP2_EXPECT_EQ(std::size_t{1}, egress.size());
     if (!egress.empty()) {
         const test::ParsedPacket response = test::PacketParser::ParseIpv6Tcp(egress[0]);
@@ -393,9 +386,7 @@ TCPIP2_TEST(ShardProcessesIpv6FragmentsAndReassembles) {
         TCPIP2_EXPECT_EQ(std::uint16_t{40000}, response.dst_port);
         TCPIP2_EXPECT_EQ(std::uint16_t{443}, response.src_port);
         TCPIP2_EXPECT_EQ(std::uint32_t{1001}, response.ack);
-        TCPIP2_EXPECT_EQ(
-            static_cast<std::uint8_t>(test::TcpFlags::Syn | test::TcpFlags::Ack),
-            response.flags);
+        TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(test::TcpFlags::Syn | test::TcpFlags::Ack), response.flags);
     }
     pool.DrainReturnQueue();
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
@@ -410,17 +401,15 @@ TCPIP2_TEST(ShardIncompleteFragmentsNoResponse) {
     TCPIP2_EXPECT_TRUE(shard.Start());
 
     // Build a SYN and fragment it, but only inject the first fragment (MF=1).
-    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
-        0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0,
-        test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> syn =
+        test::PacketBuilder::BuildIpv4Tcp(0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
     std::vector<std::uint8_t> tcp_segment(syn.begin() + 20, syn.end());
 
     // Only send the first 8-byte fragment (MF=1); reassembly never completes.
     const std::size_t split = std::min(tcp_segment.size(), std::size_t{8});
-    std::vector<std::uint8_t> frag1_payload(tcp_segment.begin(),
-                                             tcp_segment.begin() + split);
-    const std::vector<std::uint8_t> frag1 = test::PacketBuilder::BuildIpv4TcpFragment(
-        0x0a000001u, 0x0a000002u, 0x5678, 0, true, frag1_payload);
+    std::vector<std::uint8_t> frag1_payload(tcp_segment.begin(), tcp_segment.begin() + split);
+    const std::vector<std::uint8_t> frag1 =
+        test::PacketBuilder::BuildIpv4TcpFragment(0x0a000001u, 0x0a000002u, 0x5678, 0, true, frag1_payload);
 
     BufferLease lease1 = pool.Allocate();
     TCPIP2_EXPECT_TRUE(static_cast<bool>(lease1));
@@ -432,7 +421,7 @@ TCPIP2_TEST(ShardIncompleteFragmentsNoResponse) {
     TCPIP2_EXPECT_EQ(std::size_t{0}, shard.TcpHalfOpenCount());
     shard.Stop();
 
-    const auto& egress = io.Egress(0);
+    const auto &egress = io.Egress(0);
     TCPIP2_EXPECT_EQ(std::size_t{0}, egress.size());
     pool.DrainReturnQueue();
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());

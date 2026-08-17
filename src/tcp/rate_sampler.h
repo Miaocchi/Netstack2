@@ -85,21 +85,19 @@ struct PacketDeliveryState {
 ///   - OnAck() when a cumulative ACK covers a segment
 ///   - MarkAppLimited() when the send queue is drained below cwnd
 class DeliveryRateSampler {
-public:
+  public:
     DeliveryRateSampler() = default;
 
     /// Stamp a PacketDeliveryState for a newly-sent segment.
     /// Called by TcpSendBuffer::StoreNewRecord.
-    void OnPacketSent(PacketDeliveryState& pkt, std::uint64_t now_ms) noexcept;
+    void OnPacketSent(PacketDeliveryState &pkt, std::uint64_t now_ms) noexcept;
 
     /// Generate a RateSample when a segment is ACKed.
     /// @param pkt   The PacketDeliveryState of the ACKed segment.
     /// @param acked_bytes Bytes newly acknowledged in this ACK event.
     /// @param now_ms Current monotonic time.
     /// @param inflight_bytes Current in-flight bytes after this ACK.
-    RateSample OnAck(const PacketDeliveryState& pkt,
-                     std::uint64_t acked_bytes,
-                     std::uint64_t now_ms,
+    RateSample OnAck(const PacketDeliveryState &pkt, std::uint64_t acked_bytes, std::uint64_t now_ms,
                      std::uint64_t inflight_bytes) noexcept;
 
     /// Mark the connection as app-limited at @p now_ms.
@@ -118,12 +116,12 @@ public:
     std::uint64_t DeliveredTime() const noexcept { return delivered_time_ms_; }
 
     /// @return The most recent RateSample (or a default-constructed one).
-    const RateSample& LastSample() const noexcept { return last_sample_; }
+    const RateSample &LastSample() const noexcept { return last_sample_; }
 
     /// Reset all state (called on close/reset).
     void Reset() noexcept;
 
-private:
+  private:
     std::uint64_t delivered_bytes_ = 0;
     std::uint64_t delivered_time_ms_ = 0;
     bool app_limited_ = false;

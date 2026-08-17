@@ -20,10 +20,10 @@
 namespace tcpip2 {
 
 class IpAddress {
-public:
+  public:
     enum class Family { Ipv4, Ipv6 };
 
-    IpAddress() noexcept = default;  // default: IPv4 0.0.0.0
+    IpAddress() noexcept = default; // default: IPv4 0.0.0.0
 
     static IpAddress Ipv4(std::uint32_t addr) noexcept {
         IpAddress ip;
@@ -57,24 +57,26 @@ public:
     bool IsIpv4() const noexcept { return family_ == Family::Ipv4; }
     bool IsIpv6() const noexcept { return family_ == Family::Ipv6; }
 
-    const std::uint8_t* Bytes() const noexcept { return bytes_.data(); }
+    const std::uint8_t *Bytes() const noexcept { return bytes_.data(); }
     std::size_t ByteCount() const noexcept { return family_ == Family::Ipv4 ? 4 : 16; }
 
-    bool operator==(const IpAddress& o) const noexcept {
-        if (family_ != o.family_) return false;
+    bool operator==(const IpAddress &o) const noexcept {
+        if (family_ != o.family_)
+            return false;
         const std::size_t n = ByteCount();
         return std::memcmp(bytes_.data(), o.bytes_.data(), n) == 0;
     }
 
-    bool operator!=(const IpAddress& o) const noexcept { return !(*this == o); }
+    bool operator!=(const IpAddress &o) const noexcept { return !(*this == o); }
 
-    bool operator<(const IpAddress& o) const noexcept {
-        if (family_ != o.family_) return family_ < o.family_;
+    bool operator<(const IpAddress &o) const noexcept {
+        if (family_ != o.family_)
+            return family_ < o.family_;
         const std::size_t n = ByteCount();
         return std::memcmp(bytes_.data(), o.bytes_.data(), n) < 0;
     }
 
-private:
+  private:
     Family family_ = Family::Ipv4;
     std::array<std::uint8_t, 16> bytes_ = {};
 };

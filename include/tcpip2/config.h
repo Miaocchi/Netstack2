@@ -17,10 +17,10 @@ namespace tcpip2 {
 
 /// TCP congestion-control algorithm selection (fixed at flow creation).
 enum class TcpCongestionAlgorithm {
-    Aimd,           ///< RFC 5681 (default, no pacing).
-    Bbr,            ///< BBRv1 (with pacing).
-    HybridBdpAimd,  ///< BDP-based cwnd with AIMD loss response.
-    Kcc,            ///< KCC v2.0 geodesic congestion control.
+    Aimd,          ///< RFC 5681 (default, no pacing).
+    Bbr,           ///< BBRv1 (with pacing).
+    HybridBdpAimd, ///< BDP-based cwnd with AIMD loss response.
+    Kcc,           ///< KCC v2.0 geodesic congestion control.
 };
 
 struct NetstackConfig {
@@ -71,17 +71,24 @@ struct NetstackConfig {
     std::uint64_t time_wait_ms = 60000;
 
     bool Validate() const noexcept {
-        if (shard_count == 0) return false;
-        if (rx_queue_count == 0) return false;
-        if (rx_queue_to_shard.empty() && rx_queue_count > shard_count) return false;
+        if (shard_count == 0)
+            return false;
+        if (rx_queue_count == 0)
+            return false;
+        if (rx_queue_to_shard.empty() && rx_queue_count > shard_count)
+            return false;
         if (!rx_queue_to_shard.empty()) {
-            if (rx_queue_to_shard.size() != rx_queue_count) return false;
+            if (rx_queue_to_shard.size() != rx_queue_count)
+                return false;
             for (std::size_t s : rx_queue_to_shard) {
-                if (s >= shard_count) return false;
+                if (s >= shard_count)
+                    return false;
             }
         }
-        if (pool_slot_count == 0) return false;
-        if (pool_slot_capacity == 0) return false;
+        if (pool_slot_count == 0)
+            return false;
+        if (pool_slot_capacity == 0)
+            return false;
 
         // Per-shard pool: total slots = shard_count * pool_slot_count, then
         // total bytes = total_slots * pool_slot_capacity. Guard each
@@ -90,24 +97,33 @@ struct NetstackConfig {
         const std::uint64_t shard_count_u = shard_count;
         const std::uint64_t slot_count_u = pool_slot_count;
         const std::uint64_t slot_cap_u = pool_slot_capacity;
-        if (shard_count_u != 0 && slot_count_u > UINT64_MAX / shard_count_u) return false;
+        if (shard_count_u != 0 && slot_count_u > UINT64_MAX / shard_count_u)
+            return false;
         const std::uint64_t total_slots_u = shard_count_u * slot_count_u;
-        if (total_slots_u != 0 && slot_cap_u > UINT64_MAX / total_slots_u) return false;
+        if (total_slots_u != 0 && slot_cap_u > UINT64_MAX / total_slots_u)
+            return false;
         const std::uint64_t total_bytes_u = total_slots_u * slot_cap_u;
         // Reject if total exceeds SIZE_MAX (would overflow allocation).
-        if (total_bytes_u > static_cast<std::uint64_t>(SIZE_MAX)) return false;
+        if (total_bytes_u > static_cast<std::uint64_t>(SIZE_MAX))
+            return false;
         // Reasonable process-level memory cap (4 GiB total pool arena).
-        static constexpr std::uint64_t max_total_pool_bytes =
-            std::uint64_t{4} * 1024 * 1024 * 1024;
-        if (total_bytes_u > max_total_pool_bytes) return false;
+        static constexpr std::uint64_t max_total_pool_bytes = std::uint64_t{4} * 1024 * 1024 * 1024;
+        if (total_bytes_u > max_total_pool_bytes)
+            return false;
 
-        if (initial_tcp_window == 0) return false;
-        if (tcp_mss < 512) return false;
+        if (initial_tcp_window == 0)
+            return false;
+        if (tcp_mss < 512)
+            return false;
         // TcpSendBuffer enforces RFC 6298's 200 ms minimum RTO.
-        if (rto_initial_ms < 200) return false;
-        if (persist_timeout_ms == 0) return false;
-        if (keepalive_ms == 0) return false;
-        if (time_wait_ms == 0 || time_wait_ms > UINT32_MAX) return false;
+        if (rto_initial_ms < 200)
+            return false;
+        if (persist_timeout_ms == 0)
+            return false;
+        if (keepalive_ms == 0)
+            return false;
+        if (time_wait_ms == 0 || time_wait_ms > UINT32_MAX)
+            return false;
         return true;
     }
 };

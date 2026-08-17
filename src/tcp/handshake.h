@@ -110,12 +110,12 @@ struct TcpHandshakeConfig {
     CongestionAlgorithm cc_algorithm = CongestionAlgorithm::Aimd;
 
     // KCC v2.0 tunables (ADR-009/010). Ignored unless cc_algorithm == Kcc.
-    bool kcc_turbo = true;             ///< 1.88x BDP cwnd floor in PROBE_BW.
-    std::uint32_t kcc_ai_num = 25;     ///< PROBE_BW AI numerator (/800).
-    bool kcc_ecn = true;               ///< Enable KCC ECN-CE EWMA backoff.
-    bool kcc_kf_enable = false;        ///< Enable per-shard KF (default off).
+    bool kcc_turbo = true;         ///< 1.88x BDP cwnd floor in PROBE_BW.
+    std::uint32_t kcc_ai_num = 25; ///< PROBE_BW AI numerator (/800).
+    bool kcc_ecn = true;           ///< Enable KCC ECN-CE EWMA backoff.
+    bool kcc_kf_enable = false;    ///< Enable per-shard KF (default off).
     /// Per-shard cross-connection bandwidth filter (may be null = disabled).
-    KccKalmanFilter* kcc_kf = nullptr;
+    KccKalmanFilter *kcc_kf = nullptr;
 
     bool Validate() const noexcept;
 };
@@ -149,7 +149,7 @@ struct TcpResponse {
     std::uint8_t ip_ecn = 0;
     /// Optional payload for data segments (non-SYN packets).
     /// Must outlive the call to BuildTcpControlPacket.
-    const std::uint8_t* payload = nullptr;
+    const std::uint8_t *payload = nullptr;
     std::size_t payload_length = 0;
 };
 
@@ -182,61 +182,46 @@ struct TcpPcbSnapshot {
  * through the shard's MPSC control inbox rather than touching the engine
  * directly from a foreign thread.
  */
-using PostMessageFn = std::function<bool(ShardMessage&&)>;
+using PostMessageFn = std::function<bool(ShardMessage &&)>;
 
 /**
  * One engine represents the transparent wildcard TCP listener on one shard.
  * It is single-threaded and must only be called by its owner shard.
  */
 class TcpHandshakeEngine final {
-public:
-    TcpHandshakeEngine(const TcpHandshakeConfig& config,
-                       const TcpIsnGenerator& isn,
-                       TimerWheel& timers,
-                        std::uint64_t generation_epoch = 1,
-                        ISessionFactory* session_factory = nullptr,
-                        PostMessageFn post_message = nullptr,
-                        IEventSink* event_sink = nullptr);
+  public:
+    TcpHandshakeEngine(const TcpHandshakeConfig &config, const TcpIsnGenerator &isn, TimerWheel &timers,
+                       std::uint64_t generation_epoch = 1, ISessionFactory *session_factory = nullptr,
+                       PostMessageFn post_message = nullptr, IEventSink *event_sink = nullptr);
     ~TcpHandshakeEngine();
 
-    TcpHandshakeEngine(const TcpHandshakeEngine&) = delete;
-    TcpHandshakeEngine& operator=(const TcpHandshakeEngine&) = delete;
+    TcpHandshakeEngine(const TcpHandshakeEngine &) = delete;
+    TcpHandshakeEngine &operator=(const TcpHandshakeEngine &) = delete;
 
-    TcpHandshakeResult OnSegment(const TcpSegmentView& segment,
-                                 std::uint64_t now_ms) noexcept;
+    TcpHandshakeResult OnSegment(const TcpSegmentView &segment, std::uint64_t now_ms) noexcept;
     /** The engine retains @p session until the flow is removed. */
-    TcpHandshakeResult AttachSession(const FlowKey& incoming_flow,
-                                     std::shared_ptr<ITransportSession> session,
+    TcpHandshakeResult AttachSession(const FlowKey &incoming_flow, std::shared_ptr<ITransportSession> session,
                                      std::uint64_t now_ms) noexcept;
-    TcpHandshakeResult OnSessionWritable(FlowId flow_id,
-                                         std::uint64_t generation,
-                                         std::uint64_t now_ms) noexcept;
-    bool OnSessionClosed(FlowId flow_id,
-                          std::uint64_t generation,
-                          SessionError error = SessionError::RemoteClosed) noexcept;
-    void PumpSessionDeliveries(std::uint64_t now_ms,
-                               std::size_t pcb_budget = 64) noexcept;
+    TcpHandshakeResult OnSessionWritable(FlowId flow_id, std::uint64_t generation, std::uint64_t now_ms) noexcept;
+    bool OnSessionClosed(FlowId flow_id, std::uint64_t generation,
+                         SessionError error = SessionError::RemoteClosed) noexcept;
+    void PumpSessionDeliveries(std::uint64_t now_ms, std::size_t pcb_budget = 64) noexcept;
 
     /// Enqueue application data for transmission on an established PCB.
     /// Returns bytes accepted (0 if PCB not found or send buffer full).
-    std::size_t EnqueueSendData(FlowId flow_id, const std::uint8_t* data,
-                                 std::size_t length) noexcept;
+    std::size_t EnqueueSendData(FlowId flow_id, const std::uint8_t *data, std::size_t length) noexcept;
 
     /// Enqueue application data from a session DataCallback (owning lease).
     /// Leaves an unaccepted tail in @p lease so the shard can retry it.
-    bool EnqueueRemoteData(FlowId flow_id, std::uint64_t generation,
-                           BufferLease& lease) noexcept;
+    bool EnqueueRemoteData(FlowId flow_id, std::uint64_t generation, BufferLease &lease) noexcept;
 
     /** Resume sessions only when the caller has observed a low remote backlog. */
-    void ResumeSessionReceives(std::size_t remote_backlog,
-                               std::size_t remote_low_watermark) noexcept;
+    void ResumeSessionReceives(std::size_t remote_backlog, std::size_t remote_low_watermark) noexcept;
 
     /// Pump send paths for established PCBs: emit new data, retransmissions,
     /// and persist probes as serialized TX leases.
-    void PumpSendPaths(std::uint64_t now_ms, std::size_t pcb_budget,
-                       PktBufferPool& pool,
-                       std::vector<BufferLease>& tx_leases,
-                       std::size_t max_segments) noexcept;
+    void PumpSendPaths(std::uint64_t now_ms, std::size_t pcb_budget, PktBufferPool &pool,
+                       std::vector<BufferLease> &tx_leases, std::size_t max_segments) noexcept;
 
     void CloseFlow(FlowId flow_id, std::uint64_t generation) noexcept;
     void AbortFlow(FlowId flow_id, std::uint64_t generation) noexcept;
@@ -244,32 +229,26 @@ public:
     /// PMTU discovery: the path to @p peer shrank to @p pmtu bytes. Every
     /// established flow that sends to @p peer lowers its send MSS so the next
     /// segment it emits fits the new path MTU (RFC 1191 / RFC 8201).
-    void OnPathMtuLowered(const IpAddress& peer, std::uint32_t pmtu) noexcept;
+    void OnPathMtuLowered(const IpAddress &peer, std::uint32_t pmtu) noexcept;
 
     /// True when a PCB exists for @p incoming_flow (any state). Used for ICMP
     /// error attribution: a quoted packet must belong to a real flow before it
     /// may influence PMTU state (RFC 1191 §6 / RFC 4443 §2.4).
-    bool HasFlow(const FlowKey& incoming_flow) const noexcept;
+    bool HasFlow(const FlowKey &incoming_flow) const noexcept;
 
-    bool Find(const FlowKey& incoming_flow, TcpPcbSnapshot& out) const noexcept;
-    bool PopPendingResponse(TcpResponse& out) noexcept;
-    void DeferResponse(const TcpResponse& response) noexcept {
-        QueueResponse(response);
-    }
+    bool Find(const FlowKey &incoming_flow, TcpPcbSnapshot &out) const noexcept;
+    bool PopPendingResponse(TcpResponse &out) noexcept;
+    void DeferResponse(const TcpResponse &response) noexcept { QueueResponse(response); }
     void Shutdown() noexcept;
 
     std::size_t PcbCount() const noexcept { return pcbs_.size(); }
     std::size_t HalfOpenCount() const noexcept { return half_open_count_; }
     std::size_t EstablishedCount() const noexcept;
     std::size_t PendingResponseCount() const noexcept;
-    std::size_t DroppedResponseCount() const noexcept {
-        return dropped_responses_;
-    }
-    std::size_t ReceiveMemoryBytes() const noexcept {
-        return receive_memory_bytes_;
-    }
+    std::size_t DroppedResponseCount() const noexcept { return dropped_responses_; }
+    std::size_t ReceiveMemoryBytes() const noexcept { return receive_memory_bytes_; }
 
-private:
+  private:
     struct Pcb {
         FlowKey incoming_flow;
         TcpState state = TcpState::SynReceived;
@@ -311,9 +290,10 @@ private:
         bool active = true;
         std::size_t in_flight_callbacks = 0;
 
-        bool TryPost(ShardMessage&& msg) noexcept {
+        bool TryPost(ShardMessage &&msg) noexcept {
             std::unique_lock<std::mutex> lock(mutex);
-            if (!active || !post_message) return false;
+            if (!active || !post_message)
+                return false;
             ++in_flight_callbacks;
             bool posted = false;
             try {
@@ -322,14 +302,15 @@ private:
                 posted = false;
             }
             --in_flight_callbacks;
-            if (!active && in_flight_callbacks == 0) cv.notify_all();
+            if (!active && in_flight_callbacks == 0)
+                cv.notify_all();
             return posted;
         }
 
-        template <typename Fn>
-        void TryRun(Fn&& fn) noexcept {
+        template <typename Fn> void TryRun(Fn &&fn) noexcept {
             std::unique_lock<std::mutex> lock(mutex);
-            if (!active) return;
+            if (!active)
+                return;
             ++in_flight_callbacks;
             try {
                 fn();
@@ -337,7 +318,8 @@ private:
                 // Timer callbacks cannot let an external failure kill a shard.
             }
             --in_flight_callbacks;
-            if (!active && in_flight_callbacks == 0) cv.notify_all();
+            if (!active && in_flight_callbacks == 0)
+                cv.notify_all();
         }
 
         bool IsActive() const noexcept {
@@ -353,33 +335,31 @@ private:
         }
     };
 
-    std::size_t FindIndex(const FlowKey& incoming_flow) const noexcept;
+    std::size_t FindIndex(const FlowKey &incoming_flow) const noexcept;
     /// Max send payload allowed by local config and the TX pool capacity,
     /// independent of the peer's advertised MSS. @p fixed_header_bytes is
     /// IP+TCP header weight for the family (40 IPv4 / 60 IPv6).
     std::uint16_t LocalSendCap(std::uint16_t fixed_header_bytes) const noexcept;
-    std::size_t ListenerHalfOpenCount(const FlowKey& incoming_flow) const noexcept;
-    TcpResponse BuildSynAck(Pcb& pcb, std::uint64_t now_ms) noexcept;
-    TcpResponse BuildAck(Pcb& pcb, std::uint64_t now_ms) noexcept;
-    static TcpResponse BuildReset(const TcpSegmentView& segment) noexcept;
-    bool ScheduleRetry(Pcb& pcb, std::uint64_t deadline_ms) noexcept;
-    void OnRetry(const FlowKey& incoming_flow, std::uint64_t generation) noexcept;
-    bool ScheduleDelayedAck(Pcb& pcb, std::uint64_t now_ms) noexcept;
-    void OnDelayedAck(const FlowKey& incoming_flow, std::uint64_t generation) noexcept;
-    void OnTimeWaitExpired(const FlowKey& incoming_flow, std::uint64_t generation) noexcept;
+    std::size_t ListenerHalfOpenCount(const FlowKey &incoming_flow) const noexcept;
+    TcpResponse BuildSynAck(Pcb &pcb, std::uint64_t now_ms) noexcept;
+    TcpResponse BuildAck(Pcb &pcb, std::uint64_t now_ms) noexcept;
+    static TcpResponse BuildReset(const TcpSegmentView &segment) noexcept;
+    bool ScheduleRetry(Pcb &pcb, std::uint64_t deadline_ms) noexcept;
+    void OnRetry(const FlowKey &incoming_flow, std::uint64_t generation) noexcept;
+    bool ScheduleDelayedAck(Pcb &pcb, std::uint64_t now_ms) noexcept;
+    void OnDelayedAck(const FlowKey &incoming_flow, std::uint64_t generation) noexcept;
+    void OnTimeWaitExpired(const FlowKey &incoming_flow, std::uint64_t generation) noexcept;
     bool ScheduleTimeWait(std::size_t index, std::uint64_t now_ms) noexcept;
-    void BindSessionCallbacks(Pcb& pcb) noexcept;
-    TcpHandshakeResult ProcessEstablished(Pcb& pcb,
-                                          const TcpSegmentView& segment,
-                                          std::uint64_t now_ms) noexcept;
-    TcpDeliveryResult DrainSession(Pcb& pcb) noexcept;
+    void BindSessionCallbacks(Pcb &pcb) noexcept;
+    TcpHandshakeResult ProcessEstablished(Pcb &pcb, const TcpSegmentView &segment, std::uint64_t now_ms) noexcept;
+    TcpDeliveryResult DrainSession(Pcb &pcb) noexcept;
     void RemoveAt(std::size_t index) noexcept;
-    void QueueResponse(const TcpResponse& response) noexcept;
+    void QueueResponse(const TcpResponse &response) noexcept;
     void EmitFlowEvent(FlowId flow_id, FlowEventType type) noexcept;
 
     TcpHandshakeConfig config_;
     TcpIsnGenerator isn_;
-    TimerWheel& timers_;
+    TimerWheel &timers_;
     std::vector<Pcb> pcbs_;
     std::vector<TcpResponse> pending_responses_;
     std::shared_ptr<CallbackGate> callback_gate_;
@@ -388,9 +368,9 @@ private:
     std::size_t receive_memory_bytes_ = 0;
     std::uint64_t next_flow_id_ = 1;
     std::uint64_t generation_epoch_ = 1;
-    ISessionFactory* session_factory_ = nullptr;
+    ISessionFactory *session_factory_ = nullptr;
     PostMessageFn post_message_fn_;
-    IEventSink* event_sink_ = nullptr;
+    IEventSink *event_sink_ = nullptr;
     bool shutdown_ = false;
 };
 

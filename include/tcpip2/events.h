@@ -73,14 +73,14 @@ struct MetricSnapshot {
  * (different shards may call concurrently) and must not block.
  */
 class IEventSink {
-public:
+  public:
     virtual ~IEventSink() = default;
 
     /** Called when a flow transitions state (established/closed/reset). */
-    virtual void OnFlowEvent(const FlowEvent& event) noexcept = 0;
+    virtual void OnFlowEvent(const FlowEvent &event) noexcept = 0;
 
     /** Called periodically with a shard metric snapshot. */
-    virtual void OnMetricSnapshot(const MetricSnapshot& snapshot) noexcept = 0;
+    virtual void OnMetricSnapshot(const MetricSnapshot &snapshot) noexcept = 0;
 };
 
 } // namespace tcpip2

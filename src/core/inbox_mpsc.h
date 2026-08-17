@@ -28,33 +28,33 @@
 namespace tcpip2 {
 
 class InboxMpsc {
-public:
-    explicit InboxMpsc(std::size_t capacity) noexcept
-        : capacity_(capacity) {}
+  public:
+    explicit InboxMpsc(std::size_t capacity) noexcept : capacity_(capacity) {}
 
-    bool Push(ShardMessage&& msg) noexcept {
+    bool Push(ShardMessage &&msg) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (queue_.size() >= capacity_) return false;
+        if (queue_.size() >= capacity_)
+            return false;
         queue_.push_back(std::move(msg));
         cv_.notify_one();
         return true;
     }
 
-    bool Pop(ShardMessage& out) noexcept {
+    bool Pop(ShardMessage &out) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (queue_.empty()) return false;
+        if (queue_.empty())
+            return false;
         out = std::move(queue_.front());
         queue_.pop_front();
         return true;
     }
 
-    void Wake() noexcept {
-        cv_.notify_all();
-    }
+    void Wake() noexcept { cv_.notify_all(); }
 
     bool Wait(std::uint64_t timeout_ms) noexcept {
         std::unique_lock<std::mutex> lock(mutex_);
-        if (!queue_.empty()) return true;
+        if (!queue_.empty())
+            return true;
         cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms));
         return !queue_.empty();
     }
@@ -64,20 +64,19 @@ public:
         return queue_.size();
     }
 
-    std::size_t Capacity() const noexcept {
-        return capacity_;
-    }
+    std::size_t Capacity() const noexcept { return capacity_; }
 
     std::size_t Count(ShardMessageType type) const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         std::size_t count = 0;
-        for (const ShardMessage& msg : queue_) {
-            if (msg.type == type) ++count;
+        for (const ShardMessage &msg : queue_) {
+            if (msg.type == type)
+                ++count;
         }
         return count;
     }
 
-private:
+  private:
     std::size_t capacity_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;

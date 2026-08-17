@@ -11,14 +11,10 @@
 using namespace tcpip2;
 
 TCPIP2_TEST(ShardMessageIsMoveOnly) {
-    static_assert(std::is_move_constructible_v<ShardMessage>,
-                  "ShardMessage must be move constructible");
-    static_assert(!std::is_copy_constructible_v<ShardMessage>,
-                  "ShardMessage must be move-only");
-    static_assert(!std::is_copy_assignable_v<ShardMessage>,
-                  "ShardMessage must be move-only");
-    static_assert(std::is_nothrow_move_constructible_v<ShardMessage>,
-                  "ShardMessage move construction must not throw");
+    static_assert(std::is_move_constructible_v<ShardMessage>, "ShardMessage must be move constructible");
+    static_assert(!std::is_copy_constructible_v<ShardMessage>, "ShardMessage must be move-only");
+    static_assert(!std::is_copy_assignable_v<ShardMessage>, "ShardMessage must be move-only");
+    static_assert(std::is_nothrow_move_constructible_v<ShardMessage>, "ShardMessage move construction must not throw");
 
     PktBufferPool pool(2, 256);
     ShardMessage a;

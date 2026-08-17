@@ -27,13 +27,13 @@ TCPIP2_TEST(AllocateReturnsLease) {
 TCPIP2_TEST(WriteAndResize) {
     PktBufferPool pool(4, 512);
     BufferLease lease = pool.Allocate();
-    std::uint8_t* d = lease.Data();
+    std::uint8_t *d = lease.Data();
     for (std::size_t i = 0; i < 128; ++i) {
         d[i] = static_cast<std::uint8_t>(i);
     }
     lease.Resize(128);
     TCPIP2_EXPECT_EQ(std::size_t{128}, lease.Size());
-    const std::uint8_t* cd = lease.Data();
+    const std::uint8_t *cd = lease.Data();
     for (std::size_t i = 0; i < 128; ++i) {
         TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(i), cd[i]);
     }
@@ -64,7 +64,7 @@ TCPIP2_TEST(MoveOnlyLease) {
     BufferLease b = std::move(a);
     TCPIP2_EXPECT_FALSE(static_cast<bool>(a));
     TCPIP2_EXPECT_TRUE(static_cast<bool>(b));
-    BufferLease& b_ref = b;
+    BufferLease &b_ref = b;
     b = std::move(b_ref);
     TCPIP2_EXPECT_TRUE(static_cast<bool>(b));
     b.Reset();
@@ -77,9 +77,7 @@ TCPIP2_TEST(CrossThreadRelease) {
     {
         BufferLease lease = pool.Allocate();
         TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
-        std::thread t([lease = std::move(lease)]() mutable {
-            lease.Reset();
-        });
+        std::thread t([lease = std::move(lease)]() mutable { lease.Reset(); });
         t.join();
         // Released on a foreign thread: parked in the owner return queue.
         TCPIP2_EXPECT_EQ(std::size_t{1}, pool.OutstandingCount());
@@ -94,7 +92,7 @@ TCPIP2_TEST(DoubleReleaseAborts) {
     PktBufferPool pool(4, 512);
     BufferLease lease = pool.Allocate();
     TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
-    PktBuffer* pkt = lease.Get();
+    PktBuffer *pkt = lease.Get();
     TCPIP2_EXPECT_DEATH(pool.ReturnBuffer(pkt); pool.ReturnBuffer(pkt););
     lease.Reset();
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
@@ -198,7 +196,7 @@ TCPIP2_TEST(AllocateLazilyDrainsReturnQueue) {
 TCPIP2_TEST(DoubleReleaseWhileQueuedAborts) {
     PktBufferPool pool(4, 512);
     BufferLease lease = pool.Allocate();
-    PktBuffer* pkt = lease.Get();
+    PktBuffer *pkt = lease.Get();
     TCPIP2_EXPECT_TRUE(pkt != nullptr);
     std::thread t([lease = std::move(lease)]() mutable { lease.Reset(); });
     t.join();

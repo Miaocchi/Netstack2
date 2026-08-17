@@ -271,7 +271,8 @@ TCPIP2_TEST(MpscMultipleProducers) {
         }
     }
 
-    for (auto& t : producers) t.join();
+    for (auto &t : producers)
+        t.join();
     TCPIP2_EXPECT_EQ(num_producers * per_producer, received);
 }
 

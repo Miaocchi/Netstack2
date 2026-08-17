@@ -28,12 +28,11 @@ namespace {
 // Raw packet construction helpers for ICMP (PacketBuilder has no ICMP support).
 // ---------------------------------------------------------------------------
 
-std::uint16_t InlineChecksum(const std::uint8_t* data, std::size_t len, std::uint32_t seed) {
+std::uint16_t InlineChecksum(const std::uint8_t *data, std::size_t len, std::uint32_t seed) {
     std::uint32_t acc = seed;
     std::size_t i = 0;
     for (; i + 1 < len; i += 2) {
-        acc += static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(data[i]) << 8) | data[i + 1]);
+        acc += static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[i]) << 8) | data[i + 1]);
     }
     if (i < len) {
         acc += static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[i]) << 8);
@@ -44,12 +43,12 @@ std::uint16_t InlineChecksum(const std::uint8_t* data, std::size_t len, std::uin
     return static_cast<std::uint16_t>(~acc & 0xFFFFu);
 }
 
-void AppendU16(std::vector<std::uint8_t>& v, std::uint16_t val) {
+void AppendU16(std::vector<std::uint8_t> &v, std::uint16_t val) {
     v.push_back(static_cast<std::uint8_t>((val >> 8) & 0xFFu));
     v.push_back(static_cast<std::uint8_t>(val & 0xFFu));
 }
 
-void AppendU32(std::vector<std::uint8_t>& v, std::uint32_t val) {
+void AppendU32(std::vector<std::uint8_t> &v, std::uint32_t val) {
     v.push_back(static_cast<std::uint8_t>((val >> 24) & 0xFFu));
     v.push_back(static_cast<std::uint8_t>((val >> 16) & 0xFFu));
     v.push_back(static_cast<std::uint8_t>((val >> 8) & 0xFFu));
@@ -58,13 +57,12 @@ void AppendU32(std::vector<std::uint8_t>& v, std::uint32_t val) {
 
 std::uint64_t NowMs() {
     return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count());
 }
 
 /// Allocate a lease, copy @p bytes into it, and inject on queue 0.
-void Inject(NullPacketIo& io, PktBufferPool& pool,
-            const std::vector<std::uint8_t>& bytes) {
+void Inject(NullPacketIo &io, PktBufferPool &pool, const std::vector<std::uint8_t> &bytes) {
     BufferLease lease = pool.Allocate();
     TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
     std::memcpy(lease.Data(), bytes.data(), bytes.size());
@@ -73,9 +71,10 @@ void Inject(NullPacketIo& io, PktBufferPool& pool,
 }
 
 /// Poll until the shard reports @p want half-open TCP connections.
-bool WaitForHalfOpen(StackShard& shard, std::size_t want) {
+bool WaitForHalfOpen(StackShard &shard, std::size_t want) {
     for (int i = 0; i < 200; ++i) {
-        if (shard.TcpHalfOpenCount() == want) return true;
+        if (shard.TcpHalfOpenCount() == want)
+            return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     return shard.TcpHalfOpenCount() == want;
@@ -92,11 +91,10 @@ bool WaitForHalfOpen(StackShard& shard, std::size_t want) {
 /// @param quoted_len length of the quoted payload (min 28 = IPv4 header + 8
 ///                   transport bytes for flow attribution; shorter values test
 ///                   robustness)
-std::vector<std::uint8_t> BuildIpv4IcmpFragNeeded(
-    std::uint32_t icmp_src, std::uint32_t icmp_dst,
-    std::uint16_t mtu, std::uint32_t orig_src, std::uint32_t orig_dst,
-    std::uint16_t orig_src_port, std::uint16_t orig_dst_port,
-    std::size_t quoted_len = 28) {
+std::vector<std::uint8_t> BuildIpv4IcmpFragNeeded(std::uint32_t icmp_src, std::uint32_t icmp_dst, std::uint16_t mtu,
+                                                  std::uint32_t orig_src, std::uint32_t orig_dst,
+                                                  std::uint16_t orig_src_port, std::uint16_t orig_dst_port,
+                                                  std::size_t quoted_len = 28) {
 
     // Build the quoted payload: IPv4 header (20 bytes) + the first 8 bytes of
     // the original TCP header (RFC 1191 requires at least IP header + 8).
@@ -104,18 +102,18 @@ std::vector<std::uint8_t> BuildIpv4IcmpFragNeeded(
     quoted.reserve(quoted_len);
     quoted.push_back(0x45);
     quoted.push_back(0x00);
-    AppendU16(quoted, static_cast<std::uint16_t>(28));  // total_length
-    AppendU16(quoted, 0x1234);                           // identification
-    AppendU16(quoted, 0x4000);                           // DF set, no fragment
-    quoted.push_back(64);                                 // TTL
-    quoted.push_back(0x06);                               // protocol = TCP
-    AppendU16(quoted, 0);                                 // checksum (not validated)
+    AppendU16(quoted, static_cast<std::uint16_t>(28)); // total_length
+    AppendU16(quoted, 0x1234);                         // identification
+    AppendU16(quoted, 0x4000);                         // DF set, no fragment
+    quoted.push_back(64);                              // TTL
+    quoted.push_back(0x06);                            // protocol = TCP
+    AppendU16(quoted, 0);                              // checksum (not validated)
     AppendU32(quoted, orig_src);
     AppendU32(quoted, orig_dst);
     // First 8 bytes of the original TCP header: ports + start of seq.
     AppendU16(quoted, orig_src_port);
     AppendU16(quoted, orig_dst_port);
-    AppendU32(quoted, 0);                                 // seq (unused here)
+    AppendU32(quoted, 0); // seq (unused here)
     while (quoted.size() < quoted_len) {
         quoted.push_back(0);
     }
@@ -125,12 +123,13 @@ std::vector<std::uint8_t> BuildIpv4IcmpFragNeeded(
 
     // Build ICMP message: type(1) + code(1) + checksum(2) + unused(2) + mtu(2) + quoted
     std::vector<std::uint8_t> icmp;
-    icmp.push_back(3);   // type = Destination Unreachable
-    icmp.push_back(4);   // code = Fragmentation Needed
-    AppendU16(icmp, 0);  // checksum placeholder
-    AppendU16(icmp, 0);  // unused
+    icmp.push_back(3);  // type = Destination Unreachable
+    icmp.push_back(4);  // code = Fragmentation Needed
+    AppendU16(icmp, 0); // checksum placeholder
+    AppendU16(icmp, 0); // unused
     AppendU16(icmp, mtu);
-    for (std::uint8_t b : quoted) icmp.push_back(b);
+    for (std::uint8_t b : quoted)
+        icmp.push_back(b);
 
     // Compute ICMP checksum
     const std::uint16_t cksum = InlineChecksum(icmp.data(), icmp.size(), 0);
@@ -144,15 +143,16 @@ std::vector<std::uint8_t> BuildIpv4IcmpFragNeeded(
     pkt.push_back(0x45);
     pkt.push_back(0x00);
     AppendU16(pkt, static_cast<std::uint16_t>(total_len));
-    AppendU16(pkt, 0);           // identification
-    AppendU16(pkt, 0x0000);      // flags + frag offset
-    pkt.push_back(64);           // TTL
-    pkt.push_back(0x01);         // protocol = ICMP
-    AppendU16(pkt, 0);           // checksum placeholder
+    AppendU16(pkt, 0);      // identification
+    AppendU16(pkt, 0x0000); // flags + frag offset
+    pkt.push_back(64);      // TTL
+    pkt.push_back(0x01);    // protocol = ICMP
+    AppendU16(pkt, 0);      // checksum placeholder
     AppendU32(pkt, icmp_src);
     AppendU32(pkt, icmp_dst);
 
-    for (std::uint8_t b : icmp) pkt.push_back(b);
+    for (std::uint8_t b : icmp)
+        pkt.push_back(b);
 
     // Compute IPv4 header checksum
     const std::uint16_t ip_cksum = InlineChecksum(pkt.data(), 20, 0);
@@ -170,50 +170,50 @@ std::vector<std::uint8_t> BuildIpv4IcmpFragNeeded(
 /// @param orig_dst    destination IPv6 of the quoted packet (PMTU cache key)
 /// @param orig_src_port our port on the original packet
 /// @param orig_dst_port the peer's port on the original packet
-std::vector<std::uint8_t> BuildIpv6IcmpPacketTooBig(
-    const std::uint8_t icmp6_src[16], const std::uint8_t icmp6_dst[16],
-    std::uint32_t mtu, const std::uint8_t orig_src[16],
-    const std::uint8_t orig_dst[16], std::uint16_t orig_src_port,
-    std::uint16_t orig_dst_port) {
+std::vector<std::uint8_t> BuildIpv6IcmpPacketTooBig(const std::uint8_t icmp6_src[16], const std::uint8_t icmp6_dst[16],
+                                                    std::uint32_t mtu, const std::uint8_t orig_src[16],
+                                                    const std::uint8_t orig_dst[16], std::uint16_t orig_src_port,
+                                                    std::uint16_t orig_dst_port) {
 
     // Build the quoted payload: IPv6 fixed header (40 bytes) + the first 8
     // bytes of the original TCP header (needed for flow attribution).
     std::vector<std::uint8_t> quoted;
     quoted.reserve(48);
-    quoted.push_back(0x60);  // version 6
+    quoted.push_back(0x60); // version 6
     quoted.push_back(0x00);
     quoted.push_back(0x00);
-    quoted.push_back(0x00);  // flow label
-    AppendU16(quoted, 8);    // payload length (first 8 transport bytes)
-    quoted.push_back(0x06);  // next header = TCP
-    quoted.push_back(64);    // hop limit
-    for (int i = 0; i < 16; ++i) quoted.push_back(orig_src[i]);
-    for (int i = 0; i < 16; ++i) quoted.push_back(orig_dst[i]);
+    quoted.push_back(0x00); // flow label
+    AppendU16(quoted, 8);   // payload length (first 8 transport bytes)
+    quoted.push_back(0x06); // next header = TCP
+    quoted.push_back(64);   // hop limit
+    for (int i = 0; i < 16; ++i)
+        quoted.push_back(orig_src[i]);
+    for (int i = 0; i < 16; ++i)
+        quoted.push_back(orig_dst[i]);
     AppendU16(quoted, orig_src_port);
     AppendU16(quoted, orig_dst_port);
-    AppendU32(quoted, 0);    // seq (unused here)
+    AppendU32(quoted, 0); // seq (unused here)
 
     // Build ICMPv6 message: type(1) + code(1) + checksum(2) + mtu(4) + quoted
     std::vector<std::uint8_t> icmp;
-    icmp.push_back(2);   // type = Packet Too Big
-    icmp.push_back(0);   // code = 0
-    AppendU16(icmp, 0);  // checksum placeholder
+    icmp.push_back(2);  // type = Packet Too Big
+    icmp.push_back(0);  // code = 0
+    AppendU16(icmp, 0); // checksum placeholder
     AppendU32(icmp, mtu);
-    for (std::uint8_t b : quoted) icmp.push_back(b);
+    for (std::uint8_t b : quoted)
+        icmp.push_back(b);
 
     // Compute ICMPv6 checksum with pseudo-header
     std::uint32_t seed = 0;
     for (int i = 0; i < 16; i += 2) {
-        seed += static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(icmp6_src[i]) << 8) | icmp6_src[i + 1]);
+        seed += static_cast<std::uint16_t>((static_cast<std::uint16_t>(icmp6_src[i]) << 8) | icmp6_src[i + 1]);
     }
     for (int i = 0; i < 16; i += 2) {
-        seed += static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(icmp6_dst[i]) << 8) | icmp6_dst[i + 1]);
+        seed += static_cast<std::uint16_t>((static_cast<std::uint16_t>(icmp6_dst[i]) << 8) | icmp6_dst[i + 1]);
     }
     seed += static_cast<std::uint16_t>((icmp.size() >> 16) & 0xFFFF);
     seed += static_cast<std::uint16_t>(icmp.size() & 0xFFFF);
-    seed += 58;  // protocol = ICMPv6
+    seed += 58; // protocol = ICMPv6
 
     const std::uint16_t cksum = InlineChecksum(icmp.data(), icmp.size(), seed);
     icmp[2] = static_cast<std::uint8_t>((cksum >> 8) & 0xFFu);
@@ -228,19 +228,22 @@ std::vector<std::uint8_t> BuildIpv6IcmpPacketTooBig(
     pkt.push_back(0x00);
     pkt.push_back(0x00);
     AppendU16(pkt, static_cast<std::uint16_t>(payload_len));
-    pkt.push_back(58);  // next header = ICMPv6
-    pkt.push_back(64);  // hop limit
-    for (int i = 0; i < 16; ++i) pkt.push_back(icmp6_src[i]);
-    for (int i = 0; i < 16; ++i) pkt.push_back(icmp6_dst[i]);
+    pkt.push_back(58); // next header = ICMPv6
+    pkt.push_back(64); // hop limit
+    for (int i = 0; i < 16; ++i)
+        pkt.push_back(icmp6_src[i]);
+    for (int i = 0; i < 16; ++i)
+        pkt.push_back(icmp6_dst[i]);
 
-    for (std::uint8_t b : icmp) pkt.push_back(b);
+    for (std::uint8_t b : icmp)
+        pkt.push_back(b);
 
     return pkt;
 }
 
 /// Build a minimal IPv4 UDP packet (non-TCP, non-ICMP) for the drop test.
 std::vector<std::uint8_t> BuildIpv4Udp(std::uint32_t src_ip, std::uint32_t dst_ip) {
-    const std::size_t udp_len = 8;  // UDP header only, no payload
+    const std::size_t udp_len = 8; // UDP header only, no payload
     const std::size_t total_len = 20 + udp_len;
 
     std::vector<std::uint8_t> pkt;
@@ -251,16 +254,16 @@ std::vector<std::uint8_t> BuildIpv4Udp(std::uint32_t src_ip, std::uint32_t dst_i
     AppendU16(pkt, 0);
     AppendU16(pkt, 0x0000);
     pkt.push_back(64);
-    pkt.push_back(0x11);  // protocol = UDP (17)
-    AppendU16(pkt, 0);    // checksum placeholder
+    pkt.push_back(0x11); // protocol = UDP (17)
+    AppendU16(pkt, 0);   // checksum placeholder
     AppendU32(pkt, src_ip);
     AppendU32(pkt, dst_ip);
 
     // UDP header
-    AppendU16(pkt, 12345);  // src port
-    AppendU16(pkt, 53);     // dst port
+    AppendU16(pkt, 12345); // src port
+    AppendU16(pkt, 53);    // dst port
     AppendU16(pkt, static_cast<std::uint16_t>(udp_len));
-    AppendU16(pkt, 0);      // checksum (0 = not computed)
+    AppendU16(pkt, 0); // checksum (0 = not computed)
 
     // IPv4 header checksum
     pkt[10] = 0;
@@ -281,10 +284,8 @@ std::vector<std::uint8_t> BuildIpv4Udp(std::uint32_t src_ip, std::uint32_t dst_i
 namespace {
 
 /// Build an IPv4 ICMP Echo Request with a valid ICMP + IP checksum.
-std::vector<std::uint8_t> BuildIpv4IcmpEcho(
-    std::uint32_t src, std::uint32_t dst,
-    std::uint16_t id, std::uint16_t seq,
-    const std::vector<std::uint8_t>& payload) {
+std::vector<std::uint8_t> BuildIpv4IcmpEcho(std::uint32_t src, std::uint32_t dst, std::uint16_t id, std::uint16_t seq,
+                                            const std::vector<std::uint8_t> &payload) {
 
     std::vector<std::uint8_t> icmp;
     icmp.push_back(Icmpv4Type::Echo);
@@ -292,7 +293,8 @@ std::vector<std::uint8_t> BuildIpv4IcmpEcho(
     AppendU16(icmp, 0);
     AppendU16(icmp, id);
     AppendU16(icmp, seq);
-    for (std::uint8_t b : payload) icmp.push_back(b);
+    for (std::uint8_t b : payload)
+        icmp.push_back(b);
     const std::uint16_t cksum = InlineChecksum(icmp.data(), icmp.size(), 0);
     icmp[2] = static_cast<std::uint8_t>((cksum >> 8) & 0xFFu);
     icmp[3] = static_cast<std::uint8_t>(cksum & 0xFFu);
@@ -306,11 +308,12 @@ std::vector<std::uint8_t> BuildIpv4IcmpEcho(
     AppendU16(pkt, 0);
     AppendU16(pkt, 0x0000);
     pkt.push_back(64);
-    pkt.push_back(0x01);  // protocol = ICMP
-    AppendU16(pkt, 0);    // checksum placeholder
+    pkt.push_back(0x01); // protocol = ICMP
+    AppendU16(pkt, 0);   // checksum placeholder
     AppendU32(pkt, src);
     AppendU32(pkt, dst);
-    for (std::uint8_t b : icmp) pkt.push_back(b);
+    for (std::uint8_t b : icmp)
+        pkt.push_back(b);
     const std::uint16_t ip_cksum = InlineChecksum(pkt.data(), 20, 0);
     pkt[10] = static_cast<std::uint8_t>((ip_cksum >> 8) & 0xFFu);
     pkt[11] = static_cast<std::uint8_t>(ip_cksum & 0xFFu);
@@ -318,10 +321,9 @@ std::vector<std::uint8_t> BuildIpv4IcmpEcho(
 }
 
 /// Build an IPv6 ICMPv6 Echo Request with a valid ICMPv6 checksum.
-std::vector<std::uint8_t> BuildIpv6IcmpEchoRequest(
-    const std::uint8_t src[16], const std::uint8_t dst[16],
-    std::uint16_t id, std::uint16_t seq,
-    const std::vector<std::uint8_t>& payload) {
+std::vector<std::uint8_t> BuildIpv6IcmpEchoRequest(const std::uint8_t src[16], const std::uint8_t dst[16],
+                                                   std::uint16_t id, std::uint16_t seq,
+                                                   const std::vector<std::uint8_t> &payload) {
 
     std::vector<std::uint8_t> icmp;
     icmp.push_back(Icmpv6Type::EchoRequest);
@@ -329,16 +331,15 @@ std::vector<std::uint8_t> BuildIpv6IcmpEchoRequest(
     AppendU16(icmp, 0);
     AppendU16(icmp, id);
     AppendU16(icmp, seq);
-    for (std::uint8_t b : payload) icmp.push_back(b);
+    for (std::uint8_t b : payload)
+        icmp.push_back(b);
 
     std::uint32_t seed = 0;
     for (int i = 0; i < 16; i += 2) {
-        seed += static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(src[i]) << 8) | src[i + 1]);
+        seed += static_cast<std::uint16_t>((static_cast<std::uint16_t>(src[i]) << 8) | src[i + 1]);
     }
     for (int i = 0; i < 16; i += 2) {
-        seed += static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(dst[i]) << 8) | dst[i + 1]);
+        seed += static_cast<std::uint16_t>((static_cast<std::uint16_t>(dst[i]) << 8) | dst[i + 1]);
     }
     seed += static_cast<std::uint16_t>((icmp.size() >> 16) & 0xFFFF);
     seed += static_cast<std::uint16_t>(icmp.size() & 0xFFFF);
@@ -354,11 +355,14 @@ std::vector<std::uint8_t> BuildIpv6IcmpEchoRequest(
     pkt.push_back(0x00);
     pkt.push_back(0x00);
     AppendU16(pkt, static_cast<std::uint16_t>(icmp.size()));
-    pkt.push_back(58);  // next header = ICMPv6
+    pkt.push_back(58); // next header = ICMPv6
     pkt.push_back(64);
-    for (int i = 0; i < 16; ++i) pkt.push_back(src[i]);
-    for (int i = 0; i < 16; ++i) pkt.push_back(dst[i]);
-    for (std::uint8_t b : icmp) pkt.push_back(b);
+    for (int i = 0; i < 16; ++i)
+        pkt.push_back(src[i]);
+    for (int i = 0; i < 16; ++i)
+        pkt.push_back(dst[i]);
+    for (std::uint8_t b : icmp)
+        pkt.push_back(b);
     return pkt;
 }
 
@@ -377,17 +381,16 @@ TCPIP2_TEST(ShardIcmpv4EchoRequestGetsReply) {
     TCPIP2_EXPECT_TRUE(shard.Start());
 
     const std::vector<std::uint8_t> payload = {0x11, 0x22, 0x33, 0x44};
-    const std::vector<std::uint8_t> pkt = BuildIpv4IcmpEcho(
-        0x0a000001u, 0x0a000002u, 0x1234, 7, payload);
+    const std::vector<std::uint8_t> pkt = BuildIpv4IcmpEcho(0x0a000001u, 0x0a000002u, 0x1234, 7, payload);
     Inject(io, pool, pkt);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     shard.Stop();
 
-    const auto& egress = io.Egress(0);
+    const auto &egress = io.Egress(0);
     TCPIP2_EXPECT_EQ(std::size_t{1}, egress.size());
     if (!egress.empty()) {
-        const std::vector<std::uint8_t>& r = egress[0];
+        const std::vector<std::uint8_t> &r = egress[0];
         TCPIP2_EXPECT_TRUE(r.size() >= 28);
         if (r.size() >= 28) {
             // Addresses swapped: reply is 10.0.0.2 -> 10.0.0.1.
@@ -395,8 +398,8 @@ TCPIP2_TEST(ShardIcmpv4EchoRequestGetsReply) {
             TCPIP2_EXPECT_EQ(std::uint8_t{0x02}, r[15]);
             TCPIP2_EXPECT_EQ(std::uint8_t{0x0a}, r[16]);
             TCPIP2_EXPECT_EQ(std::uint8_t{0x01}, r[19]);
-            TCPIP2_EXPECT_EQ(std::uint8_t{0x01}, r[9]);   // protocol ICMP
-            TCPIP2_EXPECT_EQ(std::uint8_t{64}, r[8]);      // refreshed TTL
+            TCPIP2_EXPECT_EQ(std::uint8_t{0x01}, r[9]); // protocol ICMP
+            TCPIP2_EXPECT_EQ(std::uint8_t{64}, r[8]);   // refreshed TTL
             // Echo Reply: type 0, code 0, id/seq preserved.
             TCPIP2_EXPECT_EQ(std::uint8_t{0}, r[20]);
             TCPIP2_EXPECT_EQ(std::uint8_t{0}, r[21]);
@@ -409,8 +412,7 @@ TCPIP2_TEST(ShardIcmpv4EchoRequestGetsReply) {
             TCPIP2_EXPECT_EQ(std::uint8_t{0x11}, r[28]);
             // Checksums valid (folded one's complement over the field == 0).
             TCPIP2_EXPECT_EQ(std::uint16_t{0}, InlineChecksum(r.data(), 20, 0));
-            TCPIP2_EXPECT_EQ(std::uint16_t{0},
-                             InlineChecksum(r.data() + 20, r.size() - 20, 0));
+            TCPIP2_EXPECT_EQ(std::uint16_t{0}, InlineChecksum(r.data() + 20, r.size() - 20, 0));
         }
     }
 
@@ -423,10 +425,8 @@ TCPIP2_TEST(ShardIcmpv4EchoRequestGetsReply) {
 // ---------------------------------------------------------------------------
 
 TCPIP2_TEST(ShardIcmpv6EchoRequestGetsReply) {
-    const std::uint8_t src[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-    const std::uint8_t dst[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+    const std::uint8_t src[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t dst[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
 
     NullPacketIo io(1);
     PktBufferPool pool(16, 2048);
@@ -436,23 +436,22 @@ TCPIP2_TEST(ShardIcmpv6EchoRequestGetsReply) {
     TCPIP2_EXPECT_TRUE(shard.Start());
 
     const std::vector<std::uint8_t> payload = {0xAA, 0xBB};
-    const std::vector<std::uint8_t> pkt = BuildIpv6IcmpEchoRequest(
-        src, dst, 0xBEEF, 3, payload);
+    const std::vector<std::uint8_t> pkt = BuildIpv6IcmpEchoRequest(src, dst, 0xBEEF, 3, payload);
     Inject(io, pool, pkt);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     shard.Stop();
 
-    const auto& egress = io.Egress(0);
+    const auto &egress = io.Egress(0);
     TCPIP2_EXPECT_EQ(std::size_t{1}, egress.size());
     if (!egress.empty()) {
-        const std::vector<std::uint8_t>& r = egress[0];
+        const std::vector<std::uint8_t> &r = egress[0];
         TCPIP2_EXPECT_TRUE(r.size() >= 48);
         if (r.size() >= 48) {
             // Addresses swapped: reply is dst -> src.
             TCPIP2_EXPECT_EQ(std::uint8_t{2}, r[8 + 15]);
             TCPIP2_EXPECT_EQ(std::uint8_t{1}, r[24 + 15]);
-            TCPIP2_EXPECT_EQ(std::uint8_t{64}, r[7]);     // refreshed hop limit
+            TCPIP2_EXPECT_EQ(std::uint8_t{64}, r[7]); // refreshed hop limit
             // Echo Reply: type 129, code 0, id/seq preserved.
             TCPIP2_EXPECT_EQ(std::uint8_t{129}, r[40]);
             TCPIP2_EXPECT_EQ(std::uint8_t{0}, r[41]);
@@ -464,19 +463,16 @@ TCPIP2_TEST(ShardIcmpv6EchoRequestGetsReply) {
             // ICMPv6 checksum valid under the swapped pseudo-header.
             std::uint32_t seed = 0;
             for (int i = 0; i < 16; i += 2) {
-                seed += static_cast<std::uint16_t>(
-                    (static_cast<std::uint16_t>(r[8 + i]) << 8) | r[8 + i + 1]);
+                seed += static_cast<std::uint16_t>((static_cast<std::uint16_t>(r[8 + i]) << 8) | r[8 + i + 1]);
             }
             for (int i = 0; i < 16; i += 2) {
-                seed += static_cast<std::uint16_t>(
-                    (static_cast<std::uint16_t>(r[24 + i]) << 8) | r[24 + i + 1]);
+                seed += static_cast<std::uint16_t>((static_cast<std::uint16_t>(r[24 + i]) << 8) | r[24 + i + 1]);
             }
             const std::size_t icmp_len = r.size() - 40;
             seed += static_cast<std::uint16_t>((icmp_len >> 16) & 0xFFFF);
             seed += static_cast<std::uint16_t>(icmp_len & 0xFFFF);
             seed += 58;
-            TCPIP2_EXPECT_EQ(std::uint16_t{0},
-                             InlineChecksum(r.data() + 40, icmp_len, seed));
+            TCPIP2_EXPECT_EQ(std::uint16_t{0}, InlineChecksum(r.data() + 40, icmp_len, seed));
         }
     }
 
@@ -497,8 +493,7 @@ TCPIP2_TEST(ShardIcmpv4MulticastEchoGetsNoReply) {
     TCPIP2_EXPECT_TRUE(shard.Start());
 
     // Destination 224.0.0.1 (all-hosts multicast) must not be answered.
-    const std::vector<std::uint8_t> pkt = BuildIpv4IcmpEcho(
-        0x0a000001u, 0xe0000001u, 1, 1, {0x01});
+    const std::vector<std::uint8_t> pkt = BuildIpv4IcmpEcho(0x0a000001u, 0xe0000001u, 1, 1, {0x01});
     Inject(io, pool, pkt);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -511,8 +506,8 @@ TCPIP2_TEST(ShardIcmpv4MulticastEchoGetsNoReply) {
 }
 
 TCPIP2_TEST(ShardIcmpv4FragNeededUpdatesPmtu) {
-    const std::uint32_t us = 0x0a000002u;    // 10.0.0.2
-    const std::uint32_t peer = 0x01020304u;  // 1.2.3.4
+    const std::uint32_t us = 0x0a000002u;   // 10.0.0.2
+    const std::uint32_t peer = 0x01020304u; // 1.2.3.4
     const std::uint16_t our_port = 443;
     const std::uint16_t peer_port = 40000;
 
@@ -524,14 +519,13 @@ TCPIP2_TEST(ShardIcmpv4FragNeededUpdatesPmtu) {
     TCPIP2_EXPECT_TRUE(shard.Start());
 
     // Establish a half-open flow from the peer so the ICMP can be attributed.
-    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
-        peer, us, peer_port, our_port, 1000, 0, test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> syn =
+        test::PacketBuilder::BuildIpv4Tcp(peer, us, peer_port, our_port, 1000, 0, test::TcpFlags::Syn, {});
     Inject(io, pool, syn);
     TCPIP2_EXPECT_TRUE(WaitForHalfOpen(shard, 1));
 
     // FragNeeded quoting our original packet (us -> peer, ports 443->40000).
-    const std::vector<std::uint8_t> pkt = BuildIpv4IcmpFragNeeded(
-        0x0a000099u, us, 1200, us, peer, our_port, peer_port);
+    const std::vector<std::uint8_t> pkt = BuildIpv4IcmpFragNeeded(0x0a000099u, us, 1200, us, peer, our_port, peer_port);
     Inject(io, pool, pkt);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -551,8 +545,8 @@ TCPIP2_TEST(ShardIcmpv4FragNeededUpdatesPmtu) {
 // ---------------------------------------------------------------------------
 
 TCPIP2_TEST(ShardFragmentedFlowAttributedByPmtuIcmp) {
-    const std::uint32_t us = 0x0a000002u;    // 10.0.0.2
-    const std::uint32_t peer = 0x01020304u;  // 1.2.3.4
+    const std::uint32_t us = 0x0a000002u;   // 10.0.0.2
+    const std::uint32_t peer = 0x01020304u; // 1.2.3.4
     const std::uint16_t our_port = 443;
     const std::uint16_t peer_port = 40000;
 
@@ -565,18 +559,16 @@ TCPIP2_TEST(ShardFragmentedFlowAttributedByPmtuIcmp) {
 
     // Establish the flow via a FRAGMENTED SYN: the fragments reassemble in
     // the shard and feed the TCP handshake engine (fragment + TCP RX path).
-    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
-        peer, us, peer_port, our_port, 1000, 0, test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> syn =
+        test::PacketBuilder::BuildIpv4Tcp(peer, us, peer_port, our_port, 1000, 0, test::TcpFlags::Syn, {});
     std::vector<std::uint8_t> tcp_segment(syn.begin() + 20, syn.end());
     const std::size_t split = std::min(tcp_segment.size(), std::size_t{8});
-    std::vector<std::uint8_t> frag1_payload(tcp_segment.begin(),
-                                             tcp_segment.begin() + split);
-    std::vector<std::uint8_t> frag2_payload(tcp_segment.begin() + split,
-                                             tcp_segment.end());
-    const std::vector<std::uint8_t> frag1 = test::PacketBuilder::BuildIpv4TcpFragment(
-        peer, us, 0x1234, 0, true, frag1_payload);
-    const std::vector<std::uint8_t> frag2 = test::PacketBuilder::BuildIpv4TcpFragment(
-        peer, us, 0x1234, 1, false, frag2_payload);
+    std::vector<std::uint8_t> frag1_payload(tcp_segment.begin(), tcp_segment.begin() + split);
+    std::vector<std::uint8_t> frag2_payload(tcp_segment.begin() + split, tcp_segment.end());
+    const std::vector<std::uint8_t> frag1 =
+        test::PacketBuilder::BuildIpv4TcpFragment(peer, us, 0x1234, 0, true, frag1_payload);
+    const std::vector<std::uint8_t> frag2 =
+        test::PacketBuilder::BuildIpv4TcpFragment(peer, us, 0x1234, 1, false, frag2_payload);
     Inject(io, pool, frag1);
     Inject(io, pool, frag2);
     TCPIP2_EXPECT_TRUE(WaitForHalfOpen(shard, 1));
@@ -584,8 +576,7 @@ TCPIP2_TEST(ShardFragmentedFlowAttributedByPmtuIcmp) {
     // FragNeeded quoting our original packet (us -> peer, ports 443->40000).
     // Attribution runs against the flow created through fragment reassembly;
     // this is the fragment + PMTU combination.
-    const std::vector<std::uint8_t> pkt = BuildIpv4IcmpFragNeeded(
-        0x0a000099u, us, 1200, us, peer, our_port, peer_port);
+    const std::vector<std::uint8_t> pkt = BuildIpv4IcmpFragNeeded(0x0a000099u, us, 1200, us, peer, our_port, peer_port);
     Inject(io, pool, pkt);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -617,8 +608,7 @@ TCPIP2_TEST(ShardIcmpv4FragNeededIgnoredWithoutFlow) {
 
     // No flow established. The well-formed ICMP must be dropped by
     // attribution and must not create/lower a PMTU entry.
-    const std::vector<std::uint8_t> pkt = BuildIpv4IcmpFragNeeded(
-        0x0a000099u, us, 1200, us, peer, 443, 40000);
+    const std::vector<std::uint8_t> pkt = BuildIpv4IcmpFragNeeded(0x0a000099u, us, 1200, us, peer, 443, 40000);
     Inject(io, pool, pkt);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -637,15 +627,11 @@ TCPIP2_TEST(ShardIcmpv4FragNeededIgnoredWithoutFlow) {
 // ---------------------------------------------------------------------------
 
 TCPIP2_TEST(ShardIcmpv6PacketTooBigUpdatesPmtu) {
-    const std::uint8_t icmp6_src[16] = {
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-    const std::uint8_t icmp6_dst[16] = {
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+    const std::uint8_t icmp6_src[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t icmp6_dst[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
     // Our address and the peer's address (quoted original packet endpoints).
-    const std::uint8_t us6[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
-    const std::uint8_t peer6[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t us6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+    const std::uint8_t peer6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
     const std::uint16_t our_port = 443;
     const std::uint16_t peer_port = 40000;
 
@@ -657,14 +643,14 @@ TCPIP2_TEST(ShardIcmpv6PacketTooBigUpdatesPmtu) {
     TCPIP2_EXPECT_TRUE(shard.Start());
 
     // Establish a half-open flow from the peer so the ICMP can be attributed.
-    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv6Tcp(
-        peer6, us6, peer_port, our_port, 1000, 0, test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> syn =
+        test::PacketBuilder::BuildIpv6Tcp(peer6, us6, peer_port, our_port, 1000, 0, test::TcpFlags::Syn, {});
     Inject(io, pool, syn);
     TCPIP2_EXPECT_TRUE(WaitForHalfOpen(shard, 1));
 
     // PacketTooBig quoting our original packet (us6 -> peer6, ports 443->40000).
-    const std::vector<std::uint8_t> pkt = BuildIpv6IcmpPacketTooBig(
-        icmp6_src, icmp6_dst, 1280, us6, peer6, our_port, peer_port);
+    const std::vector<std::uint8_t> pkt =
+        BuildIpv6IcmpPacketTooBig(icmp6_src, icmp6_dst, 1280, us6, peer6, our_port, peer_port);
     Inject(io, pool, pkt);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -683,14 +669,10 @@ TCPIP2_TEST(ShardIcmpv6PacketTooBigUpdatesPmtu) {
 // ---------------------------------------------------------------------------
 
 TCPIP2_TEST(ShardIcmpv6PacketTooBigIgnoredWithoutFlow) {
-    const std::uint8_t icmp6_src[16] = {
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-    const std::uint8_t icmp6_dst[16] = {
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
-    const std::uint8_t us6[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
-    const std::uint8_t peer6[16] = {
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t icmp6_src[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t icmp6_dst[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+    const std::uint8_t us6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
+    const std::uint8_t peer6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
 
     NullPacketIo io(1);
     PktBufferPool pool(16, 2048);
@@ -699,8 +681,7 @@ TCPIP2_TEST(ShardIcmpv6PacketTooBigIgnoredWithoutFlow) {
     StackShard shard(0, pool, queue.get(), 128);
     TCPIP2_EXPECT_TRUE(shard.Start());
 
-    const std::vector<std::uint8_t> pkt = BuildIpv6IcmpPacketTooBig(
-        icmp6_src, icmp6_dst, 1280, us6, peer6, 443, 40000);
+    const std::vector<std::uint8_t> pkt = BuildIpv6IcmpPacketTooBig(icmp6_src, icmp6_dst, 1280, us6, peer6, 443, 40000);
     Inject(io, pool, pkt);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -764,8 +745,8 @@ TCPIP2_TEST(ShardIcmpv4ShortQuotedPayloadNoCrash) {
     // quoted_len = 4: far too short to contain an IPv4 header (needs 20 bytes).
     // The quoted payload will be 4 bytes of zeros. HandleIcmp should bail out
     // gracefully without reading out of bounds.
-    const std::vector<std::uint8_t> pkt = BuildIpv4IcmpFragNeeded(
-        0x0a000001u, 0x0a000002u, 1200, 0x0a000002u, 0x01020304u, 443, 40000, 4);
+    const std::vector<std::uint8_t> pkt =
+        BuildIpv4IcmpFragNeeded(0x0a000001u, 0x0a000002u, 1200, 0x0a000002u, 0x01020304u, 443, 40000, 4);
 
     BufferLease lease = pool.Allocate();
     TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
@@ -804,16 +785,15 @@ TCPIP2_TEST(ShardIcmpv4BadChecksumDoesNotUpdatePmtu) {
 
     // Establish the flow first so attribution would succeed; the corrupted
     // checksum must then be the sole reason the PMTU stays untouched.
-    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
-        peer, us, peer_port, our_port, 1000, 0, test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> syn =
+        test::PacketBuilder::BuildIpv4Tcp(peer, us, peer_port, our_port, 1000, 0, test::TcpFlags::Syn, {});
     Inject(io, pool, syn);
     TCPIP2_EXPECT_TRUE(WaitForHalfOpen(shard, 1));
 
     // Build a valid ICMPv4 FragNeeded (checksum computed correctly), then
     // corrupt the ICMP checksum field (ICMP header starts at IP offset 20,
     // checksum occupies ICMP bytes [2..3] → packet bytes [22..23]).
-    std::vector<std::uint8_t> pkt = BuildIpv4IcmpFragNeeded(
-        0x0a000001u, us, 1200, us, peer, our_port, peer_port);
+    std::vector<std::uint8_t> pkt = BuildIpv4IcmpFragNeeded(0x0a000001u, us, 1200, us, peer, our_port, peer_port);
     pkt[22] = static_cast<std::uint8_t>(pkt[22] ^ 0xFFu);
     Inject(io, pool, pkt);
 

@@ -27,17 +27,17 @@ using namespace tcpip2;
 
 namespace {
 
-bool WaitFor(const std::function<bool()>& predicate) {
+bool WaitFor(const std::function<bool()> &predicate) {
     for (int i = 0; i < 200; ++i) {
-        if (predicate()) return true;
+        if (predicate())
+            return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     return predicate();
 }
 
 struct QueueOwnerState {
-    explicit QueueOwnerState(std::size_t queue_count)
-        : owners(queue_count), owner_set(queue_count, false) {}
+    explicit QueueOwnerState(std::size_t queue_count) : owners(queue_count), owner_set(queue_count, false) {}
 
     std::mutex mutex;
     std::vector<std::thread::id> owners;
@@ -46,13 +46,11 @@ struct QueueOwnerState {
 };
 
 class OwnerCheckingQueue final : public IPacketQueue {
-public:
-    OwnerCheckingQueue(std::unique_ptr<IPacketQueue> inner,
-                       std::shared_ptr<QueueOwnerState> state) noexcept
+  public:
+    OwnerCheckingQueue(std::unique_ptr<IPacketQueue> inner, std::shared_ptr<QueueOwnerState> state) noexcept
         : inner_(std::move(inner)), state_(std::move(state)) {}
 
-    std::size_t RecvBatch(BufferLease out[], std::size_t capacity,
-                          IoError& error) noexcept override {
+    std::size_t RecvBatch(BufferLease out[], std::size_t capacity, IoError &error) noexcept override {
         {
             std::lock_guard<std::mutex> lock(state_->mutex);
             const std::size_t queue_id = inner_->QueueId();
@@ -62,13 +60,11 @@ public:
         return inner_->RecvBatch(out, capacity, error);
     }
 
-    std::size_t SendBatch(BufferLease packets[], std::size_t count,
-                          IoError& error) noexcept override {
+    std::size_t SendBatch(BufferLease packets[], std::size_t count, IoError &error) noexcept override {
         {
             std::lock_guard<std::mutex> lock(state_->mutex);
             const std::size_t queue_id = inner_->QueueId();
-            if (!state_->owner_set[queue_id] ||
-                state_->owners[queue_id] != std::this_thread::get_id()) {
+            if (!state_->owner_set[queue_id] || state_->owners[queue_id] != std::this_thread::get_id()) {
                 state_->foreign_send = true;
             }
         }
@@ -76,23 +72,19 @@ public:
     }
 
     std::size_t QueueId() const noexcept override { return inner_->QueueId(); }
-    void SetBufferPool(PktBufferPool* pool) noexcept override { inner_->SetBufferPool(pool); }
+    void SetBufferPool(PktBufferPool *pool) noexcept override { inner_->SetBufferPool(pool); }
     void StopRx() noexcept override { inner_->StopRx(); }
-    IoError DrainTx(std::uint64_t deadline_ms) noexcept override {
-        return inner_->DrainTx(deadline_ms);
-    }
+    IoError DrainTx(std::uint64_t deadline_ms) noexcept override { return inner_->DrainTx(deadline_ms); }
     std::size_t OutstandingTx() const noexcept override { return inner_->OutstandingTx(); }
-    void SetRecvHandler(std::function<void()> wake) override {
-        inner_->SetRecvHandler(std::move(wake));
-    }
+    void SetRecvHandler(std::function<void()> wake) override { inner_->SetRecvHandler(std::move(wake)); }
 
-private:
+  private:
     std::unique_ptr<IPacketQueue> inner_;
     std::shared_ptr<QueueOwnerState> state_;
 };
 
 class OwnerCheckingPacketIo final : public IPacketIo {
-public:
+  public:
     explicit OwnerCheckingPacketIo(std::size_t queue_count)
         : inner_(queue_count), state_(std::make_shared<QueueOwnerState>(queue_count)) {}
 
@@ -100,13 +92,12 @@ public:
 
     std::unique_ptr<IPacketQueue> OpenQueue(std::size_t queue_id) override {
         std::unique_ptr<IPacketQueue> queue = inner_.OpenQueue(queue_id);
-        if (!queue) return nullptr;
+        if (!queue)
+            return nullptr;
         return std::unique_ptr<IPacketQueue>(new OwnerCheckingQueue(std::move(queue), state_));
     }
 
-    bool Inject(std::size_t queue_id, BufferLease&& lease) {
-        return inner_.Inject(queue_id, std::move(lease));
-    }
+    bool Inject(std::size_t queue_id, BufferLease &&lease) { return inner_.Inject(queue_id, std::move(lease)); }
 
     std::vector<std::vector<std::uint8_t>> EgressSnapshot(std::size_t queue_id) const {
         return inner_.EgressSnapshot(queue_id);
@@ -117,7 +108,7 @@ public:
         return state_->foreign_send;
     }
 
-private:
+  private:
     NullPacketIo inner_;
     std::shared_ptr<QueueOwnerState> state_;
 };
@@ -178,7 +169,7 @@ TCPIP2_TEST(RuntimeInjectPacketReceived) {
     rt.Start(config, &io);
 
     // Inject a packet into queue 0, using shard 0's own pool.
-    PktBufferPool* pool = rt.ShardPool(0);
+    PktBufferPool *pool = rt.ShardPool(0);
     TCPIP2_EXPECT_TRUE(pool != nullptr);
     BufferLease lease = pool->Allocate();
     lease.Resize(64);
@@ -186,7 +177,7 @@ TCPIP2_TEST(RuntimeInjectPacketReceived) {
 
     // Wait for the shard to receive it.
     TCPIP2_EXPECT_TRUE(WaitFor([&] { return rt.Shard(0)->PacketsReceived() > 0; }));
-    StackShard* shard = rt.Shard(0);
+    StackShard *shard = rt.Shard(0);
     TCPIP2_EXPECT_TRUE(shard != nullptr);
     TCPIP2_EXPECT_TRUE(shard->PacketsReceived() > 0);
 
@@ -281,8 +272,8 @@ TCPIP2_TEST(RuntimeRedirectsConcurrentQueueOwnersToOneTcpOwner) {
     flow.destination_port = 443;
     flow.protocol = 6;
     const std::size_t owner = FlowToShard(flow, config.shard_count);
-    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
-        0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> syn =
+        test::PacketBuilder::BuildIpv4Tcp(0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
 
     NullPacketIo io(config.rx_queue_count);
     io.SetSendWouldBlock(true);
@@ -292,7 +283,8 @@ TCPIP2_TEST(RuntimeRedirectsConcurrentQueueOwnersToOneTcpOwner) {
     std::atomic<bool> injected{true};
     std::vector<std::thread> producers;
     for (std::size_t source = 0; source < config.shard_count; ++source) {
-        if (source == owner) continue;
+        if (source == owner)
+            continue;
         producers.emplace_back([&, source]() {
             for (std::size_t i = 0; i < 16; ++i) {
                 BufferLease lease = rt.ShardPool(source)->Allocate();
@@ -309,21 +301,22 @@ TCPIP2_TEST(RuntimeRedirectsConcurrentQueueOwnersToOneTcpOwner) {
             }
         });
     }
-    for (auto& producer : producers) producer.join();
+    for (auto &producer : producers)
+        producer.join();
 
     TCPIP2_EXPECT_TRUE(injected.load(std::memory_order_relaxed));
-    TCPIP2_EXPECT_TRUE(WaitFor([&] {
-        return rt.Shard(owner)->TcpHalfOpenCount() == std::size_t{1};
-    }));
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return rt.Shard(owner)->TcpHalfOpenCount() == std::size_t{1}; }));
     TCPIP2_EXPECT_TRUE(WaitFor([&] {
         for (std::size_t shard = 0; shard < config.shard_count; ++shard) {
-            if (shard != owner && rt.Shard(shard)->RedirectedPackets() == 0) return false;
+            if (shard != owner && rt.Shard(shard)->RedirectedPackets() == 0)
+                return false;
         }
         return true;
     }));
     TCPIP2_EXPECT_EQ(std::size_t{1}, rt.Shard(owner)->TcpHalfOpenCount());
     for (std::size_t shard = 0; shard < config.shard_count; ++shard) {
-        if (shard == owner) continue;
+        if (shard == owner)
+            continue;
         TCPIP2_EXPECT_EQ(std::size_t{0}, rt.Shard(shard)->TcpHalfOpenCount());
         TCPIP2_EXPECT_TRUE(rt.Shard(shard)->RedirectedPackets() > 0);
     }
@@ -363,20 +356,15 @@ TCPIP2_TEST(RuntimeRoutesHashedTxThroughQueueOwner) {
     TCPIP2_EXPECT_TRUE(rt.Start(config, &io));
 
     const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
-        0x0a000001u, 0x0a000002u, selected.source_port, selected.destination_port,
-        1000, 0, test::TcpFlags::Syn, {});
+        0x0a000001u, 0x0a000002u, selected.source_port, selected.destination_port, 1000, 0, test::TcpFlags::Syn, {});
     BufferLease lease = rt.ShardPool(1)->Allocate();
     TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
     std::memcpy(lease.Data(), syn.data(), syn.size());
     lease.Resize(syn.size());
     TCPIP2_EXPECT_TRUE(io.Inject(1, std::move(lease)));
 
-    TCPIP2_EXPECT_TRUE(WaitFor([&] {
-        return rt.Shard(0)->TcpHalfOpenCount() == std::size_t{1};
-    }));
-    TCPIP2_EXPECT_TRUE(WaitFor([&] {
-        return io.EgressSnapshot(tx_queue).size() == std::size_t{1};
-    }));
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return rt.Shard(0)->TcpHalfOpenCount() == std::size_t{1}; }));
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return io.EgressSnapshot(tx_queue).size() == std::size_t{1}; }));
     TCPIP2_EXPECT_EQ(std::size_t{0}, io.EgressSnapshot(0).size());
     TCPIP2_EXPECT_FALSE(io.SentFromForeignThread());
 
@@ -390,8 +378,8 @@ TCPIP2_TEST(RuntimeRedirectsReassembledFragmentsToTcpFlowOwner) {
     config.pool_slot_count = 64;
     config.pool_slot_capacity = 256;
 
-    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
-        0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> syn =
+        test::PacketBuilder::BuildIpv4Tcp(0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
     const std::vector<std::uint8_t> first_segment(syn.begin() + 20, syn.begin() + 28);
     const std::vector<std::uint8_t> second_segment(syn.begin() + 28, syn.end());
 
@@ -410,15 +398,15 @@ TCPIP2_TEST(RuntimeRedirectsReassembledFragmentsToTcpFlowOwner) {
     std::vector<std::uint8_t> second_fragment;
     for (std::uint32_t candidate = 1; candidate <= UINT16_MAX; ++candidate) {
         const std::uint16_t id = static_cast<std::uint16_t>(candidate);
-        first_fragment = test::PacketBuilder::BuildIpv4TcpFragment(
-            0x0a000001u, 0x0a000002u, id, 0, true, first_segment);
-        const PacketClassification classified = dispatcher.ClassifyPacket(
-            first_fragment.data(), first_fragment.size());
-        if (classified.owner_shard == flow_owner) continue;
+        first_fragment =
+            test::PacketBuilder::BuildIpv4TcpFragment(0x0a000001u, 0x0a000002u, id, 0, true, first_segment);
+        const PacketClassification classified = dispatcher.ClassifyPacket(first_fragment.data(), first_fragment.size());
+        if (classified.owner_shard == flow_owner)
+            continue;
         fragment_id = id;
         fragment_owner = classified.owner_shard;
-        second_fragment = test::PacketBuilder::BuildIpv4TcpFragment(
-            0x0a000001u, 0x0a000002u, id, 1, false, second_segment);
+        second_fragment =
+            test::PacketBuilder::BuildIpv4TcpFragment(0x0a000001u, 0x0a000002u, id, 1, false, second_segment);
         break;
     }
     TCPIP2_EXPECT_TRUE(fragment_id != 0);
@@ -441,9 +429,7 @@ TCPIP2_TEST(RuntimeRedirectsReassembledFragmentsToTcpFlowOwner) {
     TCPIP2_EXPECT_TRUE(io.Inject(first_source, std::move(first)));
     TCPIP2_EXPECT_TRUE(io.Inject(second_source, std::move(second)));
 
-    TCPIP2_EXPECT_TRUE(WaitFor([&] {
-        return rt.Shard(flow_owner)->TcpHalfOpenCount() == std::size_t{1};
-    }));
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return rt.Shard(flow_owner)->TcpHalfOpenCount() == std::size_t{1}; }));
     TCPIP2_EXPECT_EQ(std::size_t{1}, rt.Shard(flow_owner)->TcpHalfOpenCount());
     TCPIP2_EXPECT_EQ(std::size_t{0}, rt.Shard(fragment_owner)->TcpHalfOpenCount());
     TCPIP2_EXPECT_TRUE(rt.Shard(fragment_owner)->RedirectedPackets() > 0);
@@ -466,7 +452,7 @@ TCPIP2_TEST(RuntimeWiresPublicTcpConfiguration) {
     Runtime rt;
     TCPIP2_EXPECT_TRUE(rt.Start(config, &io));
 
-    const TcpHandshakeConfig& tcp = rt.Shard(0)->TcpConfig();
+    const TcpHandshakeConfig &tcp = rt.Shard(0)->TcpConfig();
     TCPIP2_EXPECT_EQ(std::uint16_t{1200}, tcp.local_mss);
     TCPIP2_EXPECT_EQ(std::uint32_t{32768}, tcp.receive_window);
     TCPIP2_EXPECT_EQ(std::uint64_t{750}, tcp.initial_rto_ms);
@@ -481,7 +467,7 @@ TCPIP2_TEST(RuntimeWiresPublicTcpConfiguration) {
 
 TCPIP2_TEST(RuntimeInvalidConfigFails) {
     NetstackConfig config;
-    config.shard_count = 0;  // invalid
+    config.shard_count = 0; // invalid
 
     NullPacketIo io(1);
 
@@ -511,7 +497,7 @@ TCPIP2_TEST(RuntimeStopIdempotent) {
     Runtime rt;
     rt.Start(config, &io);
     rt.Stop();
-    rt.Stop();  // second stop should be a no-op
+    rt.Stop(); // second stop should be a no-op
     TCPIP2_EXPECT_FALSE(rt.IsRunning());
 }
 
@@ -529,18 +515,16 @@ TCPIP2_TEST(RuntimeStopTimeoutRetainsPoolsAndAllowsRetry) {
     Runtime rt;
     TCPIP2_EXPECT_TRUE(rt.Start(config, &io));
 
-    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
-        0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
-    PktBufferPool* pool = rt.ShardPool(0);
+    const std::vector<std::uint8_t> syn =
+        test::PacketBuilder::BuildIpv4Tcp(0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
+    PktBufferPool *pool = rt.ShardPool(0);
     TCPIP2_EXPECT_TRUE(pool != nullptr);
     BufferLease lease = pool->Allocate();
     TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
     std::memcpy(lease.Data(), syn.data(), syn.size());
     lease.Resize(syn.size());
     TCPIP2_EXPECT_TRUE(io.Inject(0, std::move(lease)));
-    TCPIP2_EXPECT_TRUE(WaitFor([&] {
-        return io.PendingTxCompletions(0) != 0;
-    }));
+    TCPIP2_EXPECT_TRUE(WaitFor([&] { return io.PendingTxCompletions(0) != 0; }));
 
     StopOptions short_deadline;
     short_deadline.timeout_ms = 10;
@@ -581,8 +565,8 @@ TCPIP2_TEST(RuntimeConcurrentStopsObserveSameTimeout) {
     Runtime rt;
     TCPIP2_EXPECT_TRUE(rt.Start(config, &io));
 
-    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
-        0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> syn =
+        test::PacketBuilder::BuildIpv4Tcp(0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
     BufferLease lease = rt.ShardPool(0)->Allocate();
     std::memcpy(lease.Data(), syn.data(), syn.size());
     lease.Resize(syn.size());
@@ -622,10 +606,10 @@ TCPIP2_TEST(NetstackStopTimeoutRetainsFacadeRuntimeForRetry) {
     Netstack2 stack(config);
     TCPIP2_EXPECT_TRUE(stack.Start(&io));
 
-    Runtime* runtime = stack.GetRuntime();
+    Runtime *runtime = stack.GetRuntime();
     TCPIP2_EXPECT_TRUE(runtime != nullptr);
-    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
-        0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> syn =
+        test::PacketBuilder::BuildIpv4Tcp(0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
     BufferLease lease = runtime->ShardPool(0)->Allocate();
     std::memcpy(lease.Data(), syn.data(), syn.size());
     lease.Resize(syn.size());

@@ -34,15 +34,15 @@ namespace tcpip2 {
 struct TcpSendConfig {
     std::uint16_t initial_mss = 1460;
     std::uint8_t window_scale = 0;
-    std::size_t send_queue_limit = 256 * 1024;     ///< Max unsent bytes buffered.
+    std::size_t send_queue_limit = 256 * 1024;       ///< Max unsent bytes buffered.
     std::size_t retransmit_queue_limit = 256 * 1024; ///< Max in-flight bytes.
     std::uint64_t min_rto_ms = 200;
     std::uint64_t max_rto_ms = 120000;
     std::uint64_t initial_rto_ms = 1000;
-    std::uint64_t persist_timer_base_ms = 500;     ///< Zero-window probe interval.
+    std::uint64_t persist_timer_base_ms = 500; ///< Zero-window probe interval.
     std::uint64_t persist_timer_max_ms = 60000;
-    std::size_t max_retransmissions = 15;          ///< RFC 1122 §4.2.2.13.
-    std::size_t max_persist_probes = 15;           ///< Abort after this many unanswered probes.
+    std::size_t max_retransmissions = 15; ///< RFC 1122 §4.2.2.13.
+    std::size_t max_persist_probes = 15;  ///< Abort after this many unanswered probes.
     CongestionAlgorithm cc_algorithm = CongestionAlgorithm::Aimd;
 
     bool Validate() const noexcept;
@@ -50,25 +50,25 @@ struct TcpSendConfig {
 
 /// Result of NextSegment: describes what to transmit.
 struct TcpSendNextResult {
-    bool has_segment = false;           ///< True if there is something to send.
-    bool is_retransmission = false;     ///< True if this is a retransmit, not new data.
-    bool is_zero_window_probe = false;  ///< True if this is a persist-timer probe.
-    bool is_fin = false;                ///< True if this segment carries the FIN flag.
+    bool has_segment = false;          ///< True if there is something to send.
+    bool is_retransmission = false;    ///< True if this is a retransmit, not new data.
+    bool is_zero_window_probe = false; ///< True if this is a persist-timer probe.
+    bool is_fin = false;               ///< True if this segment carries the FIN flag.
     /// RFC 3168: the CWR flag must be set on this segment (an ECE-signalled
     /// congestion reduction is being acknowledged to the peer).
     bool set_cwr = false;
-    const std::uint8_t* payload = nullptr;
+    const std::uint8_t *payload = nullptr;
     std::size_t payload_length = 0;
-    std::uint32_t sequence = 0;         ///< TCP sequence number for this segment.
+    std::uint32_t sequence = 0; ///< TCP sequence number for this segment.
 };
 
 /// Outcome of processing an incoming ACK.
 struct TcpSendAckResult {
-    std::size_t newly_acked = 0;        ///< Bytes newly acknowledged.
-    bool duplicate = false;             ///< Duplicate ACK (snd_una unchanged).
-    bool fast_retransmit = false;       ///< Trigger fast retransmit.
-    bool fully_acked = false;           ///< All in-flight data ACKed.
-    bool unacceptable = false;          ///< ACK is beyond SND.NXT/SND.MAX.
+    std::size_t newly_acked = 0;            ///< Bytes newly acknowledged.
+    bool duplicate = false;                 ///< Duplicate ACK (snd_una unchanged).
+    bool fast_retransmit = false;           ///< Trigger fast retransmit.
+    bool fully_acked = false;               ///< All in-flight data ACKed.
+    bool unacceptable = false;              ///< ACK is beyond SND.NXT/SND.MAX.
     std::size_t retransmit_queue_bytes = 0; ///< Remaining in-flight bytes.
 };
 
@@ -85,31 +85,22 @@ struct TcpSendAckResult {
  * Thread-safety: single-threaded, shard-local. No internal locking.
  */
 class TcpSendBuffer final {
-public:
-    TcpSendBuffer(std::uint32_t initial_sequence,
-                  std::uint16_t mss,
-                  std::uint8_t window_scale,
-                  std::size_t queue_limit,
-                  std::size_t retransmit_limit,
-                  std::uint64_t initial_rto_ms,
-                  std::uint64_t min_rto_ms,
-                  std::uint64_t max_rto_ms,
-                  std::uint64_t persist_base_ms,
-                  std::uint64_t persist_max_ms,
-                  std::size_t max_retransmissions,
-                  std::size_t max_persist_probes,
-                  CongestionAlgorithm cc_algorithm = CongestionAlgorithm::Aimd,
-                  KccConfig kcc_config = {});
+  public:
+    TcpSendBuffer(std::uint32_t initial_sequence, std::uint16_t mss, std::uint8_t window_scale, std::size_t queue_limit,
+                  std::size_t retransmit_limit, std::uint64_t initial_rto_ms, std::uint64_t min_rto_ms,
+                  std::uint64_t max_rto_ms, std::uint64_t persist_base_ms, std::uint64_t persist_max_ms,
+                  std::size_t max_retransmissions, std::size_t max_persist_probes,
+                  CongestionAlgorithm cc_algorithm = CongestionAlgorithm::Aimd, KccConfig kcc_config = {});
 
     ~TcpSendBuffer() = default;
 
-    TcpSendBuffer(const TcpSendBuffer&) = delete;
-    TcpSendBuffer& operator=(const TcpSendBuffer&) = delete;
+    TcpSendBuffer(const TcpSendBuffer &) = delete;
+    TcpSendBuffer &operator=(const TcpSendBuffer &) = delete;
 
     // ---- Application -> send buffer ----
 
     /// Enqueue application data. Returns bytes accepted (0 if full/closed).
-    std::size_t Enqueue(const std::uint8_t* data, std::size_t length) noexcept;
+    std::size_t Enqueue(const std::uint8_t *data, std::size_t length) noexcept;
 
     /// Request FIN after all queued data is sent. Returns false if already requested.
     bool RequestFin() noexcept;
@@ -125,8 +116,7 @@ public:
      * @param peer_window  Scaled peer window (SND.WND).
      * @param now_ms       Current monotonic time.
      */
-    TcpSendNextResult NextSegment(std::uint32_t peer_window,
-                                  std::uint64_t now_ms) noexcept;
+    TcpSendNextResult NextSegment(std::uint32_t peer_window, std::uint64_t now_ms) noexcept;
 
     /**
      * Record that the segment from NextSegment() was serialized and queued.
@@ -139,8 +129,7 @@ public:
      * For retransmissions, @p owner may be empty (the original BufferRef is
      * still held in the retransmit queue); @p payload_offset is ignored.
      */
-    void OnSent(BufferRef owner, std::size_t payload_offset,
-                std::uint64_t now_ms) noexcept;
+    void OnSent(BufferRef owner, std::size_t payload_offset, std::uint64_t now_ms) noexcept;
 
     // ---- ACK processing ----
 
@@ -148,11 +137,8 @@ public:
      * Process an incoming ACK. Updates snd_una, removes ACKed segments from
      * the retransmit queue, handles duplicate ACKs and fast retransmit.
      */
-    TcpSendAckResult OnAck(std::uint32_t acknowledgment,
-                           std::uint32_t peer_window,
-                           std::uint64_t now_ms,
-                           bool ack_only = true,
-                           bool ece = false) noexcept;
+    TcpSendAckResult OnAck(std::uint32_t acknowledgment, std::uint32_t peer_window, std::uint64_t now_ms,
+                           bool ack_only = true, bool ece = false) noexcept;
 
     /**
      * Process incoming SACK blocks from a duplicate ACK.
@@ -161,8 +147,7 @@ public:
      * when 3+ consecutive records are SACKed.
      * Returns the number of bytes newly SACKed by this call.
      */
-    std::size_t OnSack(const TcpSackBlockList& sack_blocks,
-                       std::uint64_t now_ms) noexcept;
+    std::size_t OnSack(const TcpSackBlockList &sack_blocks, std::uint64_t now_ms) noexcept;
 
     // ---- Timer-driven actions ----
 
@@ -228,7 +213,7 @@ public:
     /// fails between NextSegment and OnSent).
     void ResetPending() noexcept;
 
-private:
+  private:
     struct SendRecord {
         std::uint32_t seq = 0;
         std::uint32_t logical_length = 0;
@@ -260,8 +245,7 @@ private:
     void CancelPersist() noexcept;
     void ScheduleNextPersist(std::uint64_t now_ms) noexcept;
     void Close() noexcept;
-    bool StoreNewRecord(BufferRef owner, std::size_t payload_offset,
-                        std::uint64_t now_ms) noexcept;
+    bool StoreNewRecord(BufferRef owner, std::size_t payload_offset, std::uint64_t now_ms) noexcept;
 
     // Send queue (unsent application data)
     std::vector<std::uint8_t> send_queue_;
@@ -280,20 +264,18 @@ private:
     std::uint32_t sacked_sequence_ = 0;
 
     // Sequence numbers
-    std::uint32_t snd_una_;    ///< Lowest unacknowledged sequence.
-    std::uint32_t snd_nxt_;    ///< Next sequence to assign.
-    std::uint32_t snd_max_;    ///< Highest sequence ever sent (+1).
+    std::uint32_t snd_una_; ///< Lowest unacknowledged sequence.
+    std::uint32_t snd_nxt_; ///< Next sequence to assign.
+    std::uint32_t snd_max_; ///< Highest sequence ever sent (+1).
 
     // Congestion control (pluggable: AIMD, BBRv1, Hybrid BDP-AIMD, or KCC)
     CongestionAlgorithm cc_algorithm_;
-    std::variant<AimdController, BbrController, HybridBdpAimdController,
-                 KccController>
-        controller_;
+    std::variant<AimdController, BbrController, HybridBdpAimdController, KccController> controller_;
     DeliveryRateSampler sampler_;
-    std::uint16_t mss_;        ///< Maximum segment size.
+    std::uint16_t mss_; ///< Maximum segment size.
 
     // RTO (RFC 6298 with Karn's rule)
-    std::uint64_t rto_ms_;         ///< Current RTO value.
+    std::uint64_t rto_ms_;          ///< Current RTO value.
     std::uint64_t rto_deadline_ms_; ///< Absolute deadline for next retransmit.
     std::uint64_t min_rto_ms_;
     std::uint64_t max_rto_ms_;
@@ -301,8 +283,8 @@ private:
 
     // RTT estimation (RFC 6298 §2)
     bool srtt_valid_ = false;
-    std::uint64_t srtt_ms_ = 0;    ///< Smoothed RTT.
-    std::uint64_t rttvar_ms_ = 0;  ///< RTT variation.
+    std::uint64_t srtt_ms_ = 0;   ///< Smoothed RTT.
+    std::uint64_t rttvar_ms_ = 0; ///< RTT variation.
 
     // Duplicate ACK tracking
     std::size_t dup_ack_count_ = 0;

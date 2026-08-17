@@ -28,8 +28,7 @@ const std::array<std::uint64_t, 2> kSecret{{
     0x0f0e0d0c0b0a0908ULL,
 }};
 
-FlowKey MakeFlow(std::uint16_t source_port = 40000,
-                 std::uint16_t destination_port = 443) {
+FlowKey MakeFlow(std::uint16_t source_port = 40000, std::uint16_t destination_port = 443) {
     FlowKey flow;
     flow.source = IpAddress::Ipv4(10, 0, 0, 1);
     flow.destination = IpAddress::Ipv4(10, 0, 0, 2);
@@ -39,7 +38,7 @@ FlowKey MakeFlow(std::uint16_t source_port = 40000,
     return flow;
 }
 
-FlowKey Reverse(const FlowKey& flow) {
+FlowKey Reverse(const FlowKey &flow) {
     FlowKey reversed;
     reversed.source = flow.destination;
     reversed.destination = flow.source;
@@ -49,24 +48,24 @@ FlowKey Reverse(const FlowKey& flow) {
     return reversed;
 }
 
-void Write16(std::uint8_t* data, std::uint16_t value) {
+void Write16(std::uint8_t *data, std::uint16_t value) {
     data[0] = static_cast<std::uint8_t>(value >> 8);
     data[1] = static_cast<std::uint8_t>(value & 0xffu);
 }
 
-void Write32(std::uint8_t* data, std::uint32_t value) {
+void Write32(std::uint8_t *data, std::uint32_t value) {
     data[0] = static_cast<std::uint8_t>(value >> 24);
     data[1] = static_cast<std::uint8_t>((value >> 16) & 0xffu);
     data[2] = static_cast<std::uint8_t>((value >> 8) & 0xffu);
     data[3] = static_cast<std::uint8_t>(value & 0xffu);
 }
 
-std::vector<std::uint8_t> BuildTcpSegment(
-    const FlowKey& flow, std::uint32_t sequence, std::uint32_t acknowledgment,
-    std::uint8_t flags, const std::vector<std::uint8_t>& options = {},
-    const std::vector<std::uint8_t>& payload = {}) {
+std::vector<std::uint8_t> BuildTcpSegment(const FlowKey &flow, std::uint32_t sequence, std::uint32_t acknowledgment,
+                                          std::uint8_t flags, const std::vector<std::uint8_t> &options = {},
+                                          const std::vector<std::uint8_t> &payload = {}) {
     std::size_t padded_options = options.size();
-    while ((padded_options % 4) != 0) ++padded_options;
+    while ((padded_options % 4) != 0)
+        ++padded_options;
     const std::size_t header_length = 20 + padded_options;
     std::vector<std::uint8_t> bytes(header_length + payload.size(), 0);
     Write16(bytes.data(), flow.source_port);
@@ -76,27 +75,25 @@ std::vector<std::uint8_t> BuildTcpSegment(
     bytes[12] = static_cast<std::uint8_t>((header_length / 4) << 4);
     bytes[13] = flags;
     Write16(bytes.data() + 14, 32768);
-    for (std::size_t i = 0; i < options.size(); ++i) bytes[20 + i] = options[i];
-    for (std::size_t i = 0; i < payload.size(); ++i) bytes[header_length + i] = payload[i];
+    for (std::size_t i = 0; i < options.size(); ++i)
+        bytes[20 + i] = options[i];
+    for (std::size_t i = 0; i < payload.size(); ++i)
+        bytes[header_length + i] = payload[i];
 
     std::uint32_t seed = 0;
     if (flow.source.IsIpv4()) {
-        seed = Ipv4PseudoHeaderSeed(
-            flow.source.Bytes(), flow.destination.Bytes(), 6,
-            static_cast<std::uint16_t>(bytes.size()));
+        seed = Ipv4PseudoHeaderSeed(flow.source.Bytes(), flow.destination.Bytes(), 6,
+                                    static_cast<std::uint16_t>(bytes.size()));
     } else {
-        seed = Ipv6PseudoHeaderSeed(
-            flow.source.Bytes(), flow.destination.Bytes(), 6,
-            static_cast<std::uint32_t>(bytes.size()));
+        seed = Ipv6PseudoHeaderSeed(flow.source.Bytes(), flow.destination.Bytes(), 6,
+                                    static_cast<std::uint32_t>(bytes.size()));
     }
     Write16(bytes.data() + 16, InternetChecksum(bytes.data(), bytes.size(), seed));
     return bytes;
 }
 
-TcpSegmentView MakeView(const FlowKey& flow, std::uint32_t sequence,
-                        std::uint32_t acknowledgment, std::uint8_t flags,
-                        const std::vector<std::uint8_t>& options = {},
-                        const std::vector<std::uint8_t>& payload = {}) {
+TcpSegmentView MakeView(const FlowKey &flow, std::uint32_t sequence, std::uint32_t acknowledgment, std::uint8_t flags,
+                        const std::vector<std::uint8_t> &options = {}, const std::vector<std::uint8_t> &payload = {}) {
     TcpSegmentView segment;
     segment.flow = flow;
     segment.sequence = sequence;
@@ -111,16 +108,15 @@ TcpSegmentView MakeView(const FlowKey& flow, std::uint32_t sequence,
 }
 
 class ReceiveSession final : public ITransportSession {
-public:
-    explicit ReceiveSession(std::vector<SendResult> script = {})
-        : script_(std::move(script)) {}
+  public:
+    explicit ReceiveSession(std::vector<SendResult> script = {}) : script_(std::move(script)) {}
 
     SendResult TrySend(BufferView data) override {
         SendResult result{data.Size(), SendStatus::Accepted};
-        if (next_ < script_.size()) result = script_[next_++];
+        if (next_ < script_.size())
+            result = script_[next_++];
         if (result.accepted_bytes <= data.Size()) {
-            delivered_.insert(delivered_.end(), data.Data(),
-                              data.Data() + result.accepted_bytes);
+            delivered_.insert(delivered_.end(), data.Data(), data.Data() + result.accepted_bytes);
         }
         return result;
     }
@@ -137,10 +133,10 @@ public:
     void SetDataCallback(DataCallback) override {}
     void SetClosedCallback(ClosedCallback) override {}
 
-    const std::vector<std::uint8_t>& Delivered() const noexcept { return delivered_; }
+    const std::vector<std::uint8_t> &Delivered() const noexcept { return delivered_; }
     bool ShutdownWriteCalled() const noexcept { return shutdown_write_called_; }
 
-private:
+  private:
     std::vector<SendResult> script_;
     std::vector<std::uint8_t> delivered_;
     std::size_t next_ = 0;
@@ -148,14 +144,10 @@ private:
     WritableCallback writable_;
 };
 
-TcpPcbSnapshot Establish(TcpHandshakeEngine& engine, const FlowKey& flow,
-                         std::uint32_t irs = 1000,
+TcpPcbSnapshot Establish(TcpHandshakeEngine &engine, const FlowKey &flow, std::uint32_t irs = 1000,
                          std::uint64_t now_ms = 100) {
-    const auto syn = engine.OnSegment(
-        MakeView(flow, irs, 0, TcpFlag::Syn), now_ms);
-    engine.OnSegment(
-        MakeView(flow, irs + 1, syn.response.sequence + 1, TcpFlag::Ack),
-        now_ms + 1);
+    const auto syn = engine.OnSegment(MakeView(flow, irs, 0, TcpFlag::Syn), now_ms);
+    engine.OnSegment(MakeView(flow, irs + 1, syn.response.sequence + 1, TcpFlag::Ack), now_ms + 1);
     TcpPcbSnapshot snapshot;
     engine.Find(flow, snapshot);
     return snapshot;
@@ -163,17 +155,11 @@ TcpPcbSnapshot Establish(TcpHandshakeEngine& engine, const FlowKey& flow,
 
 std::vector<std::uint8_t> AllSynOptions() {
     return {
-        2, 4, 0x05, 0xb4,
-        1,
-        3, 3, 15,
-        4, 2,
-        1, 1,
-        8, 10, 0, 0, 0, 42, 0, 0, 0, 0,
+        2, 4, 0x05, 0xb4, 1, 3, 3, 15, 4, 2, 1, 1, 8, 10, 0, 0, 0, 42, 0, 0, 0, 0,
     };
 }
 
-std::vector<std::uint8_t> TimestampOption(std::uint32_t value,
-                                          std::uint32_t echo) {
+std::vector<std::uint8_t> TimestampOption(std::uint32_t value, std::uint32_t echo) {
     std::vector<std::uint8_t> option = {8, 10, 0, 0, 0, 0, 0, 0, 0, 0};
     Write32(option.data() + 2, value);
     Write32(option.data() + 6, echo);
@@ -185,17 +171,14 @@ std::vector<std::uint8_t> TimestampOption(std::uint32_t value,
 TCPIP2_TEST(ParseIpv4AndIpv6TcpSegments) {
     const FlowKey ipv4 = MakeFlow();
     const auto bytes4 = BuildTcpSegment(ipv4, 100, 0, TcpFlag::Syn);
-    const auto parsed4 = ParseTcpSegment(
-        ipv4.source, ipv4.destination, bytes4.data(), bytes4.size());
+    const auto parsed4 = ParseTcpSegment(ipv4.source, ipv4.destination, bytes4.data(), bytes4.size());
     TCPIP2_EXPECT_EQ(TcpParseError::None, parsed4.error);
     TCPIP2_EXPECT_EQ(ipv4, parsed4.segment.flow);
     TCPIP2_EXPECT_EQ(std::uint32_t{100}, parsed4.segment.sequence);
     TCPIP2_EXPECT_TRUE(parsed4.segment.HasFlag(TcpFlag::Syn));
 
-    std::uint8_t src6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
-                             0, 0, 0, 0, 0, 0, 0, 1};
-    std::uint8_t dst6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
-                             0, 0, 0, 0, 0, 0, 0, 2};
+    std::uint8_t src6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    std::uint8_t dst6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
     FlowKey ipv6;
     ipv6.source = IpAddress::Ipv6(src6);
     ipv6.destination = IpAddress::Ipv6(dst6);
@@ -203,8 +186,7 @@ TCPIP2_TEST(ParseIpv4AndIpv6TcpSegments) {
     ipv6.destination_port = 80;
     ipv6.protocol = 6;
     const auto bytes6 = BuildTcpSegment(ipv6, 200, 0, TcpFlag::Syn);
-    const auto parsed6 = ParseTcpSegment(
-        ipv6.source, ipv6.destination, bytes6.data(), bytes6.size());
+    const auto parsed6 = ParseTcpSegment(ipv6.source, ipv6.destination, bytes6.data(), bytes6.size());
     TCPIP2_EXPECT_EQ(TcpParseError::None, parsed6.error);
     TCPIP2_EXPECT_EQ(ipv6, parsed6.segment.flow);
 }
@@ -212,31 +194,25 @@ TCPIP2_TEST(ParseIpv4AndIpv6TcpSegments) {
 TCPIP2_TEST(ParseRejectsMalformedTcpSegments) {
     const FlowKey flow = MakeFlow();
     auto bytes = BuildTcpSegment(flow, 100, 0, TcpFlag::Syn);
-    TCPIP2_EXPECT_EQ(
-        TcpParseError::TooShort,
-        ParseTcpSegment(flow.source, flow.destination, bytes.data(), 19).error);
+    TCPIP2_EXPECT_EQ(TcpParseError::TooShort, ParseTcpSegment(flow.source, flow.destination, bytes.data(), 19).error);
 
     bytes[12] = 0x40;
-    TCPIP2_EXPECT_EQ(
-        TcpParseError::BadDataOffset,
-        ParseTcpSegment(flow.source, flow.destination, bytes.data(), bytes.size()).error);
+    TCPIP2_EXPECT_EQ(TcpParseError::BadDataOffset,
+                     ParseTcpSegment(flow.source, flow.destination, bytes.data(), bytes.size()).error);
 
     bytes = BuildTcpSegment(flow, 100, 0, TcpFlag::Syn);
     bytes[5] ^= 1;
-    TCPIP2_EXPECT_EQ(
-        TcpParseError::BadChecksum,
-        ParseTcpSegment(flow.source, flow.destination, bytes.data(), bytes.size()).error);
+    TCPIP2_EXPECT_EQ(TcpParseError::BadChecksum,
+                     ParseTcpSegment(flow.source, flow.destination, bytes.data(), bytes.size()).error);
 
     bytes = BuildTcpSegment(flow, 100, 0, TcpFlag::Syn);
     bytes[12] |= 0x02;
     Write16(bytes.data() + 16, 0);
-    const std::uint32_t seed = Ipv4PseudoHeaderSeed(
-        flow.source.Bytes(), flow.destination.Bytes(), 6,
-        static_cast<std::uint16_t>(bytes.size()));
+    const std::uint32_t seed = Ipv4PseudoHeaderSeed(flow.source.Bytes(), flow.destination.Bytes(), 6,
+                                                    static_cast<std::uint16_t>(bytes.size()));
     Write16(bytes.data() + 16, InternetChecksum(bytes.data(), bytes.size(), seed));
-    TCPIP2_EXPECT_EQ(
-        TcpParseError::None,
-        ParseTcpSegment(flow.source, flow.destination, bytes.data(), bytes.size()).error);
+    TCPIP2_EXPECT_EQ(TcpParseError::None,
+                     ParseTcpSegment(flow.source, flow.destination, bytes.data(), bytes.size()).error);
 }
 
 TCPIP2_TEST(ParseTcpSynOptionsNegotiatesKnownOptions) {
@@ -254,26 +230,19 @@ TCPIP2_TEST(ParseTcpSynOptionsNegotiatesKnownOptions) {
 
 TCPIP2_TEST(ParseTcpSynOptionsRejectsMalformedAndDuplicateOptions) {
     const std::vector<std::uint8_t> truncated = {2, 4, 0x05};
-    TCPIP2_EXPECT_EQ(
-        TcpOptionError::Truncated,
-        ParseTcpSynOptions(truncated.data(), truncated.size()).error);
+    TCPIP2_EXPECT_EQ(TcpOptionError::Truncated, ParseTcpSynOptions(truncated.data(), truncated.size()).error);
 
     const std::vector<std::uint8_t> invalid_length = {3, 1};
-    TCPIP2_EXPECT_EQ(
-        TcpOptionError::InvalidLength,
-        ParseTcpSynOptions(invalid_length.data(), invalid_length.size()).error);
+    TCPIP2_EXPECT_EQ(TcpOptionError::InvalidLength,
+                     ParseTcpSynOptions(invalid_length.data(), invalid_length.size()).error);
 
     const std::vector<std::uint8_t> duplicate = {
         2, 4, 0x05, 0xb4, 2, 4, 0x04, 0x00,
     };
-    TCPIP2_EXPECT_EQ(
-        TcpOptionError::DuplicateOption,
-        ParseTcpSynOptions(duplicate.data(), duplicate.size()).error);
+    TCPIP2_EXPECT_EQ(TcpOptionError::DuplicateOption, ParseTcpSynOptions(duplicate.data(), duplicate.size()).error);
 
     const std::vector<std::uint8_t> eol = {0, 2, 1};
-    TCPIP2_EXPECT_EQ(
-        TcpOptionError::None,
-        ParseTcpSynOptions(eol.data(), eol.size()).error);
+    TCPIP2_EXPECT_EQ(TcpOptionError::None, ParseTcpSynOptions(eol.data(), eol.size()).error);
 }
 
 TCPIP2_TEST(SecureIsnIsTupleKeyedAndTimeVarying) {
@@ -304,16 +273,13 @@ TCPIP2_TEST(SynCreatesBoundedPcbAndNegotiatedSynAck) {
     const FlowKey flow = MakeFlow();
     const auto options = AllSynOptions();
 
-    const auto result = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn, options), 5000);
+    const auto result = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn, options), 5000);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::None, result.error);
     TCPIP2_EXPECT_TRUE(result.state_changed);
     TCPIP2_EXPECT_TRUE(result.response.valid);
     TCPIP2_EXPECT_EQ(Reverse(flow), result.response.flow);
     TCPIP2_EXPECT_EQ(std::uint32_t{1001}, result.response.acknowledgment);
-    TCPIP2_EXPECT_EQ(
-        static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack),
-        result.response.flags);
+    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack), result.response.flags);
     TCPIP2_EXPECT_EQ(std::uint16_t{65535}, result.response.window);
     TCPIP2_EXPECT_EQ(std::uint16_t{1460}, result.response.syn_options.mss);
     TCPIP2_EXPECT_EQ(std::uint8_t{1}, result.response.syn_options.window_scale);
@@ -335,8 +301,7 @@ TCPIP2_TEST(FinalAckEstablishesAndCancelsRetry) {
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
     const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
-    const auto ack = engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto ack = engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
 
     TCPIP2_EXPECT_TRUE(ack.state_changed);
     TCPIP2_EXPECT_FALSE(ack.response.valid);
@@ -355,20 +320,16 @@ TCPIP2_TEST(DuplicateSynReusesPcbIsnAndTimer) {
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
     const auto options = AllSynOptions();
-    const auto first = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn, options), 100);
-    const auto duplicate = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn), 200);
+    const auto first = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn, options), 100);
+    const auto duplicate = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 200);
 
     TCPIP2_EXPECT_TRUE(duplicate.response.valid);
     TCPIP2_EXPECT_EQ(first.response.sequence, duplicate.response.sequence);
-    TCPIP2_EXPECT_NE(first.response.syn_options.timestamp_value,
-                     duplicate.response.syn_options.timestamp_value);
+    TCPIP2_EXPECT_NE(first.response.syn_options.timestamp_value, duplicate.response.syn_options.timestamp_value);
     TCPIP2_EXPECT_EQ(std::size_t{1}, engine.PcbCount());
     TCPIP2_EXPECT_EQ(std::size_t{1}, timers.PendingCount());
 
-    const auto changed = engine.OnSegment(
-        MakeView(flow, 2000, 0, TcpFlag::Syn), 201);
+    const auto changed = engine.OnSegment(MakeView(flow, 2000, 0, TcpFlag::Syn), 201);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::InvalidFlags, changed.error);
     TCPIP2_EXPECT_EQ(std::size_t{1}, engine.PcbCount());
 }
@@ -378,18 +339,15 @@ TCPIP2_TEST(NegotiatedTimestampRequiredOnFinalAck) {
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
     const auto syn_options = TimestampOption(42, 0);
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn, syn_options), 100);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn, syn_options), 100);
 
-    const auto missing = engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto missing = engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::InvalidOptions, missing.error);
     TCPIP2_EXPECT_EQ(std::size_t{1}, engine.HalfOpenCount());
 
-    const auto ack_options = TimestampOption(
-        43, syn.response.syn_options.timestamp_value);
-    const auto accepted = engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack, ack_options), 102);
+    const auto ack_options = TimestampOption(43, syn.response.syn_options.timestamp_value);
+    const auto accepted =
+        engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack, ack_options), 102);
     TCPIP2_EXPECT_TRUE(accepted.state_changed);
     TCPIP2_EXPECT_EQ(std::size_t{1}, engine.EstablishedCount());
 }
@@ -399,8 +357,7 @@ TCPIP2_TEST(WrongAckResetsWithoutEstablishing) {
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
     const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
-    const auto wrong = engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 2, TcpFlag::Ack), 101);
+    const auto wrong = engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 2, TcpFlag::Ack), 101);
     TCPIP2_EXPECT_TRUE(wrong.response.valid);
     TCPIP2_EXPECT_EQ(TcpFlag::Rst, wrong.response.flags);
     TCPIP2_EXPECT_EQ(std::size_t{1}, engine.HalfOpenCount());
@@ -422,8 +379,7 @@ TCPIP2_TEST(ValidRstRemovesHalfOpenAndUnknownRstIsIgnored) {
     TCPIP2_EXPECT_EQ(std::size_t{0}, engine.PcbCount());
     TCPIP2_EXPECT_EQ(std::size_t{0}, timers.PendingCount());
 
-    const auto unknown = engine.OnSegment(
-        MakeView(MakeFlow(40001), 1, 0, TcpFlag::Rst), 103);
+    const auto unknown = engine.OnSegment(MakeView(MakeFlow(40001), 1, 0, TcpFlag::Rst), 103);
     TCPIP2_EXPECT_FALSE(unknown.response.valid);
 }
 
@@ -446,20 +402,17 @@ TCPIP2_TEST(BacklogAndHalfOpenLimitsAreIndependent) {
     TcpHandshakeEngine backlog(backlog_config, TcpIsnGenerator(kSecret), backlog_timers);
     backlog.OnSegment(MakeView(MakeFlow(40000), 1, 0, TcpFlag::Syn), 0);
     backlog.OnSegment(MakeView(MakeFlow(40001), 1, 0, TcpFlag::Syn), 0);
-    const auto backlog_full = backlog.OnSegment(
-        MakeView(MakeFlow(40002), 1, 0, TcpFlag::Syn), 0);
+    const auto backlog_full = backlog.OnSegment(MakeView(MakeFlow(40002), 1, 0, TcpFlag::Syn), 0);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::BacklogFull, backlog_full.error);
 
     TimerWheel half_open_timers;
     TcpHandshakeConfig half_open_config;
     half_open_config.backlog_limit = 4;
     half_open_config.half_open_limit = 2;
-    TcpHandshakeEngine half_open(
-        half_open_config, TcpIsnGenerator(kSecret), half_open_timers);
+    TcpHandshakeEngine half_open(half_open_config, TcpIsnGenerator(kSecret), half_open_timers);
     half_open.OnSegment(MakeView(MakeFlow(41000), 1, 0, TcpFlag::Syn), 0);
     half_open.OnSegment(MakeView(MakeFlow(41001), 1, 0, TcpFlag::Syn), 0);
-    const auto half_open_full = half_open.OnSegment(
-        MakeView(MakeFlow(41002), 1, 0, TcpFlag::Syn), 0);
+    const auto half_open_full = half_open.OnSegment(MakeView(MakeFlow(41002), 1, 0, TcpFlag::Syn), 0);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::HalfOpenLimit, half_open_full.error);
 }
 
@@ -495,8 +448,7 @@ TCPIP2_TEST(MalformedSynOptionsDoNotAllocatePcb) {
     TimerWheel timers;
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const std::vector<std::uint8_t> malformed = {2, 3, 0};
-    const auto result = engine.OnSegment(
-        MakeView(MakeFlow(), 100, 0, TcpFlag::Syn, malformed), 0);
+    const auto result = engine.OnSegment(MakeView(MakeFlow(), 100, 0, TcpFlag::Syn, malformed), 0);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::InvalidOptions, result.error);
     TCPIP2_EXPECT_EQ(std::size_t{0}, engine.PcbCount());
     TCPIP2_EXPECT_EQ(std::size_t{0}, timers.PendingCount());
@@ -512,9 +464,7 @@ TCPIP2_TEST(SynFloodNeverExceedsConfiguredBounds) {
     TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
 
     for (std::uint16_t i = 0; i < 1000; ++i) {
-        engine.OnSegment(
-            MakeView(MakeFlow(static_cast<std::uint16_t>(10000 + i)),
-                     i, 0, TcpFlag::Syn), 0);
+        engine.OnSegment(MakeView(MakeFlow(static_cast<std::uint16_t>(10000 + i)), i, 0, TcpFlag::Syn), 0);
     }
     TCPIP2_EXPECT_EQ(std::size_t{4}, engine.PcbCount());
     TCPIP2_EXPECT_EQ(std::size_t{4}, engine.HalfOpenCount());
@@ -533,8 +483,7 @@ TCPIP2_TEST(ShutdownCancelsAllHandshakeTimers) {
     engine.Shutdown();
     TCPIP2_EXPECT_EQ(std::size_t{0}, engine.PcbCount());
     TCPIP2_EXPECT_EQ(std::size_t{0}, timers.PendingCount());
-    const auto after_shutdown = engine.OnSegment(
-        MakeView(MakeFlow(40002), 1, 0, TcpFlag::Syn), 1);
+    const auto after_shutdown = engine.OnSegment(MakeView(MakeFlow(40002), 1, 0, TcpFlag::Syn), 1);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::Shutdown, after_shutdown.error);
 }
 
@@ -542,8 +491,7 @@ TCPIP2_TEST(DetachedDueRetryCannotOutliveEngine) {
     TimerWheel timers;
     std::unique_ptr<TcpHandshakeEngine> engine;
     timers.Schedule(1000, [&engine] { engine.reset(); });
-    engine = std::make_unique<TcpHandshakeEngine>(
-        TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
+    engine = std::make_unique<TcpHandshakeEngine>(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     engine->OnSegment(MakeView(MakeFlow(), 1, 0, TcpFlag::Syn), 0);
 
     TCPIP2_EXPECT_EQ(std::size_t{2}, timers.AdvanceTo(1000));
@@ -556,12 +504,10 @@ TCPIP2_TEST(SynAckSerializesToValidIpv4Packet) {
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
     const auto options = AllSynOptions();
-    const auto handshake = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn, options), 100);
+    const auto handshake = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn, options), 100);
 
     std::array<std::uint8_t, 128> packet{};
-    const auto built = BuildTcpControlPacket(
-        handshake.response, packet.data(), packet.size(), 77, 55);
+    const auto built = BuildTcpControlPacket(handshake.response, packet.data(), packet.size(), 77, 55);
     TCPIP2_EXPECT_EQ(TcpOutputError::None, built.error);
 
     const auto ip = ParseIpv4(packet.data(), built.packet_length);
@@ -570,16 +516,14 @@ TCPIP2_TEST(SynAckSerializesToValidIpv4Packet) {
     TCPIP2_EXPECT_EQ(std::uint16_t{77}, ip.header.identification);
     TCPIP2_EXPECT_EQ(std::uint8_t{55}, ip.header.ttl);
 
-    const auto tcp = ParseTcpSegment(
-        handshake.response.flow.source, handshake.response.flow.destination,
-        ip.payload, ip.header.payload_length);
+    const auto tcp = ParseTcpSegment(handshake.response.flow.source, handshake.response.flow.destination, ip.payload,
+                                     ip.header.payload_length);
     TCPIP2_EXPECT_EQ(TcpParseError::None, tcp.error);
     TCPIP2_EXPECT_EQ(handshake.response.sequence, tcp.segment.sequence);
     TCPIP2_EXPECT_EQ(handshake.response.acknowledgment, tcp.segment.acknowledgment);
     TCPIP2_EXPECT_EQ(handshake.response.flags, tcp.segment.flags);
     TCPIP2_EXPECT_EQ(std::uint16_t{65535}, tcp.segment.window);
-    const auto parsed_options = ParseTcpSynOptions(
-        tcp.segment.options, tcp.segment.options_length);
+    const auto parsed_options = ParseTcpSynOptions(tcp.segment.options, tcp.segment.options_length);
     TCPIP2_EXPECT_EQ(TcpOptionError::None, parsed_options.error);
     TCPIP2_EXPECT_TRUE(parsed_options.options.mss_present);
     TCPIP2_EXPECT_TRUE(parsed_options.options.window_scale_present);
@@ -588,10 +532,8 @@ TCPIP2_TEST(SynAckSerializesToValidIpv4Packet) {
 }
 
 TCPIP2_TEST(SynAckSerializesToValidIpv6Packet) {
-    std::uint8_t src[16] = {0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0,
-                            0, 0, 0, 0, 0, 0, 0, 1};
-    std::uint8_t dst[16] = {0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0,
-                            0, 0, 0, 0, 0, 0, 0, 2};
+    std::uint8_t src[16] = {0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    std::uint8_t dst[16] = {0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
     FlowKey flow;
     flow.source = IpAddress::Ipv6(src);
     flow.destination = IpAddress::Ipv6(dst);
@@ -601,24 +543,20 @@ TCPIP2_TEST(SynAckSerializesToValidIpv6Packet) {
 
     TimerWheel timers;
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
-    const auto handshake = engine.OnSegment(
-        MakeView(flow, 2000, 0, TcpFlag::Syn), 100);
+    const auto handshake = engine.OnSegment(MakeView(flow, 2000, 0, TcpFlag::Syn), 100);
     std::array<std::uint8_t, 128> packet{};
-    const auto built = BuildTcpControlPacket(
-        handshake.response, packet.data(), packet.size(), 0, 44);
+    const auto built = BuildTcpControlPacket(handshake.response, packet.data(), packet.size(), 0, 44);
     TCPIP2_EXPECT_EQ(TcpOutputError::None, built.error);
 
     const auto ip = ParseIpv6(packet.data(), built.packet_length);
     TCPIP2_EXPECT_EQ(Ipv6ParseResult::Error::None, ip.error);
     TCPIP2_EXPECT_EQ(std::uint8_t{6}, ip.final_next_header);
     TCPIP2_EXPECT_EQ(std::uint8_t{44}, ip.header.hop_limit);
-    const auto tcp = ParseTcpSegment(
-        handshake.response.flow.source, handshake.response.flow.destination,
-        ip.payload, ip.payload_length);
+    const auto tcp = ParseTcpSegment(handshake.response.flow.source, handshake.response.flow.destination, ip.payload,
+                                     ip.payload_length);
     TCPIP2_EXPECT_EQ(TcpParseError::None, tcp.error);
     TCPIP2_EXPECT_EQ(handshake.response.flags, tcp.segment.flags);
-    const auto parsed_options = ParseTcpSynOptions(
-        tcp.segment.options, tcp.segment.options_length);
+    const auto parsed_options = ParseTcpSynOptions(tcp.segment.options, tcp.segment.options_length);
     TCPIP2_EXPECT_EQ(TcpOptionError::None, parsed_options.error);
     TCPIP2_EXPECT_EQ(std::uint16_t{1440}, parsed_options.options.mss);
 }
@@ -626,21 +564,17 @@ TCPIP2_TEST(SynAckSerializesToValidIpv6Packet) {
 TCPIP2_TEST(RstSerializationHasNoSynOptionsAndIsBounded) {
     TimerWheel timers;
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
-    const auto reset = engine.OnSegment(
-        MakeView(MakeFlow(), 10, 77, TcpFlag::Ack), 100);
+    const auto reset = engine.OnSegment(MakeView(MakeFlow(), 10, 77, TcpFlag::Ack), 100);
     std::array<std::uint8_t, 64> packet{};
-    const auto too_small = BuildTcpControlPacket(
-        reset.response, packet.data(), 39);
+    const auto too_small = BuildTcpControlPacket(reset.response, packet.data(), 39);
     TCPIP2_EXPECT_EQ(TcpOutputError::BufferTooSmall, too_small.error);
 
-    const auto built = BuildTcpControlPacket(
-        reset.response, packet.data(), packet.size());
+    const auto built = BuildTcpControlPacket(reset.response, packet.data(), packet.size());
     TCPIP2_EXPECT_EQ(TcpOutputError::None, built.error);
     TCPIP2_EXPECT_EQ(std::size_t{40}, built.packet_length);
     const auto ip = ParseIpv4(packet.data(), built.packet_length);
-    const auto tcp = ParseTcpSegment(
-        reset.response.flow.source, reset.response.flow.destination,
-        ip.payload, ip.header.payload_length);
+    const auto tcp = ParseTcpSegment(reset.response.flow.source, reset.response.flow.destination, ip.payload,
+                                     ip.header.payload_length);
     TCPIP2_EXPECT_EQ(TcpParseError::None, tcp.error);
     TCPIP2_EXPECT_EQ(TcpFlag::Rst, tcp.segment.flags);
     TCPIP2_EXPECT_EQ(std::size_t{0}, tcp.segment.options_length);
@@ -649,20 +583,16 @@ TCPIP2_TEST(RstSerializationHasNoSynOptionsAndIsBounded) {
 TCPIP2_TEST(IpTcpInputValidatesChecksumsAndFragments) {
     TimerWheel timers;
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
-    const auto handshake = engine.OnSegment(
-        MakeView(MakeFlow(), 1000, 0, TcpFlag::Syn), 100);
+    const auto handshake = engine.OnSegment(MakeView(MakeFlow(), 1000, 0, TcpFlag::Syn), 100);
     std::array<std::uint8_t, 128> packet{};
-    const auto built = BuildTcpControlPacket(
-        handshake.response, packet.data(), packet.size());
+    const auto built = BuildTcpControlPacket(handshake.response, packet.data(), packet.size());
 
     const auto valid = ParseIpTcpPacket(packet.data(), built.packet_length);
     TCPIP2_EXPECT_EQ(TcpInputError::None, valid.error);
     TCPIP2_EXPECT_EQ(handshake.response.flow, valid.segment.flow);
 
     packet[10] ^= 1;
-    TCPIP2_EXPECT_EQ(
-        TcpInputError::BadIpv4Checksum,
-        ParseIpTcpPacket(packet.data(), built.packet_length).error);
+    TCPIP2_EXPECT_EQ(TcpInputError::BadIpv4Checksum, ParseIpTcpPacket(packet.data(), built.packet_length).error);
     packet[10] ^= 1;
 
     packet[6] = 0x20;
@@ -670,9 +600,8 @@ TCPIP2_TEST(IpTcpInputValidatesChecksumsAndFragments) {
     packet[10] = 0;
     packet[11] = 0;
     Write16(packet.data() + 10, InternetChecksum(packet.data(), 20));
-    TCPIP2_EXPECT_EQ(
-        TcpInputError::FragmentRequiresReassembly,
-        ParseIpTcpPacket(packet.data(), built.packet_length).error);
+    TCPIP2_EXPECT_EQ(TcpInputError::FragmentRequiresReassembly,
+                     ParseIpTcpPacket(packet.data(), built.packet_length).error);
 
     std::array<std::uint8_t, 68> ipv6_fragment{};
     ipv6_fragment[0] = 0x60;
@@ -681,9 +610,8 @@ TCPIP2_TEST(IpTcpInputValidatesChecksumsAndFragments) {
     ipv6_fragment[7] = 64;
     ipv6_fragment[40] = 6;
     ipv6_fragment[43] = 1;
-    TCPIP2_EXPECT_EQ(
-        TcpInputError::FragmentRequiresReassembly,
-        ParseIpTcpPacket(ipv6_fragment.data(), ipv6_fragment.size()).error);
+    TCPIP2_EXPECT_EQ(TcpInputError::FragmentRequiresReassembly,
+                     ParseIpTcpPacket(ipv6_fragment.data(), ipv6_fragment.size()).error);
 }
 
 TCPIP2_TEST(ThirdHandshakeAckCanCarryData) {
@@ -692,9 +620,7 @@ TCPIP2_TEST(ThirdHandshakeAckCanCarryData) {
     const FlowKey flow = MakeFlow();
     const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
     const std::vector<std::uint8_t> payload = {1, 2, 3};
-    const auto ack = engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack, {}, payload),
-        101);
+    const auto ack = engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack, {}, payload), 101);
     TCPIP2_EXPECT_TRUE(ack.state_changed);
 
     TcpPcbSnapshot pcb;
@@ -713,9 +639,8 @@ TCPIP2_TEST(DelayedAckFiresAtFortyMilliseconds) {
     const FlowKey flow = MakeFlow();
     const TcpPcbSnapshot established = Establish(engine, flow);
     const std::vector<std::uint8_t> payload = {1, 2};
-    const auto received = engine.OnSegment(
-        MakeView(flow, established.rcv_nxt, established.snd_nxt,
-                 TcpFlag::Ack, {}, payload), 200);
+    const auto received =
+        engine.OnSegment(MakeView(flow, established.rcv_nxt, established.snd_nxt, TcpFlag::Ack, {}, payload), 200);
     TCPIP2_EXPECT_FALSE(received.response.valid);
     TCPIP2_EXPECT_EQ(std::size_t{1}, timers.PendingCount());
     TCPIP2_EXPECT_EQ(std::size_t{0}, timers.AdvanceTo(239));
@@ -735,12 +660,9 @@ TCPIP2_TEST(SecondInOrderSegmentImmediatelyAcksAndCancelsDelay) {
     const TcpPcbSnapshot established = Establish(engine, flow);
     const std::vector<std::uint8_t> first = {1, 2};
     const std::vector<std::uint8_t> second = {3, 4};
-    engine.OnSegment(
-        MakeView(flow, established.rcv_nxt, established.snd_nxt,
-                 TcpFlag::Ack, {}, first), 200);
-    const auto result = engine.OnSegment(
-        MakeView(flow, established.rcv_nxt + 2, established.snd_nxt,
-                 TcpFlag::Ack, {}, second), 201);
+    engine.OnSegment(MakeView(flow, established.rcv_nxt, established.snd_nxt, TcpFlag::Ack, {}, first), 200);
+    const auto result =
+        engine.OnSegment(MakeView(flow, established.rcv_nxt + 2, established.snd_nxt, TcpFlag::Ack, {}, second), 201);
     TCPIP2_EXPECT_TRUE(result.response.valid);
     TCPIP2_EXPECT_EQ(established.rcv_nxt + 4, result.response.acknowledgment);
     TCPIP2_EXPECT_EQ(std::size_t{0}, timers.PendingCount());
@@ -751,26 +673,19 @@ TCPIP2_TEST(OutOfOrderAckContainsNegotiatedSackBlock) {
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
     const std::vector<std::uint8_t> sack_option = {4, 2};
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn, sack_option), 100);
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn, sack_option), 100);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
     const std::vector<std::uint8_t> tail = {5, 6};
-    const auto out_of_order = engine.OnSegment(
-        MakeView(flow, 1005, syn.response.sequence + 1,
-                 TcpFlag::Ack, {}, tail), 200);
+    const auto out_of_order =
+        engine.OnSegment(MakeView(flow, 1005, syn.response.sequence + 1, TcpFlag::Ack, {}, tail), 200);
     TCPIP2_EXPECT_TRUE(out_of_order.response.valid);
     TCPIP2_EXPECT_EQ(std::uint32_t{1001}, out_of_order.response.acknowledgment);
     TCPIP2_EXPECT_EQ(std::size_t{1}, out_of_order.response.sack_blocks.count);
-    TCPIP2_EXPECT_EQ(std::uint32_t{1005},
-                     out_of_order.response.sack_blocks.blocks[0].left_edge);
-    TCPIP2_EXPECT_EQ(std::uint32_t{1007},
-                     out_of_order.response.sack_blocks.blocks[0].right_edge);
+    TCPIP2_EXPECT_EQ(std::uint32_t{1005}, out_of_order.response.sack_blocks.blocks[0].left_edge);
+    TCPIP2_EXPECT_EQ(std::uint32_t{1007}, out_of_order.response.sack_blocks.blocks[0].right_edge);
 
     const std::vector<std::uint8_t> gap = {1, 2, 3, 4};
-    const auto filled = engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1,
-                 TcpFlag::Ack, {}, gap), 201);
+    const auto filled = engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack, {}, gap), 201);
     TCPIP2_EXPECT_TRUE(filled.response.valid);
     TCPIP2_EXPECT_EQ(std::uint32_t{1007}, filled.response.acknowledgment);
     TCPIP2_EXPECT_EQ(std::size_t{0}, filled.response.sack_blocks.count);
@@ -781,14 +696,12 @@ TCPIP2_TEST(SessionWouldBlockShrinksWindowAndWritableRestoresIt) {
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
     const TcpPcbSnapshot established = Establish(engine, flow);
-    auto session = std::make_shared<ReceiveSession>(
-        std::vector<SendResult>{{2, SendStatus::WouldBlock}});
+    auto session = std::make_shared<ReceiveSession>(std::vector<SendResult>{{2, SendStatus::WouldBlock}});
     engine.AttachSession(flow, session, 150);
 
     const std::vector<std::uint8_t> payload = {1, 2, 3, 4};
-    const auto blocked = engine.OnSegment(
-        MakeView(flow, established.rcv_nxt, established.snd_nxt,
-                 TcpFlag::Ack, {}, payload), 200);
+    const auto blocked =
+        engine.OnSegment(MakeView(flow, established.rcv_nxt, established.snd_nxt, TcpFlag::Ack, {}, payload), 200);
     TCPIP2_EXPECT_TRUE(blocked.response.valid);
     TCPIP2_EXPECT_EQ(std::uint16_t{0}, blocked.response.window);
     TCPIP2_EXPECT_EQ(established.rcv_nxt + 4, blocked.response.acknowledgment);
@@ -800,8 +713,7 @@ TCPIP2_TEST(SessionWouldBlockShrinksWindowAndWritableRestoresIt) {
     TCPIP2_EXPECT_EQ(std::size_t{2}, session->Delivered().size());
 
     session->SetScript({{2, SendStatus::Accepted}});
-    const auto writable = engine.OnSessionWritable(
-        after_block.flow_id, after_block.generation, 201);
+    const auto writable = engine.OnSessionWritable(after_block.flow_id, after_block.generation, 201);
     TCPIP2_EXPECT_TRUE(writable.response.valid);
     TCPIP2_EXPECT_TRUE(writable.response.window != 0);
     TcpPcbSnapshot reopened;
@@ -810,8 +722,7 @@ TCPIP2_TEST(SessionWouldBlockShrinksWindowAndWritableRestoresIt) {
     TCPIP2_EXPECT_EQ(std::size_t{0}, reopened.receive_bytes);
     TCPIP2_EXPECT_EQ(std::size_t{4}, session->Delivered().size());
 
-    const auto stale = engine.OnSessionWritable(
-        after_block.flow_id, after_block.generation + 1, 202);
+    const auto stale = engine.OnSessionWritable(after_block.flow_id, after_block.generation + 1, 202);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::InvalidSession, stale.error);
     TCPIP2_EXPECT_FALSE(stale.response.valid);
 }
@@ -823,18 +734,14 @@ TCPIP2_TEST(BlockedSessionStillAcceptsPreviouslyAdvertisedInflightData) {
     TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
     const TcpPcbSnapshot established = Establish(engine, flow);
-    auto session = std::make_shared<ReceiveSession>(
-        std::vector<SendResult>{{0, SendStatus::WouldBlock}});
+    auto session = std::make_shared<ReceiveSession>(std::vector<SendResult>{{0, SendStatus::WouldBlock}});
     engine.AttachSession(flow, session, 150);
 
     const std::vector<std::uint8_t> first = {1, 2};
-    engine.OnSegment(
-        MakeView(flow, established.rcv_nxt, established.snd_nxt,
-                 TcpFlag::Ack, {}, first), 200);
+    engine.OnSegment(MakeView(flow, established.rcv_nxt, established.snd_nxt, TcpFlag::Ack, {}, first), 200);
     const std::vector<std::uint8_t> in_flight = {3, 4};
     const auto accepted = engine.OnSegment(
-        MakeView(flow, established.rcv_nxt + 2, established.snd_nxt,
-                 TcpFlag::Ack, {}, in_flight), 201);
+        MakeView(flow, established.rcv_nxt + 2, established.snd_nxt, TcpFlag::Ack, {}, in_flight), 201);
     TCPIP2_EXPECT_TRUE(accepted.response.valid);
     TCPIP2_EXPECT_EQ(established.rcv_nxt + 4, accepted.response.acknowledgment);
     TCPIP2_EXPECT_EQ(std::uint16_t{0}, accepted.response.window);
@@ -847,8 +754,7 @@ TCPIP2_TEST(ReceiveMemoryBudgetRejectsAndReleasesEstablishedPcb) {
     TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
     const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
-    const auto ack = engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto ack = engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::ReceiveBudget, ack.error);
     TCPIP2_EXPECT_TRUE(ack.response.valid);
     TCPIP2_EXPECT_EQ(std::size_t{0}, engine.PcbCount());
@@ -868,24 +774,20 @@ TCPIP2_TEST(AckOutputFitsTimestampAndThreeSackBlocks) {
     response.timestamp_echo = 29;
     response.sack_blocks.count = 4;
     for (std::size_t i = 0; i < 4; ++i) {
-        response.sack_blocks.blocks[i].left_edge =
-            static_cast<std::uint32_t>(100 + i * 10);
-        response.sack_blocks.blocks[i].right_edge =
-            static_cast<std::uint32_t>(105 + i * 10);
+        response.sack_blocks.blocks[i].left_edge = static_cast<std::uint32_t>(100 + i * 10);
+        response.sack_blocks.blocks[i].right_edge = static_cast<std::uint32_t>(105 + i * 10);
     }
 
     std::array<std::uint8_t, 128> packet{};
-    const auto built = BuildTcpControlPacket(
-        response, packet.data(), packet.size());
+    const auto built = BuildTcpControlPacket(response, packet.data(), packet.size());
     TCPIP2_EXPECT_EQ(TcpOutputError::None, built.error);
     TCPIP2_EXPECT_EQ(std::size_t{80}, built.packet_length);
     TCPIP2_EXPECT_EQ(std::uint8_t{0xf0}, packet[32]);
     TCPIP2_EXPECT_EQ(std::uint8_t{5}, packet[52]);
     TCPIP2_EXPECT_EQ(std::uint8_t{26}, packet[53]);
     const auto ip = ParseIpv4(packet.data(), built.packet_length);
-    const auto tcp = ParseTcpSegment(
-        response.flow.source, response.flow.destination,
-        ip.payload, ip.header.payload_length);
+    const auto tcp =
+        ParseTcpSegment(response.flow.source, response.flow.destination, ip.payload, ip.header.payload_length);
     TCPIP2_EXPECT_EQ(TcpParseError::None, tcp.error);
 }
 
@@ -898,12 +800,9 @@ TCPIP2_TEST(SynReceivedUsesActuallyAdvertisedUnscaledWindow) {
     const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
     TCPIP2_EXPECT_EQ(std::uint16_t{65535}, syn.response.window);
 
-    const auto far_ack = engine.OnSegment(
-        MakeView(flow, 71000, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto far_ack = engine.OnSegment(MakeView(flow, 71000, syn.response.sequence + 1, TcpFlag::Ack), 101);
     TCPIP2_EXPECT_TRUE(far_ack.response.valid);
-    TCPIP2_EXPECT_EQ(
-        static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack),
-        far_ack.response.flags);
+    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack), far_ack.response.flags);
     TcpPcbSnapshot pcb;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, pcb));
     TCPIP2_EXPECT_EQ(TcpState::SynReceived, pcb.state);
@@ -914,26 +813,19 @@ TCPIP2_TEST(OutOfWindowTimestampDoesNotPoisonPawsState) {
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
     const auto syn_options = TimestampOption(42, 0);
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn, syn_options), 100);
-    const auto final_options = TimestampOption(
-        43, syn.response.syn_options.timestamp_value);
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1,
-                 TcpFlag::Ack, final_options), 101);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn, syn_options), 100);
+    const auto final_options = TimestampOption(43, syn.response.syn_options.timestamp_value);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack, final_options), 101);
 
     const std::vector<std::uint8_t> byte = {1};
     const auto future_options = TimestampOption(1000, 0);
-    const auto rejected = engine.OnSegment(
-        MakeView(flow, 71000, syn.response.sequence + 1,
-                 TcpFlag::Ack, future_options, byte), 200);
+    const auto rejected =
+        engine.OnSegment(MakeView(flow, 71000, syn.response.sequence + 1, TcpFlag::Ack, future_options, byte), 200);
     TCPIP2_EXPECT_TRUE(rejected.response.valid);
     TCPIP2_EXPECT_EQ(std::uint32_t{43}, rejected.response.timestamp_echo);
 
     const auto valid_options = TimestampOption(44, 0);
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1,
-                 TcpFlag::Ack, valid_options, byte), 201);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack, valid_options, byte), 201);
     TcpPcbSnapshot pcb;
     engine.Find(flow, pcb);
     TCPIP2_EXPECT_EQ(std::uint32_t{1002}, pcb.rcv_nxt);
@@ -948,19 +840,17 @@ TCPIP2_TEST(NonExactRstPayloadNeverReachesSession) {
     auto session = std::make_shared<ReceiveSession>();
     engine.AttachSession(flow, session, 150);
     const std::vector<std::uint8_t> payload = {9, 9};
-    const auto challenge = engine.OnSegment(
-        MakeView(flow, established.rcv_nxt + 1, established.snd_nxt,
-                 static_cast<std::uint8_t>(TcpFlag::Rst | TcpFlag::Ack),
-                 {}, payload), 200);
+    const auto challenge =
+        engine.OnSegment(MakeView(flow, established.rcv_nxt + 1, established.snd_nxt,
+                                  static_cast<std::uint8_t>(TcpFlag::Rst | TcpFlag::Ack), {}, payload),
+                         200);
     TCPIP2_EXPECT_TRUE(challenge.response.valid);
     TCPIP2_EXPECT_EQ(std::size_t{0}, session->Delivered().size());
     TcpPcbSnapshot unchanged;
     engine.Find(flow, unchanged);
     TCPIP2_EXPECT_EQ(established.rcv_nxt, unchanged.rcv_nxt);
 
-    const auto exact = engine.OnSegment(
-        MakeView(flow, established.rcv_nxt, established.snd_nxt,
-                 TcpFlag::Rst), 201);
+    const auto exact = engine.OnSegment(MakeView(flow, established.rcv_nxt, established.snd_nxt, TcpFlag::Rst), 201);
     TCPIP2_EXPECT_TRUE(exact.state_changed);
     TCPIP2_EXPECT_EQ(std::size_t{0}, engine.PcbCount());
     TCPIP2_EXPECT_EQ(std::size_t{0}, engine.ReceiveMemoryBytes());
@@ -971,22 +861,17 @@ TCPIP2_TEST(SessionTerminalResultDetachesUntilGenerationClosed) {
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
     const TcpPcbSnapshot established = Establish(engine, flow);
-    auto session = std::make_shared<ReceiveSession>(
-        std::vector<SendResult>{{1, SendStatus::Closed}});
+    auto session = std::make_shared<ReceiveSession>(std::vector<SendResult>{{1, SendStatus::Closed}});
     engine.AttachSession(flow, session, 150);
     const std::vector<std::uint8_t> payload = {1, 2};
-    const auto terminal = engine.OnSegment(
-        MakeView(flow, established.rcv_nxt, established.snd_nxt,
-                 TcpFlag::Ack, {}, payload), 200);
+    const auto terminal =
+        engine.OnSegment(MakeView(flow, established.rcv_nxt, established.snd_nxt, TcpFlag::Ack, {}, payload), 200);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::InvalidSession, terminal.error);
-    const auto writable = engine.OnSessionWritable(
-        established.flow_id, established.generation, 201);
+    const auto writable = engine.OnSessionWritable(established.flow_id, established.generation, 201);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::InvalidSession, writable.error);
-    TCPIP2_EXPECT_TRUE(engine.OnSessionClosed(
-        established.flow_id, established.generation, SessionError::Reset));
+    TCPIP2_EXPECT_TRUE(engine.OnSessionClosed(established.flow_id, established.generation, SessionError::Reset));
     TCPIP2_EXPECT_EQ(std::size_t{0}, engine.PcbCount());
-    TCPIP2_EXPECT_FALSE(engine.OnSessionClosed(
-        established.flow_id, established.generation));
+    TCPIP2_EXPECT_FALSE(engine.OnSessionClosed(established.flow_id, established.generation));
 }
 
 TCPIP2_TEST(RemoteSessionEofStartsTcpClose) {
@@ -997,8 +882,7 @@ TCPIP2_TEST(RemoteSessionEofStartsTcpClose) {
     auto session = std::make_shared<ReceiveSession>();
     engine.AttachSession(flow, session, 150);
 
-    TCPIP2_EXPECT_TRUE(engine.OnSessionClosed(
-        established.flow_id, established.generation, SessionError::RemoteClosed));
+    TCPIP2_EXPECT_TRUE(engine.OnSessionClosed(established.flow_id, established.generation, SessionError::RemoteClosed));
 
     TcpPcbSnapshot closing;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, closing));
@@ -1018,8 +902,7 @@ TCPIP2_TEST(RemoteSessionFailureSendsTcpReset) {
     auto session = std::make_shared<ReceiveSession>();
     engine.AttachSession(flow, session, 150);
 
-    TCPIP2_EXPECT_TRUE(engine.OnSessionClosed(
-        established.flow_id, established.generation, SessionError::Reset));
+    TCPIP2_EXPECT_TRUE(engine.OnSessionClosed(established.flow_id, established.generation, SessionError::Reset));
     TCPIP2_EXPECT_EQ(std::size_t{0}, engine.PcbCount());
 
     TcpResponse response;
@@ -1053,9 +936,8 @@ TCPIP2_TEST(EstablishedPayloadWithoutAckIsRejected) {
     auto session = std::make_shared<ReceiveSession>();
     engine.AttachSession(flow, session, 150);
     const std::vector<std::uint8_t> payload = {1, 2};
-    const auto result = engine.OnSegment(
-        MakeView(flow, established.rcv_nxt, established.snd_nxt,
-                 TcpFlag::Psh, {}, payload), 200);
+    const auto result =
+        engine.OnSegment(MakeView(flow, established.rcv_nxt, established.snd_nxt, TcpFlag::Psh, {}, payload), 200);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::InvalidFlags, result.error);
     TCPIP2_EXPECT_EQ(std::size_t{0}, session->Delivered().size());
 }
@@ -1065,18 +947,12 @@ TCPIP2_TEST(FutureSequencePureAckDoesNotUpdateTimestampRecent) {
     TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
     const auto syn_options = TimestampOption(42, 0);
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn, syn_options), 100);
-    const auto final_options = TimestampOption(
-        43, syn.response.syn_options.timestamp_value);
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1,
-                 TcpFlag::Ack, final_options), 101);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn, syn_options), 100);
+    const auto final_options = TimestampOption(43, syn.response.syn_options.timestamp_value);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack, final_options), 101);
 
     const auto future = TimestampOption(1000, 0);
-    engine.OnSegment(
-        MakeView(flow, 1002, syn.response.sequence + 1,
-                 TcpFlag::Ack, future), 200);
+    engine.OnSegment(MakeView(flow, 1002, syn.response.sequence + 1, TcpFlag::Ack, future), 200);
     TcpPcbSnapshot pcb;
     engine.Find(flow, pcb);
     TCPIP2_EXPECT_EQ(std::uint32_t{43}, pcb.options.peer_timestamp);
@@ -1090,9 +966,8 @@ TCPIP2_TEST(FutureAcknowledgmentCannotInjectPayload) {
     auto session = std::make_shared<ReceiveSession>();
     engine.AttachSession(flow, session, 150);
     const std::vector<std::uint8_t> payload = {1, 2};
-    const auto rejected = engine.OnSegment(
-        MakeView(flow, established.rcv_nxt, established.snd_nxt + 1,
-                 TcpFlag::Ack, {}, payload), 200);
+    const auto rejected =
+        engine.OnSegment(MakeView(flow, established.rcv_nxt, established.snd_nxt + 1, TcpFlag::Ack, {}, payload), 200);
     TCPIP2_EXPECT_TRUE(rejected.response.valid);
     TCPIP2_EXPECT_EQ(std::size_t{0}, session->Delivered().size());
     TcpPcbSnapshot pcb;
@@ -1103,10 +978,8 @@ TCPIP2_TEST(FutureAcknowledgmentCannotInjectPayload) {
 TCPIP2_TEST(EngineEpochSeparatesCallbackGenerations) {
     TimerWheel first_timers;
     TimerWheel second_timers;
-    TcpHandshakeEngine first(
-        TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), first_timers, 10);
-    TcpHandshakeEngine second(
-        TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), second_timers, 11);
+    TcpHandshakeEngine first(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), first_timers, 10);
+    TcpHandshakeEngine second(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), second_timers, 11);
     const FlowKey flow = MakeFlow();
     const TcpPcbSnapshot first_flow = Establish(first, flow);
     const TcpPcbSnapshot second_flow = Establish(second, flow);
@@ -1139,8 +1012,7 @@ TCPIP2_TEST(OutputIpv4DataSegment) {
     TCPIP2_EXPECT_EQ(result.packet_length, std::size_t{44});
 
     // Verify IP total length
-    TCPIP2_EXPECT_EQ(static_cast<std::uint16_t>(output[2] << 8 | output[3]),
-                     std::uint16_t{44});
+    TCPIP2_EXPECT_EQ(static_cast<std::uint16_t>(output[2] << 8 | output[3]), std::uint16_t{44});
     // Verify IP protocol = 6
     TCPIP2_EXPECT_EQ(output[9], std::uint8_t{6});
     // TCP data offset = 5 (20 bytes / 4)
@@ -1153,19 +1025,15 @@ TCPIP2_TEST(OutputIpv4DataSegment) {
 
     // Verify TCP checksum is valid: recompute over the segment (including
     // the checksum field) with the same pseudo-header seed — must be 0.
-    std::uint32_t seed = Ipv4PseudoHeaderSeed(
-        flow.source.Bytes(), flow.destination.Bytes(), 6,
-        static_cast<std::uint16_t>(24));
-    TCPIP2_EXPECT_EQ(InternetChecksum(output + 20, 24, seed),
-                     std::uint16_t{0});
+    std::uint32_t seed =
+        Ipv4PseudoHeaderSeed(flow.source.Bytes(), flow.destination.Bytes(), 6, static_cast<std::uint16_t>(24));
+    TCPIP2_EXPECT_EQ(InternetChecksum(output + 20, 24, seed), std::uint16_t{0});
 }
 
 TCPIP2_TEST(OutputIpv6DataSegment) {
     FlowKey flow;
-    const std::uint8_t src6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
-                                    0, 0, 0, 0, 0, 0, 0, 1};
-    const std::uint8_t dst6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
-                                    0, 0, 0, 0, 0, 0, 0, 2};
+    const std::uint8_t src6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    const std::uint8_t dst6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2};
     flow.source = IpAddress::Ipv6(src6);
     flow.destination = IpAddress::Ipv6(dst6);
     flow.source_port = 40000;
@@ -1191,8 +1059,7 @@ TCPIP2_TEST(OutputIpv6DataSegment) {
     TCPIP2_EXPECT_EQ(result.packet_length, std::size_t{62});
 
     // IPv6 payload length = 22 (TCP header 20 + payload 2)
-    TCPIP2_EXPECT_EQ(static_cast<std::uint16_t>(output[4] << 8 | output[5]),
-                     std::uint16_t{22});
+    TCPIP2_EXPECT_EQ(static_cast<std::uint16_t>(output[4] << 8 | output[5]), std::uint16_t{22});
     // Next header = 6 (TCP)
     TCPIP2_EXPECT_EQ(output[6], std::uint8_t{6});
 
@@ -1202,11 +1069,9 @@ TCPIP2_TEST(OutputIpv6DataSegment) {
 
     // Verify TCP checksum is valid: recompute over the segment (including
     // the checksum field) with the same pseudo-header seed — must be 0.
-    std::uint32_t seed = Ipv6PseudoHeaderSeed(
-        flow.source.Bytes(), flow.destination.Bytes(), 6,
-        static_cast<std::uint32_t>(22));
-    TCPIP2_EXPECT_EQ(InternetChecksum(output + 40, 22, seed),
-                     std::uint16_t{0});
+    std::uint32_t seed =
+        Ipv6PseudoHeaderSeed(flow.source.Bytes(), flow.destination.Bytes(), 6, static_cast<std::uint32_t>(22));
+    TCPIP2_EXPECT_EQ(InternetChecksum(output + 40, 22, seed), std::uint16_t{0});
 }
 
 TCPIP2_TEST(OutputDataSegmentWithTimestampOption) {
@@ -1348,7 +1213,8 @@ TCPIP2_TEST(SendPathEnqueueRejectsNullOrEmpty) {
     const TcpPcbSnapshot established = Establish(engine, flow);
 
     TCPIP2_EXPECT_EQ(std::size_t{0}, engine.EnqueueSendData(established.flow_id, nullptr, 4));
-    TCPIP2_EXPECT_EQ(std::size_t{0}, engine.EnqueueSendData(established.flow_id, reinterpret_cast<const std::uint8_t*>(""), 0));
+    TCPIP2_EXPECT_EQ(std::size_t{0},
+                     engine.EnqueueSendData(established.flow_id, reinterpret_cast<const std::uint8_t *>(""), 0));
 }
 
 TCPIP2_TEST(RemoteDataRemainderIsRetainedUntilTcpSendBufferHasSpace) {
@@ -1367,8 +1233,7 @@ TCPIP2_TEST(RemoteDataRemainderIsRetainedUntilTcpSendBufferHasSpace) {
     std::memcpy(lease.Data(), data, sizeof(data));
     lease.Resize(sizeof(data));
 
-    TCPIP2_EXPECT_FALSE(engine.EnqueueRemoteData(
-        established.flow_id, established.generation, lease));
+    TCPIP2_EXPECT_FALSE(engine.EnqueueRemoteData(established.flow_id, established.generation, lease));
     TCPIP2_EXPECT_EQ(std::size_t{2}, lease.Size());
     TCPIP2_EXPECT_EQ(std::uint8_t{5}, lease.Data()[0]);
     TCPIP2_EXPECT_EQ(std::uint8_t{6}, lease.Data()[1]);
@@ -1376,8 +1241,7 @@ TCPIP2_TEST(RemoteDataRemainderIsRetainedUntilTcpSendBufferHasSpace) {
     std::vector<BufferLease> tx;
     engine.PumpSendPaths(200, 64, pool, tx, 64);
     TCPIP2_EXPECT_EQ(std::size_t{1}, tx.size());
-    TCPIP2_EXPECT_TRUE(engine.EnqueueRemoteData(
-        established.flow_id, established.generation, lease));
+    TCPIP2_EXPECT_TRUE(engine.EnqueueRemoteData(established.flow_id, established.generation, lease));
     TCPIP2_EXPECT_FALSE(static_cast<bool>(lease));
 
     engine.PumpSendPaths(201, 64, pool, tx, 64);
@@ -1388,7 +1252,7 @@ TCPIP2_TEST(PumpSendPathsSerializesDataSegmentToTxLease) {
     PktBufferPool pool(8, 2048);
     TimerWheel timers;
     TcpHandshakeConfig config;
-    config.enable_timestamps = false;  // Keep packet minimal for easier parsing.
+    config.enable_timestamps = false; // Keep packet minimal for easier parsing.
     TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
     const TcpPcbSnapshot established = Establish(engine, flow);
@@ -1404,16 +1268,14 @@ TCPIP2_TEST(PumpSendPathsSerializesDataSegmentToTxLease) {
     TCPIP2_EXPECT_TRUE(tx_leases[0].Size() > 0);
 
     // Parse the serialized packet: IPv4 header + TCP header + payload.
-    const std::uint8_t* pkt = tx_leases[0].Data();
+    const std::uint8_t *pkt = tx_leases[0].Data();
     const std::size_t pkt_len = tx_leases[0].Size();
     const auto ip = ParseIpv4(pkt, pkt_len);
     TCPIP2_EXPECT_EQ(Ipv4ParseError::None, ip.error);
 
     // The response flow is the reverse of the incoming flow.
     const FlowKey resp_flow = Reverse(flow);
-    const auto tcp = ParseTcpSegment(
-        resp_flow.source, resp_flow.destination,
-        ip.payload, ip.header.payload_length);
+    const auto tcp = ParseTcpSegment(resp_flow.source, resp_flow.destination, ip.payload, ip.header.payload_length);
     TCPIP2_EXPECT_EQ(TcpParseError::None, tcp.error);
 
     // Verify the payload is present in the TCP segment.
@@ -1450,8 +1312,7 @@ TCPIP2_TEST(PumpSendPathsAdvancesSndNxtAfterAck) {
     TCPIP2_EXPECT_EQ(established.snd_nxt + 4, after_pump.snd_nxt);
 
     // Simulate peer ACKing the data.
-    engine.OnSegment(
-        MakeView(flow, established.rcv_nxt, established.snd_nxt + 4, TcpFlag::Ack), 210);
+    engine.OnSegment(MakeView(flow, established.rcv_nxt, established.snd_nxt + 4, TcpFlag::Ack), 210);
 
     TcpPcbSnapshot after_ack;
     engine.Find(flow, after_ack);
@@ -1510,8 +1371,7 @@ TCPIP2_TEST(SendBufferFreedOnPcbRemoval) {
     engine.EnqueueSendData(established.flow_id, data, sizeof(data));
 
     // Send a RST to remove the PCB.
-    const auto rst = engine.OnSegment(
-        MakeView(flow, established.rcv_nxt, established.snd_nxt, TcpFlag::Rst), 200);
+    const auto rst = engine.OnSegment(MakeView(flow, established.rcv_nxt, established.snd_nxt, TcpFlag::Rst), 200);
     TCPIP2_EXPECT_TRUE(rst.state_changed);
     TCPIP2_EXPECT_EQ(std::size_t{0}, engine.PcbCount());
 
@@ -1530,8 +1390,7 @@ TCPIP2_TEST(CloseFlowTransitionsEstablishedToFinWait1) {
 
     TcpPcbSnapshot updated;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
-    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::FinWait1),
-                     static_cast<int>(updated.state));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::FinWait1), static_cast<int>(updated.state));
 }
 
 TCPIP2_TEST(CloseFlowTransitionsCloseWaitToLastAck) {
@@ -1543,21 +1402,17 @@ TCPIP2_TEST(CloseFlowTransitionsCloseWaitToLastAck) {
     const TcpPcbSnapshot snap = Establish(engine, flow);
 
     // Remote sends FIN → Established → CloseWait.
-    engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack),
-        200);
+    engine.OnSegment(MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 200);
 
     TcpPcbSnapshot after_fin;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, after_fin));
-    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::CloseWait),
-                     static_cast<int>(after_fin.state));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::CloseWait), static_cast<int>(after_fin.state));
 
     engine.CloseFlow(after_fin.flow_id, after_fin.generation);
 
     TcpPcbSnapshot updated;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
-    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::LastAck),
-                     static_cast<int>(updated.state));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::LastAck), static_cast<int>(updated.state));
 }
 
 TCPIP2_TEST(CloseFlowIgnoresUnknownFlowId) {
@@ -1608,16 +1463,13 @@ TCPIP2_TEST(RemoteFinTransitionsEstablishedToCloseWait) {
     const FlowKey flow = MakeFlow();
     const TcpPcbSnapshot snap = Establish(engine, flow);
 
-    const auto result = engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack),
-        200);
+    const auto result = engine.OnSegment(MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 200);
 
     TCPIP2_EXPECT_TRUE(result.response.valid);
 
     TcpPcbSnapshot updated;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
-    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::CloseWait),
-                     static_cast<int>(updated.state));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::CloseWait), static_cast<int>(updated.state));
 }
 
 TCPIP2_TEST(FinAckTransitionsFinWait1ToFinWait2) {
@@ -1639,13 +1491,11 @@ TCPIP2_TEST(FinAckTransitionsFinWait1ToFinWait2) {
     // Remote ACKs our FIN.
     TcpPcbSnapshot after_close;
     engine.Find(flow, after_close);
-    engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt, TcpFlag::Ack), 210);
+    engine.OnSegment(MakeView(flow, snap.rcv_nxt, after_close.snd_nxt, TcpFlag::Ack), 210);
 
     TcpPcbSnapshot updated;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
-    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::FinWait2),
-                     static_cast<int>(updated.state));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::FinWait2), static_cast<int>(updated.state));
 }
 
 TCPIP2_TEST(SimultaneousCloseTransitionsToClosing) {
@@ -1666,14 +1516,11 @@ TCPIP2_TEST(SimultaneousCloseTransitionsToClosing) {
     // Remote sends its own FIN without ACKing ours (simultaneous close).
     TcpPcbSnapshot after_close;
     engine.Find(flow, after_close);
-    engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack),
-        210);
+    engine.OnSegment(MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 210);
 
     TcpPcbSnapshot updated;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
-    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::Closing),
-                     static_cast<int>(updated.state));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::Closing), static_cast<int>(updated.state));
 }
 
 TCPIP2_TEST(BothFinAckedEntersTimeWait) {
@@ -1694,15 +1541,11 @@ TCPIP2_TEST(BothFinAckedEntersTimeWait) {
     // Remote ACKs our FIN and sends its own FIN.
     TcpPcbSnapshot after_close;
     engine.Find(flow, after_close);
-    engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
-                 TcpFlag::Fin | TcpFlag::Ack),
-        210);
+    engine.OnSegment(MakeView(flow, snap.rcv_nxt, after_close.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 210);
 
     TcpPcbSnapshot updated;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
-    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::TimeWait),
-                     static_cast<int>(updated.state));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::TimeWait), static_cast<int>(updated.state));
     TCPIP2_EXPECT_EQ(std::size_t{1}, timers.PendingCount());
 }
 
@@ -1725,10 +1568,7 @@ TCPIP2_TEST(TimeWaitExpiresAndRemovesPcb) {
     // Remote ACKs our FIN and sends its own FIN → enters TIME-WAIT.
     TcpPcbSnapshot after_close;
     engine.Find(flow, after_close);
-    engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
-                 TcpFlag::Fin | TcpFlag::Ack),
-        210);
+    engine.OnSegment(MakeView(flow, snap.rcv_nxt, after_close.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 210);
 
     TCPIP2_EXPECT_EQ(std::size_t{1}, engine.PcbCount());
 
@@ -1758,21 +1598,15 @@ TCPIP2_TEST(TimeWaitRetransmittedFinGetsAck) {
     // Remote ACKs our FIN and sends its own FIN → enters TIME-WAIT.
     TcpPcbSnapshot after_close;
     engine.Find(flow, after_close);
-    engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
-                 TcpFlag::Fin | TcpFlag::Ack),
-        210);
+    engine.OnSegment(MakeView(flow, snap.rcv_nxt, after_close.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 210);
 
     // Remote retransmits its FIN while we are in TIME-WAIT.
-    const auto result = engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
-                 TcpFlag::Fin | TcpFlag::Ack),
-        300);
+    const auto result =
+        engine.OnSegment(MakeView(flow, snap.rcv_nxt, after_close.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 300);
 
     // We should ACK it (not RST, not ignore).
     TCPIP2_EXPECT_TRUE(result.response.valid);
-    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Ack),
-                     result.response.flags);
+    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Ack), result.response.flags);
 }
 
 TCPIP2_TEST(TimeWaitCapacityEvictsOldest) {
@@ -1785,10 +1619,8 @@ TCPIP2_TEST(TimeWaitCapacityEvictsOldest) {
 
     // Establish and close 3 flows to overflow TIME-WAIT capacity.
     for (int i = 0; i < 3; ++i) {
-        const FlowKey flow = MakeFlow(static_cast<std::uint16_t>(40000 + i),
-                                      static_cast<std::uint16_t>(443));
-        const TcpPcbSnapshot snap = Establish(engine, flow, 1000 + i * 100,
-                                              100 + i * 10);
+        const FlowKey flow = MakeFlow(static_cast<std::uint16_t>(40000 + i), static_cast<std::uint16_t>(443));
+        const TcpPcbSnapshot snap = Establish(engine, flow, 1000 + i * 100, 100 + i * 10);
         engine.CloseFlow(snap.flow_id, snap.generation);
 
         // Pump to emit our FIN.
@@ -1799,10 +1631,7 @@ TCPIP2_TEST(TimeWaitCapacityEvictsOldest) {
         // Remote ACKs our FIN and sends its own FIN.
         TcpPcbSnapshot after_close;
         engine.Find(flow, after_close);
-        engine.OnSegment(
-            MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
-                     TcpFlag::Fin | TcpFlag::Ack),
-            210 + i * 10);
+        engine.OnSegment(MakeView(flow, snap.rcv_nxt, after_close.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 210 + i * 10);
     }
 
     // After 3 entries with capacity 2, at most 2 should remain.
@@ -1821,17 +1650,14 @@ TCPIP2_TEST(OutOfOrderFinIsNotConsumed) {
     const TcpPcbSnapshot snap = Establish(engine, flow);
 
     // Send a FIN at seq = rcv_nxt + 10 (out of order).
-    const auto result = engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt + 10, snap.snd_nxt,
-                 TcpFlag::Fin | TcpFlag::Ack),
-        200);
+    const auto result =
+        engine.OnSegment(MakeView(flow, snap.rcv_nxt + 10, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 200);
 
     // Should get an ACK (challenge) but NOT transition to CloseWait.
     TCPIP2_EXPECT_TRUE(result.response.valid);
     TcpPcbSnapshot updated;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
-    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::Established),
-                     static_cast<int>(updated.state));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::Established), static_cast<int>(updated.state));
 }
 
 // Fix 2: Duplicate data+FIN must not advance RCV.NXT a second time.
@@ -1845,23 +1671,18 @@ TCPIP2_TEST(DuplicateDataFinDoesNotAdvanceAck) {
 
     // Send data+FIN at the correct sequence.
     const std::vector<std::uint8_t> payload = {0xAA, 0xBB};
-    const auto first = engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, snap.snd_nxt,
-                 TcpFlag::Fin | TcpFlag::Ack, {}, payload),
-        200);
+    const auto first =
+        engine.OnSegment(MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack, {}, payload), 200);
     TCPIP2_EXPECT_TRUE(first.response.valid);
 
     TcpPcbSnapshot after_fin;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, after_fin));
-    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::CloseWait),
-                     static_cast<int>(after_fin.state));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::CloseWait), static_cast<int>(after_fin.state));
 
     // Retransmit the same data+FIN.  In CloseWait, peer data is rejected
     // (Fix 4).  The ACK number must not advance beyond the first FIN.
-    const auto dup = engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, snap.snd_nxt,
-                 TcpFlag::Fin | TcpFlag::Ack, {}, payload),
-        210);
+    const auto dup =
+        engine.OnSegment(MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack, {}, payload), 210);
     TCPIP2_EXPECT_TRUE(dup.response.valid);
     // ACK should still point to the original RCV.NXT + payload + 1 (FIN).
     TCPIP2_EXPECT_EQ(after_fin.rcv_nxt, dup.response.acknowledgment);
@@ -1888,15 +1709,11 @@ TCPIP2_TEST(OutOfWindowSeqDoesNotAckFin) {
     // Send a segment with SEQ far outside the receive window but
     // ACK = SND.NXT (our FIN sequence).  This must NOT transition us
     // out of FinWait1.
-    const auto result = engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt + 100000, after_close.snd_nxt,
-                 TcpFlag::Ack),
-        210);
+    const auto result = engine.OnSegment(MakeView(flow, snap.rcv_nxt + 100000, after_close.snd_nxt, TcpFlag::Ack), 210);
 
     TcpPcbSnapshot updated;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
-    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::FinWait1),
-                     static_cast<int>(updated.state));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::FinWait1), static_cast<int>(updated.state));
 }
 
 // Fix 4: FIN triggers ShutdownWrite on the session.
@@ -1909,24 +1726,20 @@ TCPIP2_TEST(FinTriggersSessionShutdownWrite) {
     const TcpPcbSnapshot snap = Establish(engine, flow);
 
     auto session = std::make_shared<ReceiveSession>();
-    ReceiveSession* session_ptr = session.get();
+    ReceiveSession *session_ptr = session.get();
     engine.AttachSession(flow, session, 150);
 
     TCPIP2_EXPECT_FALSE(session_ptr->ShutdownWriteCalled());
 
     // Remote sends FIN.
-    const auto result = engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, snap.snd_nxt,
-                 TcpFlag::Fin | TcpFlag::Ack),
-        200);
+    const auto result = engine.OnSegment(MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 200);
 
     TCPIP2_EXPECT_TRUE(result.response.valid);
     TCPIP2_EXPECT_TRUE(session_ptr->ShutdownWriteCalled());
 
     TcpPcbSnapshot updated;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, updated));
-    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::CloseWait),
-                     static_cast<int>(updated.state));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::CloseWait), static_cast<int>(updated.state));
 }
 
 // Fix 5: Late OnSessionClosed in TIME-WAIT must not remove the PCB.
@@ -1950,26 +1763,20 @@ TCPIP2_TEST(LateSessionClosedDoesNotRemoveTimeWaitPcb) {
 
     TcpPcbSnapshot after_close;
     engine.Find(flow, after_close);
-    engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
-                 TcpFlag::Fin | TcpFlag::Ack),
-        210);
+    engine.OnSegment(MakeView(flow, snap.rcv_nxt, after_close.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 210);
 
     TcpPcbSnapshot tw_snap;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, tw_snap));
-    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::TimeWait),
-                     static_cast<int>(tw_snap.state));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::TimeWait), static_cast<int>(tw_snap.state));
 
     // Simulate a late session-closed callback.
-    const bool removed = engine.OnSessionClosed(
-        tw_snap.flow_id, tw_snap.generation);
+    const bool removed = engine.OnSessionClosed(tw_snap.flow_id, tw_snap.generation);
     TCPIP2_EXPECT_TRUE(removed);
 
     // PCB must still exist in TIME-WAIT.
     TcpPcbSnapshot still_here;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, still_here));
-    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::TimeWait),
-                     static_cast<int>(still_here.state));
+    TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::TimeWait), static_cast<int>(still_here.state));
     TCPIP2_EXPECT_EQ(std::size_t{1}, engine.PcbCount());
     TCPIP2_EXPECT_EQ(std::size_t{1}, timers.PendingCount());
 }
@@ -1991,10 +1798,7 @@ TCPIP2_TEST(TimeWaitRetransmittedFinRestartsTimer) {
 
     TcpPcbSnapshot after_close;
     engine.Find(flow, after_close);
-    engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
-                 TcpFlag::Fin | TcpFlag::Ack),
-        210);
+    engine.OnSegment(MakeView(flow, snap.rcv_nxt, after_close.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 210);
 
     const std::size_t timers_before = timers.PendingCount();
     TCPIP2_EXPECT_EQ(std::size_t{1}, timers_before);
@@ -2003,10 +1807,7 @@ TCPIP2_TEST(TimeWaitRetransmittedFinRestartsTimer) {
     timers.AdvanceTo(700);
 
     // Remote retransmits FIN — timer should be restarted.
-    engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
-                 TcpFlag::Fin | TcpFlag::Ack),
-        700);
+    engine.OnSegment(MakeView(flow, snap.rcv_nxt, after_close.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 700);
 
     // Timer must still be pending (restarted, not expired at old deadline).
     TCPIP2_EXPECT_EQ(std::size_t{1}, timers.PendingCount());
@@ -2030,10 +1831,7 @@ TCPIP2_TEST(FinStateTransitionsSetStateChanged) {
     const TcpPcbSnapshot snap = Establish(engine, flow);
 
     // Remote FIN → CloseWait.
-    const auto result = engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, snap.snd_nxt,
-                 TcpFlag::Fin | TcpFlag::Ack),
-        200);
+    const auto result = engine.OnSegment(MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 200);
     TCPIP2_EXPECT_TRUE(result.state_changed);
 }
 
@@ -2050,10 +1848,8 @@ TCPIP2_TEST(TimeWaitEvictionPreservesSurvivingFlows) {
     std::array<FlowKey, 3> flows;
     std::array<TcpPcbSnapshot, 3> snaps;
     for (int i = 0; i < 3; ++i) {
-        flows[i] = MakeFlow(static_cast<std::uint16_t>(40000 + i),
-                            static_cast<std::uint16_t>(443));
-        snaps[i] = Establish(engine, flows[i], 1000 + i * 100,
-                              100 + i * 10);
+        flows[i] = MakeFlow(static_cast<std::uint16_t>(40000 + i), static_cast<std::uint16_t>(443));
+        snaps[i] = Establish(engine, flows[i], 1000 + i * 100, 100 + i * 10);
         engine.CloseFlow(snaps[i].flow_id, snaps[i].generation);
 
         PktBufferPool pool(4, 2048);
@@ -2062,10 +1858,8 @@ TCPIP2_TEST(TimeWaitEvictionPreservesSurvivingFlows) {
 
         TcpPcbSnapshot after_close;
         engine.Find(flows[i], after_close);
-        engine.OnSegment(
-            MakeView(flows[i], snaps[i].rcv_nxt, after_close.snd_nxt,
-                     TcpFlag::Fin | TcpFlag::Ack),
-            210 + i * 10);
+        engine.OnSegment(MakeView(flows[i], snaps[i].rcv_nxt, after_close.snd_nxt, TcpFlag::Fin | TcpFlag::Ack),
+                         210 + i * 10);
     }
 
     TCPIP2_EXPECT_TRUE(engine.PcbCount() <= 2);
@@ -2077,8 +1871,7 @@ TCPIP2_TEST(TimeWaitEvictionPreservesSurvivingFlows) {
     for (int i = 0; i < 3; ++i) {
         TcpPcbSnapshot snap;
         if (engine.Find(flows[i], snap)) {
-            TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::TimeWait),
-                             static_cast<int>(snap.state));
+            TCPIP2_EXPECT_EQ(static_cast<int>(TcpState::TimeWait), static_cast<int>(snap.state));
             ++tw_count;
         }
     }
@@ -2094,11 +1887,10 @@ namespace {
 /// Minimal ITransportSession that records TrySend/ShutdownWrite/Abort
 /// and stores all three callbacks for later triggering.
 class RecordingSession final : public ITransportSession {
-public:
+  public:
     /// TrySent() records client TCP payload accepted by the remote session.
     SendResult TrySend(BufferView data) override {
-        trysend_.insert(trysend_.end(), data.Data(),
-                        data.Data() + data.Size());
+        trysend_.insert(trysend_.end(), data.Data(), data.Data() + data.Size());
         return {data.Size(), SendStatus::Accepted};
     }
     void ResumeReceive() override { ++resume_receive_count_; }
@@ -2108,22 +1900,26 @@ public:
     void SetDataCallback(DataCallback cb) override { data_ = std::move(cb); }
     void SetClosedCallback(ClosedCallback cb) override { closed_ = std::move(cb); }
 
-    void TriggerWritable() { if (writable_) writable_(); }
-    void TriggerClosed(SessionError err) { if (closed_) closed_(err); }
-    ReceiveStatus TriggerData(BufferLease& lease) {
-        return data_ ? data_(lease) : ReceiveStatus::Closed;
+    void TriggerWritable() {
+        if (writable_)
+            writable_();
     }
+    void TriggerClosed(SessionError err) {
+        if (closed_)
+            closed_(err);
+    }
+    ReceiveStatus TriggerData(BufferLease &lease) { return data_ ? data_(lease) : ReceiveStatus::Closed; }
 
     bool HasWritableCallback() const noexcept { return static_cast<bool>(writable_); }
     bool HasDataCallback() const noexcept { return static_cast<bool>(data_); }
     bool HasClosedCallback() const noexcept { return static_cast<bool>(closed_); }
 
-    const std::vector<std::uint8_t>& TrySent() const noexcept { return trysend_; }
+    const std::vector<std::uint8_t> &TrySent() const noexcept { return trysend_; }
     bool ShutdownWriteCalled() const noexcept { return shutdown_write_called_; }
     bool AbortCalled() const noexcept { return abort_called_; }
     int ResumeReceiveCount() const noexcept { return resume_receive_count_; }
 
-private:
+  private:
     std::vector<std::uint8_t> trysend_;
     bool shutdown_write_called_ = false;
     bool abort_called_ = false;
@@ -2135,11 +1931,10 @@ private:
 
 /// ISessionFactory that can accept or reject, and records calls.
 class FakeSessionFactory final : public ISessionFactory {
-public:
-    explicit FakeSessionFactory(bool accept_all = true)
-        : accept_all_(accept_all) {}
+  public:
+    explicit FakeSessionFactory(bool accept_all = true) : accept_all_(accept_all) {}
 
-    SessionOpenResult OpenTcp(const TcpOpenRequest& request) override {
+    SessionOpenResult OpenTcp(const TcpOpenRequest &request) override {
         ++open_tcp_count_;
         last_request_ = request;
         SessionOpenResult result;
@@ -2151,17 +1946,13 @@ public:
         return result;
     }
 
-    DatagramOpenResult OpenUdp(const UdpOpenRequest&) override {
-        return {};
-    }
+    DatagramOpenResult OpenUdp(const UdpOpenRequest &) override { return {}; }
 
     int OpenTcpCount() const noexcept { return open_tcp_count_; }
-    const TcpOpenRequest& LastRequest() const noexcept { return last_request_; }
-    RecordingSession* LastSession() const noexcept {
-        return created_.empty() ? nullptr : created_.back().get();
-    }
+    const TcpOpenRequest &LastRequest() const noexcept { return last_request_; }
+    RecordingSession *LastSession() const noexcept { return created_.empty() ? nullptr : created_.back().get(); }
 
-private:
+  private:
     bool accept_all_;
     int open_tcp_count_ = 0;
     TcpOpenRequest last_request_;
@@ -2173,27 +1964,24 @@ private:
 TCPIP2_TEST(SessionFactoryReceivesEstablishedFlow) {
     TimerWheel timers;
     FakeSessionFactory factory(/*accept_all=*/true);
-    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
-                               timers, 1, &factory);
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers, 1, &factory);
     const FlowKey flow = MakeFlow();
 
     // SYN -> SYN-ACK
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::None, syn.error);
     TCPIP2_EXPECT_TRUE(syn.response.valid);
     TCPIP2_EXPECT_EQ(std::size_t{0}, static_cast<std::size_t>(factory.OpenTcpCount()));
 
     // Final ACK -> Established -> factory should be called
-    const auto ack = engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto ack = engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::None, ack.error);
     TCPIP2_EXPECT_EQ(std::size_t{0}, engine.HalfOpenCount());
     TCPIP2_EXPECT_EQ(std::size_t{1}, engine.EstablishedCount());
     TCPIP2_EXPECT_EQ(1, factory.OpenTcpCount());
 
     // Verify factory received correct endpoint info
-    const auto& req = factory.LastRequest();
+    const auto &req = factory.LastRequest();
     TCPIP2_EXPECT_EQ(flow.source, req.source.address);
     TCPIP2_EXPECT_EQ(flow.source_port, req.source.port);
     TCPIP2_EXPECT_EQ(flow.destination, req.original_destination.address);
@@ -2208,18 +1996,15 @@ TCPIP2_TEST(SessionFactoryReceivesEstablishedFlow) {
 TCPIP2_TEST(SessionFactoryRejectionSendsRstAndRemovesPcb) {
     TimerWheel timers;
     FakeSessionFactory factory(/*accept_all=*/false);
-    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
-                               timers, 1, &factory);
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers, 1, &factory);
     const FlowKey flow = MakeFlow();
 
     // SYN -> SYN-ACK
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::None, syn.error);
 
     // Final ACK -> factory rejects -> RST, PCB removed
-    const auto ack = engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto ack = engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::None, ack.error);
     TCPIP2_EXPECT_TRUE(ack.response.valid);
     TCPIP2_EXPECT_TRUE(ack.response.flags & TcpFlag::Rst);
@@ -2231,16 +2016,13 @@ TCPIP2_TEST(SessionFactoryRejectionSendsRstAndRemovesPcb) {
 TCPIP2_TEST(NullSessionFactoryDoesNotCrash) {
     TimerWheel timers;
     // session_factory = nullptr (default)
-    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
-                               timers);
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
 
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::None, syn.error);
 
-    const auto ack = engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto ack = engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::None, ack.error);
     TCPIP2_EXPECT_EQ(std::size_t{1}, engine.EstablishedCount());
 
@@ -2253,22 +2035,18 @@ TCPIP2_TEST(NullSessionFactoryDoesNotCrash) {
 TCPIP2_TEST(SessionFactoryBoundSessionReceivesInlineData) {
     TimerWheel timers;
     FakeSessionFactory factory(/*accept_all=*/true);
-    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
-                               timers, 1, &factory);
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers, 1, &factory);
     const FlowKey flow = MakeFlow();
 
     // Complete 3-way handshake
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
     TCPIP2_EXPECT_EQ(1, factory.OpenTcpCount());
 
     // Send a data segment after establishment
     std::vector<std::uint8_t> payload = {'H', 'e', 'l', 'l', 'o'};
-    const auto data_result = engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack,
-                 {}, payload), 102);
+    const auto data_result =
+        engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack, {}, payload), 102);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::None, data_result.error);
 
     // Data was delivered to session via DrainSession; ready_bytes should be 0
@@ -2285,29 +2063,30 @@ namespace {
 
 /// Captures ShardMessages posted via PostMessageFn.
 class MessageCapturer final {
-public:
+  public:
     PostMessageFn Capture() {
-        return [this](ShardMessage&& msg) {
+        return [this](ShardMessage &&msg) {
             messages_.push_back(std::move(msg));
             return true;
         };
     }
-    std::vector<ShardMessage>& Messages() noexcept { return messages_; }
+    std::vector<ShardMessage> &Messages() noexcept { return messages_; }
     ~MessageCapturer() {
         // Release any BufferLease payloads before the vector destructor runs,
         // so they return to their pool while the pool may still be alive.
-        for (auto& msg : messages_) {
+        for (auto &msg : messages_) {
             msg.data.Reset();
         }
     }
-private:
+
+  private:
     std::vector<ShardMessage> messages_;
 };
 
 class FullMessageCapturer final {
-public:
+  public:
     PostMessageFn Capture() {
-        return [this](ShardMessage&&) {
+        return [this](ShardMessage &&) {
             ++post_attempts_;
             return false;
         };
@@ -2315,7 +2094,7 @@ public:
 
     int PostAttempts() const noexcept { return post_attempts_; }
 
-private:
+  private:
     int post_attempts_ = 0;
 };
 
@@ -2325,20 +2104,17 @@ TCPIP2_TEST(SessionCallbacksRegisteredOnEstablishment) {
     TimerWheel timers;
     FakeSessionFactory factory(/*accept_all=*/true);
     MessageCapturer capturer;
-    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
-                               timers, 1, &factory, capturer.Capture());
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers, 1, &factory, capturer.Capture());
     const FlowKey flow = MakeFlow();
 
     // Complete 3-way handshake
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
 
     TCPIP2_EXPECT_EQ(1, factory.OpenTcpCount());
 
     // The factory created a RecordingSession; callbacks should be registered.
-    auto* session = factory.LastSession();
+    auto *session = factory.LastSession();
     TCPIP2_EXPECT_TRUE(session->HasWritableCallback());
     TCPIP2_EXPECT_TRUE(session->HasDataCallback());
     TCPIP2_EXPECT_TRUE(session->HasClosedCallback());
@@ -2348,16 +2124,13 @@ TCPIP2_TEST(WritableCallbackPostsSessionWritableMessage) {
     TimerWheel timers;
     FakeSessionFactory factory(/*accept_all=*/true);
     MessageCapturer capturer;
-    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
-                               timers, 1, &factory, capturer.Capture());
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers, 1, &factory, capturer.Capture());
     const FlowKey flow = MakeFlow();
 
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
 
-    auto* session = factory.LastSession();
+    auto *session = factory.LastSession();
 
     // Snapshot the flow_id/generation from the PCB.
     TcpPcbSnapshot snap;
@@ -2368,8 +2141,7 @@ TCPIP2_TEST(WritableCallbackPostsSessionWritableMessage) {
 
     // A kSessionWritable message should have been posted.
     TCPIP2_EXPECT_EQ(std::size_t{1}, capturer.Messages().size());
-    TCPIP2_EXPECT_EQ(ShardMessageType::kSessionWritable,
-                     capturer.Messages()[0].type);
+    TCPIP2_EXPECT_EQ(ShardMessageType::kSessionWritable, capturer.Messages()[0].type);
     TCPIP2_EXPECT_EQ(snap.flow_id, capturer.Messages()[0].flow_id);
     TCPIP2_EXPECT_EQ(snap.generation, capturer.Messages()[0].generation);
 }
@@ -2378,16 +2150,13 @@ TCPIP2_TEST(ClosedCallbackPostsSessionClosedMessage) {
     TimerWheel timers;
     FakeSessionFactory factory(/*accept_all=*/true);
     MessageCapturer capturer;
-    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
-                               timers, 1, &factory, capturer.Capture());
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers, 1, &factory, capturer.Capture());
     const FlowKey flow = MakeFlow();
 
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
 
-    auto* session = factory.LastSession();
+    auto *session = factory.LastSession();
 
     TcpPcbSnapshot snap;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, snap));
@@ -2395,8 +2164,7 @@ TCPIP2_TEST(ClosedCallbackPostsSessionClosedMessage) {
     session->TriggerClosed(SessionError::Reset);
 
     TCPIP2_EXPECT_EQ(std::size_t{1}, capturer.Messages().size());
-    TCPIP2_EXPECT_EQ(ShardMessageType::kSessionClosed,
-                     capturer.Messages()[0].type);
+    TCPIP2_EXPECT_EQ(ShardMessageType::kSessionClosed, capturer.Messages()[0].type);
     TCPIP2_EXPECT_EQ(snap.flow_id, capturer.Messages()[0].flow_id);
 }
 
@@ -2404,16 +2172,13 @@ TCPIP2_TEST(DataCallbackPostsSessionDataMessage) {
     TimerWheel timers;
     FakeSessionFactory factory(/*accept_all=*/true);
     MessageCapturer capturer;
-    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
-                               timers, 1, &factory, capturer.Capture());
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers, 1, &factory, capturer.Capture());
     const FlowKey flow = MakeFlow();
 
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
 
-    auto* session = factory.LastSession();
+    auto *session = factory.LastSession();
 
     TcpPcbSnapshot snap;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, snap));
@@ -2430,8 +2195,7 @@ TCPIP2_TEST(DataCallbackPostsSessionDataMessage) {
     TCPIP2_EXPECT_FALSE(static_cast<bool>(lease));
 
     TCPIP2_EXPECT_EQ(std::size_t{1}, capturer.Messages().size());
-    TCPIP2_EXPECT_EQ(ShardMessageType::kSessionData,
-                     capturer.Messages()[0].type);
+    TCPIP2_EXPECT_EQ(ShardMessageType::kSessionData, capturer.Messages()[0].type);
     TCPIP2_EXPECT_EQ(snap.flow_id, capturer.Messages()[0].flow_id);
     TCPIP2_EXPECT_EQ(snap.generation, capturer.Messages()[0].generation);
     TCPIP2_EXPECT_EQ(sizeof(data), capturer.Messages()[0].data.Size());
@@ -2443,19 +2207,16 @@ TCPIP2_TEST(DataCallbackWouldBlockRetainsLeaseWhenMailboxIsFull) {
     TimerWheel timers;
     FakeSessionFactory factory(/*accept_all=*/true);
     FullMessageCapturer capturer;
-    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
-                               timers, 1, &factory, capturer.Capture());
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers, 1, &factory, capturer.Capture());
     const FlowKey flow = MakeFlow();
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
 
     PktBufferPool pool(2, 2048);
     BufferLease lease = pool.Allocate();
     TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
     lease.Resize(8);
-    RecordingSession* session = factory.LastSession();
+    RecordingSession *session = factory.LastSession();
     TCPIP2_EXPECT_EQ(ReceiveStatus::WouldBlock, session->TriggerData(lease));
     TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
     TCPIP2_EXPECT_EQ(std::size_t{8}, lease.Size());
@@ -2470,7 +2231,7 @@ TCPIP2_TEST(ResumeReceiveRequiresRemoteAndSendBacklogsBelowLowWatermarks) {
     TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers, 1, &factory);
     const FlowKey flow = MakeFlow();
     const TcpPcbSnapshot established = Establish(engine, flow);
-    RecordingSession* session = factory.LastSession();
+    RecordingSession *session = factory.LastSession();
 
     engine.ResumeSessionReceives(/*remote_backlog=*/1, /*low=*/1);
     TCPIP2_EXPECT_EQ(0, session->ResumeReceiveCount());
@@ -2479,8 +2240,7 @@ TCPIP2_TEST(ResumeReceiveRequiresRemoteAndSendBacklogsBelowLowWatermarks) {
     TCPIP2_EXPECT_EQ(1, session->ResumeReceiveCount());
 
     const std::uint8_t data[] = {1, 2, 3, 4};
-    TCPIP2_EXPECT_EQ(sizeof(data),
-                     engine.EnqueueSendData(established.flow_id, data, sizeof(data)));
+    TCPIP2_EXPECT_EQ(sizeof(data), engine.EnqueueSendData(established.flow_id, data, sizeof(data)));
     engine.ResumeSessionReceives(/*remote_backlog=*/0, /*low=*/1);
     TCPIP2_EXPECT_EQ(1, session->ResumeReceiveCount());
 }
@@ -2489,16 +2249,13 @@ TCPIP2_TEST(CallbacksAreNoopAfterShutdown) {
     TimerWheel timers;
     FakeSessionFactory factory(/*accept_all=*/true);
     MessageCapturer capturer;
-    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
-                               timers, 1, &factory, capturer.Capture());
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers, 1, &factory, capturer.Capture());
     const FlowKey flow = MakeFlow();
 
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
 
-    auto* session = factory.LastSession();
+    auto *session = factory.LastSession();
 
     engine.Shutdown();
 
@@ -2522,12 +2279,10 @@ namespace {
 
 /// IEventSink implementation that records all flow events and metric snapshots.
 class RecordingEventSink final : public IEventSink {
-public:
-    void OnFlowEvent(const FlowEvent& event) noexcept override {
-        flow_events_.push_back({event.flow_id, event.type});
-    }
+  public:
+    void OnFlowEvent(const FlowEvent &event) noexcept override { flow_events_.push_back({event.flow_id, event.type}); }
 
-    void OnMetricSnapshot(const MetricSnapshot& snapshot) noexcept override {
+    void OnMetricSnapshot(const MetricSnapshot &snapshot) noexcept override {
         ++metric_count_;
         last_snapshot_ = snapshot;
     }
@@ -2537,22 +2292,19 @@ public:
         FlowEventType type;
     };
 
-    const std::vector<RecordedEvent>& FlowEvents() const noexcept {
-        return flow_events_;
-    }
+    const std::vector<RecordedEvent> &FlowEvents() const noexcept { return flow_events_; }
 
     int MetricCount() const noexcept { return metric_count_; }
-    const MetricSnapshot& LastSnapshot() const noexcept { return last_snapshot_; }
+    const MetricSnapshot &LastSnapshot() const noexcept { return last_snapshot_; }
 
-private:
+  private:
     std::vector<RecordedEvent> flow_events_;
     int metric_count_ = 0;
     MetricSnapshot last_snapshot_;
 };
 
 /// Helper: complete a full close sequence (local FIN → remote FIN-ACK → TIME-WAIT expiry).
-void FullClose(TcpHandshakeEngine& engine, TimerWheel& timers,
-               const FlowKey& flow, const TcpPcbSnapshot& snap,
+void FullClose(TcpHandshakeEngine &engine, TimerWheel &timers, const FlowKey &flow, const TcpPcbSnapshot &snap,
                std::uint64_t now_ms) {
     engine.CloseFlow(snap.flow_id, snap.generation);
 
@@ -2564,10 +2316,7 @@ void FullClose(TcpHandshakeEngine& engine, TimerWheel& timers,
     // Remote ACKs our FIN and sends its own FIN → TIME-WAIT.
     TcpPcbSnapshot after_close;
     engine.Find(flow, after_close);
-    engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, after_close.snd_nxt,
-                 TcpFlag::Fin | TcpFlag::Ack),
-        now_ms + 2);
+    engine.OnSegment(MakeView(flow, snap.rcv_nxt, after_close.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), now_ms + 2);
 
     // Advance past TIME-WAIT.
     timers.AdvanceTo(now_ms + 2 + 120000);
@@ -2580,24 +2329,20 @@ TCPIP2_TEST(FlowEstablishedEmitsEvent) {
     RecordingEventSink sink;
     TcpHandshakeConfig config;
     config.enable_timestamps = false;
-    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers,
-                               1, nullptr, nullptr, &sink);
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers, 1, nullptr, nullptr, &sink);
     const FlowKey flow = MakeFlow();
 
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
 
     // No event yet (SYN-RECEIVED).
     TCPIP2_EXPECT_EQ(std::size_t{0}, sink.FlowEvents().size());
 
     // Final ACK → Established.
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
 
     // Should have exactly one Established event.
     TCPIP2_EXPECT_EQ(std::size_t{1}, sink.FlowEvents().size());
-    TCPIP2_EXPECT_EQ(static_cast<int>(FlowEventType::Established),
-                     static_cast<int>(sink.FlowEvents()[0].type));
+    TCPIP2_EXPECT_EQ(static_cast<int>(FlowEventType::Established), static_cast<int>(sink.FlowEvents()[0].type));
 
     // Verify the flow_id matches what the PCB reports.
     TcpPcbSnapshot snap;
@@ -2610,22 +2355,17 @@ TCPIP2_TEST(FlowResetEmitsEvent) {
     RecordingEventSink sink;
     TcpHandshakeConfig config;
     config.enable_timestamps = false;
-    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers,
-                               1, nullptr, nullptr, &sink);
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers, 1, nullptr, nullptr, &sink);
     const FlowKey flow = MakeFlow();
     const TcpPcbSnapshot snap = Establish(engine, flow);
 
     // Send RST at the correct sequence number.
-    engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Rst | TcpFlag::Ack),
-        200);
+    engine.OnSegment(MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Rst | TcpFlag::Ack), 200);
 
     // Should have Established then Reset.
     TCPIP2_EXPECT_EQ(std::size_t{2}, sink.FlowEvents().size());
-    TCPIP2_EXPECT_EQ(static_cast<int>(FlowEventType::Established),
-                     static_cast<int>(sink.FlowEvents()[0].type));
-    TCPIP2_EXPECT_EQ(static_cast<int>(FlowEventType::Reset),
-                     static_cast<int>(sink.FlowEvents()[1].type));
+    TCPIP2_EXPECT_EQ(static_cast<int>(FlowEventType::Established), static_cast<int>(sink.FlowEvents()[0].type));
+    TCPIP2_EXPECT_EQ(static_cast<int>(FlowEventType::Reset), static_cast<int>(sink.FlowEvents()[1].type));
     TCPIP2_EXPECT_EQ(snap.flow_id.value, sink.FlowEvents()[1].flow_id.value);
 }
 
@@ -2635,8 +2375,7 @@ TCPIP2_TEST(FlowClosedEmitsEventOnTimeWaitExpiry) {
     TcpHandshakeConfig config;
     config.enable_timestamps = false;
     config.timewait_ms = 1000;
-    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers,
-                               1, nullptr, nullptr, &sink);
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers, 1, nullptr, nullptr, &sink);
     const FlowKey flow = MakeFlow();
     const TcpPcbSnapshot snap = Establish(engine, flow);
 
@@ -2644,10 +2383,8 @@ TCPIP2_TEST(FlowClosedEmitsEventOnTimeWaitExpiry) {
 
     // Should have Established then Closed (TIME-WAIT expiry).
     TCPIP2_EXPECT_EQ(std::size_t{2}, sink.FlowEvents().size());
-    TCPIP2_EXPECT_EQ(static_cast<int>(FlowEventType::Established),
-                     static_cast<int>(sink.FlowEvents()[0].type));
-    TCPIP2_EXPECT_EQ(static_cast<int>(FlowEventType::Closed),
-                     static_cast<int>(sink.FlowEvents()[1].type));
+    TCPIP2_EXPECT_EQ(static_cast<int>(FlowEventType::Established), static_cast<int>(sink.FlowEvents()[0].type));
+    TCPIP2_EXPECT_EQ(static_cast<int>(FlowEventType::Closed), static_cast<int>(sink.FlowEvents()[1].type));
     TCPIP2_EXPECT_EQ(snap.flow_id.value, sink.FlowEvents()[1].flow_id.value);
 }
 
@@ -2656,15 +2393,13 @@ TCPIP2_TEST(FlowClosedEmitsEventOnLastAck) {
     RecordingEventSink sink;
     TcpHandshakeConfig config;
     config.enable_timestamps = false;
-    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers,
-                               1, nullptr, nullptr, &sink);
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers, 1, nullptr, nullptr, &sink);
     const FlowKey flow = MakeFlow();
     const TcpPcbSnapshot snap = Establish(engine, flow);
 
     // Remote sends FIN → CloseWait.
-    const auto fin_result = engine.OnSegment(
-        MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack),
-        200);
+    const auto fin_result =
+        engine.OnSegment(MakeView(flow, snap.rcv_nxt, snap.snd_nxt, TcpFlag::Fin | TcpFlag::Ack), 200);
     // The FIN ACK must carry the updated RCV.NXT (original + 1 for FIN).
     const std::uint32_t rcv_nxt_after_fin = fin_result.response.acknowledgment;
 
@@ -2681,33 +2416,27 @@ TCPIP2_TEST(FlowClosedEmitsEventOnLastAck) {
     // Remote ACKs our FIN → LastAck → PCB removed → Closed event.
     TcpPcbSnapshot after_close;
     engine.Find(flow, after_close);
-    engine.OnSegment(
-        MakeView(flow, rcv_nxt_after_fin, after_close.snd_nxt, TcpFlag::Ack),
-        202);
+    engine.OnSegment(MakeView(flow, rcv_nxt_after_fin, after_close.snd_nxt, TcpFlag::Ack), 202);
 
     // Events: Established, then Closed (LastAck completed).
     TCPIP2_EXPECT_EQ(std::size_t{2}, sink.FlowEvents().size());
-    TCPIP2_EXPECT_EQ(static_cast<int>(FlowEventType::Closed),
-                     static_cast<int>(sink.FlowEvents()[1].type));
+    TCPIP2_EXPECT_EQ(static_cast<int>(FlowEventType::Closed), static_cast<int>(sink.FlowEvents()[1].type));
     TCPIP2_EXPECT_EQ(snap.flow_id.value, sink.FlowEvents()[1].flow_id.value);
 }
 
 TCPIP2_TEST(NullEventSinkDoesNotCrash) {
     TimerWheel timers;
     // event_sink = nullptr (default 7th parameter).
-    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
-                               timers);
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
 
     // Should not crash; PCB should be established.
     TCPIP2_EXPECT_EQ(std::size_t{1}, engine.EstablishedCount());
 
     // Close and full shutdown should also not crash.
-    engine.AbortFlow(FlowId{0}, 1);  // Invalid flow_id, no-op.
+    engine.AbortFlow(FlowId{0}, 1); // Invalid flow_id, no-op.
     TCPIP2_EXPECT_EQ(std::size_t{1}, engine.PcbCount());
 }
 
@@ -2716,8 +2445,7 @@ TCPIP2_TEST(AbortFlowEmitsResetEvent) {
     RecordingEventSink sink;
     TcpHandshakeConfig config;
     config.enable_timestamps = false;
-    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers,
-                               1, nullptr, nullptr, &sink);
+    TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers, 1, nullptr, nullptr, &sink);
     const FlowKey flow = MakeFlow();
     const TcpPcbSnapshot snap = Establish(engine, flow);
 
@@ -2725,8 +2453,7 @@ TCPIP2_TEST(AbortFlowEmitsResetEvent) {
 
     // Events: Established, then Reset (aborted).
     TCPIP2_EXPECT_EQ(std::size_t{2}, sink.FlowEvents().size());
-    TCPIP2_EXPECT_EQ(static_cast<int>(FlowEventType::Reset),
-                     static_cast<int>(sink.FlowEvents()[1].type));
+    TCPIP2_EXPECT_EQ(static_cast<int>(FlowEventType::Reset), static_cast<int>(sink.FlowEvents()[1].type));
     TCPIP2_EXPECT_EQ(snap.flow_id.value, sink.FlowEvents()[1].flow_id.value);
 
     // A RST should have been queued.
@@ -2748,16 +2475,14 @@ TCPIP2_TEST(HostilePeerMssClampedByPoolPayloadLimit) {
     // MSS option (kind=2, len=4) advertising the maximum 65535.
     const std::vector<std::uint8_t> hostile_mss = {2, 4, 0xff, 0xff};
 
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn, hostile_mss), 5000);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn, hostile_mss), 5000);
     TCPIP2_EXPECT_EQ(TcpHandshakeError::None, syn.error);
     TCPIP2_EXPECT_TRUE(syn.response.valid);
     // Our SYN-ACK must advertise the clamped MSS, never the peer's 65535.
     TCPIP2_EXPECT_EQ(std::uint16_t{500}, syn.response.syn_options.mss);
 
     // Complete the handshake; the send-side MSS (peer_mss) must be clamped too.
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 5001);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 5001);
     TcpPcbSnapshot snapshot;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, snapshot));
     TCPIP2_EXPECT_EQ(std::uint16_t{500}, snapshot.options.peer_mss);
@@ -2767,20 +2492,17 @@ namespace {
 
 /// Drive a flow to Established with the negotiated MSS, enqueue application
 /// bytes, and return the first emitted data segment.
-std::vector<BufferLease> PumpOneSegment(TcpHandshakeEngine& engine,
-                                        const FlowKey& flow,
-                                        PktBufferPool& pool,
+std::vector<BufferLease> PumpOneSegment(TcpHandshakeEngine &engine, const FlowKey &flow, PktBufferPool &pool,
                                         std::uint64_t now_ms) {
     const std::vector<std::uint8_t> mss_option = {2, 4, 0x05, 0xb4}; // MSS 1460
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn, mss_option), now_ms);
-    if (!syn.response.valid) return {};
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack),
-        now_ms + 1);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn, mss_option), now_ms);
+    if (!syn.response.valid)
+        return {};
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), now_ms + 1);
 
     TcpPcbSnapshot snapshot;
-    if (!engine.Find(flow, snapshot)) return {};
+    if (!engine.Find(flow, snapshot))
+        return {};
     std::vector<std::uint8_t> app_data(4000, 0xAB);
     engine.EnqueueSendData(snapshot.flow_id, app_data.data(), app_data.size());
 
@@ -2797,8 +2519,7 @@ TCPIP2_TEST(SendSegmentUsesNegotiatedMssWithoutPmtu) {
     // the pool for retransmission, and the engine destructor releases it.
     PktBufferPool pool(8, 2048);
     TimerWheel timers;
-    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
-                              timers);
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const auto tx = PumpOneSegment(engine, MakeFlow(), pool, 100);
     TCPIP2_EXPECT_EQ(std::size_t{1}, tx.size());
     if (!tx.empty()) {
@@ -2813,10 +2534,11 @@ namespace {
 
 /// Append a generic 8-byte extension header whose next-header field links to
 /// @p next. Header bytes: next_header, hdr_ext_len=0 (8 total), six Pad1.
-void AppendExtHeader8(std::vector<std::uint8_t>& pkt, std::uint8_t next) {
+void AppendExtHeader8(std::vector<std::uint8_t> &pkt, std::uint8_t next) {
     pkt.push_back(next);
     pkt.push_back(0);
-    for (int i = 0; i < 6; ++i) pkt.push_back(0);
+    for (int i = 0; i < 6; ++i)
+        pkt.push_back(0);
 }
 
 } // namespace
@@ -2826,37 +2548,47 @@ void AppendExtHeader8(std::vector<std::uint8_t>& pkt, std::uint8_t next) {
 TCPIP2_TEST(Ipv6ExtHeadersCarryTcpButTerminalDoNot) {
     std::uint8_t src[16];
     std::uint8_t dst[16];
-    for (int i = 0; i < 16; ++i) { src[i] = 0; dst[i] = 0; }
-    src[0] = 0x20; src[1] = 0x01; src[15] = 1;
-    dst[0] = 0x20; dst[1] = 0x01; dst[15] = 2;
+    for (int i = 0; i < 16; ++i) {
+        src[i] = 0;
+        dst[i] = 0;
+    }
+    src[0] = 0x20;
+    src[1] = 0x01;
+    src[15] = 1;
+    dst[0] = 0x20;
+    dst[1] = 0x01;
+    dst[15] = 2;
 
     // Builder: IPv6 fixed header + walkable chain + 20-byte TCP (SYN) with a
     // valid IPv6 pseudo-header checksum.
-    auto build = [&](const std::vector<std::uint8_t>& chain_nh,
-                     std::uint8_t first_nh) {
+    auto build = [&](const std::vector<std::uint8_t> &chain_nh, std::uint8_t first_nh) {
         const std::size_t ext_bytes = chain_nh.size() * 8;
-        const std::size_t payload_len = ext_bytes + 20;  // chain + TCP header
+        const std::size_t payload_len = ext_bytes + 20; // chain + TCP header
         std::vector<std::uint8_t> pkt;
         pkt.reserve(40 + payload_len);
         pkt.push_back(0x60);
-        pkt.push_back(0x00); pkt.push_back(0x00); pkt.push_back(0x00);
+        pkt.push_back(0x00);
+        pkt.push_back(0x00);
+        pkt.push_back(0x00);
         pkt.push_back(static_cast<std::uint8_t>(payload_len >> 8));
         pkt.push_back(static_cast<std::uint8_t>(payload_len & 0xFF));
         pkt.push_back(first_nh);
         pkt.push_back(64);
-        for (int i = 0; i < 16; ++i) pkt.push_back(src[i]);
-        for (int i = 0; i < 16; ++i) pkt.push_back(dst[i]);
-        for (std::uint8_t nh : chain_nh) AppendExtHeader8(pkt, nh);
+        for (int i = 0; i < 16; ++i)
+            pkt.push_back(src[i]);
+        for (int i = 0; i < 16; ++i)
+            pkt.push_back(dst[i]);
+        for (std::uint8_t nh : chain_nh)
+            AppendExtHeader8(pkt, nh);
         const std::size_t tcp_off = pkt.size();
         pkt.resize(pkt.size() + 20, 0);
-        Write16(pkt.data() + tcp_off, 40000);      // src port
-        Write16(pkt.data() + tcp_off + 2, 443);    // dst port
-        Write32(pkt.data() + tcp_off + 4, 1000);   // seq
-        pkt[tcp_off + 12] = 0x50;                  // DO=5, no options
+        Write16(pkt.data() + tcp_off, 40000);    // src port
+        Write16(pkt.data() + tcp_off + 2, 443);  // dst port
+        Write32(pkt.data() + tcp_off + 4, 1000); // seq
+        pkt[tcp_off + 12] = 0x50;                // DO=5, no options
         pkt[tcp_off + 13] = TcpFlag::Syn;
         Write16(pkt.data() + tcp_off + 14, 32768); // window
-        const std::uint32_t seed = Ipv6PseudoHeaderSeed(src, dst, 6,
-                                                        static_cast<std::uint32_t>(20));
+        const std::uint32_t seed = Ipv6PseudoHeaderSeed(src, dst, 6, static_cast<std::uint32_t>(20));
         const std::uint16_t cksum = InternetChecksum(pkt.data() + tcp_off, 20, seed);
         Write16(pkt.data() + tcp_off + 16, cksum);
         return pkt;
@@ -2870,34 +2602,29 @@ TCPIP2_TEST(Ipv6ExtHeadersCarryTcpButTerminalDoNot) {
     TCPIP2_EXPECT_EQ(std::uint16_t{40000}, r1.segment.flow.source_port);
 
     // HopByHop -> DestinationOptions -> TCP chain: delivered.
-    const auto two = build({Ipv6ExtHeaderType::DestinationOptions, 6},
-                           Ipv6ExtHeaderType::HopByHop);
+    const auto two = build({Ipv6ExtHeaderType::DestinationOptions, 6}, Ipv6ExtHeaderType::HopByHop);
     const auto r2 = ParseIpTcpPacket(two.data(), two.size());
     TCPIP2_EXPECT_EQ(TcpInputError::None, r2.error);
     TCPIP2_EXPECT_TRUE(r2.segment.flow.source.IsIpv6());
 
     // Terminal headers (AH/ESP/Mobility) are NOT transparent carriers.
-    for (std::uint8_t terminal : {static_cast<std::uint8_t>(Ipv6ExtHeaderType::Ah),
-                                  static_cast<std::uint8_t>(Ipv6ExtHeaderType::Esp),
-                                  static_cast<std::uint8_t>(Ipv6ExtHeaderType::Mobility)}) {
+    for (std::uint8_t terminal :
+         {static_cast<std::uint8_t>(Ipv6ExtHeaderType::Ah), static_cast<std::uint8_t>(Ipv6ExtHeaderType::Esp),
+          static_cast<std::uint8_t>(Ipv6ExtHeaderType::Mobility)}) {
         const auto term = build({}, terminal);
-        TCPIP2_EXPECT_EQ(TcpInputError::NotTcp,
-                         ParseIpTcpPacket(term.data(), term.size()).error);
+        TCPIP2_EXPECT_EQ(TcpInputError::NotTcp, ParseIpTcpPacket(term.data(), term.size()).error);
     }
 }
 
 TCPIP2_TEST(PathMtuLoweredShrinksNextSendSegment) {
     PktBufferPool pool(8, 2048); // must outlive the engine (retained refs)
     TimerWheel timers;
-    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret),
-                              timers);
+    TcpHandshakeEngine engine(TcpHandshakeConfig{}, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
 
-    const auto syn = engine.OnSegment(
-        MakeView(flow, 1000, 0, TcpFlag::Syn, {2, 4, 0x05, 0xb4}), 100);
+    const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn, {2, 4, 0x05, 0xb4}), 100);
     TCPIP2_EXPECT_TRUE(syn.response.valid);
-    engine.OnSegment(
-        MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
+    engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
 
     TcpPcbSnapshot snapshot;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, snapshot));
@@ -2926,14 +2653,11 @@ TCPIP2_TEST(SynOfferingEcnGetsEcnSynAck) {
     const FlowKey flow = MakeFlow();
 
     // Peer announces ECN capability: SYN with ECE+CWR.
-    const auto syn = engine.OnSegment(MakeView(
-        flow, 1000, 0,
-        static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
     TCPIP2_EXPECT_TRUE(syn.response.valid);
-    TCPIP2_EXPECT_EQ(
-        static_cast<std::uint8_t>(
-            TcpFlag::Syn | TcpFlag::Ack | TcpFlag::Ece | TcpFlag::Cwr),
-        syn.response.flags);
+    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack | TcpFlag::Ece | TcpFlag::Cwr),
+                     syn.response.flags);
 
     // Complete the handshake; the negotiated state must record ECN.
     engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
@@ -2948,8 +2672,7 @@ TCPIP2_TEST(SynWithoutEcnGetsPlainSynAck) {
     const FlowKey flow = MakeFlow();
 
     const auto syn = engine.OnSegment(MakeView(flow, 1000, 0, TcpFlag::Syn), 100);
-    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack),
-                     syn.response.flags);
+    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack), syn.response.flags);
 
     engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
     TcpPcbSnapshot snapshot;
@@ -2963,11 +2686,9 @@ TCPIP2_TEST(EceOrCwrAloneDoesNotNegotiateEcn) {
 
     // RFC 3168 requires BOTH ECE and CWR on the SYN; ECE alone must not
     // negotiate ECN.
-    const auto syn = engine.OnSegment(MakeView(
-        MakeFlow(40001), 1000, 0,
-        static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece)), 100);
-    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack),
-                     syn.response.flags);
+    const auto syn = engine.OnSegment(
+        MakeView(MakeFlow(40001), 1000, 0, static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece)), 100);
+    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack), syn.response.flags);
 }
 
 TCPIP2_TEST(EcnNegotiationDisabledByConfig) {
@@ -2977,11 +2698,9 @@ TCPIP2_TEST(EcnNegotiationDisabledByConfig) {
     TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
 
-    const auto syn = engine.OnSegment(MakeView(
-        flow, 1000, 0,
-        static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
-    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack),
-                     syn.response.flags);
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
+    TCPIP2_EXPECT_EQ(static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack), syn.response.flags);
 
     engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
     TcpPcbSnapshot snapshot;
@@ -3002,16 +2721,14 @@ TCPIP2_TEST(EcnDataSegmentIsMarkedEctOnTheWire) {
     const FlowKey flow = MakeFlow();
 
     // Negotiate ECN via the ECN-offering SYN.
-    const auto syn = engine.OnSegment(MakeView(
-        flow, 1000, 0,
-        static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
     engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
     TcpPcbSnapshot established;
     TCPIP2_EXPECT_TRUE(engine.Find(flow, established));
     TCPIP2_EXPECT_TRUE(established.options.ecn);
 
-    engine.EnqueueSendData(established.flow_id,
-                           reinterpret_cast<const std::uint8_t*>("ABC"), 3);
+    engine.EnqueueSendData(established.flow_id, reinterpret_cast<const std::uint8_t *>("ABC"), 3);
     std::vector<BufferLease> tx;
     engine.PumpSendPaths(200, 64, pool, tx, 64);
     TCPIP2_EXPECT_EQ(std::size_t{1}, tx.size());
@@ -3022,8 +2739,7 @@ TCPIP2_TEST(EcnDataSegmentIsMarkedEctOnTheWire) {
     TCPIP2_EXPECT_EQ(std::uint8_t{0x02}, ip.header.ecn);
 
     const FlowKey resp_flow = Reverse(flow);
-    const auto tcp = ParseTcpSegment(
-        resp_flow.source, resp_flow.destination, ip.payload, ip.header.payload_length);
+    const auto tcp = ParseTcpSegment(resp_flow.source, resp_flow.destination, ip.payload, ip.header.payload_length);
     TCPIP2_EXPECT_EQ(TcpParseError::None, tcp.error);
     TCPIP2_EXPECT_EQ(std::size_t{3}, tcp.segment.payload_length);
 }
@@ -3037,8 +2753,7 @@ TCPIP2_TEST(NonEcnFlowDataSegmentStaysNotEct) {
     const FlowKey flow = MakeFlow();
     const TcpPcbSnapshot established = Establish(engine, flow);
 
-    engine.EnqueueSendData(established.flow_id,
-                           reinterpret_cast<const std::uint8_t*>("XYZ"), 3);
+    engine.EnqueueSendData(established.flow_id, reinterpret_cast<const std::uint8_t *>("XYZ"), 3);
     std::vector<BufferLease> tx;
     engine.PumpSendPaths(200, 64, pool, tx, 64);
     TCPIP2_EXPECT_EQ(std::size_t{1}, tx.size());
@@ -3051,9 +2766,8 @@ TCPIP2_TEST(CeMarkedDataSegmentReflectsEceOnSubsequentAck) {
     TcpHandshakeConfig config;
     TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
-    const auto syn = engine.OnSegment(MakeView(
-        flow, 1000, 0,
-        static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
     engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
     auto session = std::make_shared<ReceiveSession>();
     engine.AttachSession(flow, session, 150);
@@ -3063,8 +2777,8 @@ TCPIP2_TEST(CeMarkedDataSegmentReflectsEceOnSubsequentAck) {
     const std::vector<std::uint8_t> payload = {1, 2, 3};
     // CE-marked new-data segment (ip_ecn == 3). The receiver must assert ECE
     // on the ACK until the peer acknowledges with CWR.
-    auto view = MakeView(flow, snap.rcv_nxt, snap.snd_nxt,
-                         static_cast<std::uint8_t>(TcpFlag::Psh | TcpFlag::Ack), {}, payload);
+    auto view =
+        MakeView(flow, snap.rcv_nxt, snap.snd_nxt, static_cast<std::uint8_t>(TcpFlag::Psh | TcpFlag::Ack), {}, payload);
     view.ip_ecn = 3;
     const auto result = engine.OnSegment(view, 200);
     TCPIP2_EXPECT_TRUE(result.response.valid);
@@ -3076,9 +2790,8 @@ TCPIP2_TEST(EceClearedByCwrDataSegment) {
     TcpHandshakeConfig config;
     TcpHandshakeEngine engine(config, TcpIsnGenerator(kSecret), timers);
     const FlowKey flow = MakeFlow();
-    const auto syn = engine.OnSegment(MakeView(
-        flow, 1000, 0,
-        static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
+    const auto syn = engine.OnSegment(
+        MakeView(flow, 1000, 0, static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ece | TcpFlag::Cwr)), 100);
     engine.OnSegment(MakeView(flow, 1001, syn.response.sequence + 1, TcpFlag::Ack), 101);
     auto session = std::make_shared<ReceiveSession>();
     engine.AttachSession(flow, session, 150);
@@ -3086,8 +2799,8 @@ TCPIP2_TEST(EceClearedByCwrDataSegment) {
     TcpPcbSnapshot snap;
     engine.Find(flow, snap);
     const std::vector<std::uint8_t> payload = {9, 8, 7};
-    auto ce = MakeView(flow, snap.rcv_nxt, snap.snd_nxt,
-                       static_cast<std::uint8_t>(TcpFlag::Psh | TcpFlag::Ack), {}, payload);
+    auto ce =
+        MakeView(flow, snap.rcv_nxt, snap.snd_nxt, static_cast<std::uint8_t>(TcpFlag::Psh | TcpFlag::Ack), {}, payload);
     ce.ip_ecn = 3;
     const auto ce_result = engine.OnSegment(ce, 200);
     TCPIP2_EXPECT_TRUE((ce_result.response.flags & TcpFlag::Ece) != 0);
@@ -3095,8 +2808,7 @@ TCPIP2_TEST(EceClearedByCwrDataSegment) {
     // A data segment with CWR set clears the ECE feedback.
     const std::vector<std::uint8_t> payload2 = {1, 1, 1};
     auto cwr = MakeView(flow, snap.rcv_nxt + 3, snap.snd_nxt,
-                        static_cast<std::uint8_t>(TcpFlag::Ack | TcpFlag::Psh | TcpFlag::Cwr),
-                        {}, payload2);
+                        static_cast<std::uint8_t>(TcpFlag::Ack | TcpFlag::Psh | TcpFlag::Cwr), {}, payload2);
     const auto cwr_result = engine.OnSegment(cwr, 201);
     TCPIP2_EXPECT_TRUE(cwr_result.response.valid);
     TCPIP2_EXPECT_FALSE((cwr_result.response.flags & TcpFlag::Ece) != 0);

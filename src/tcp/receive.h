@@ -36,7 +36,7 @@ struct TcpReceiveResult {
 };
 
 struct TcpReadyView {
-    const std::uint8_t* data = nullptr;
+    const std::uint8_t *data = nullptr;
     std::size_t length = 0;
 };
 
@@ -55,20 +55,15 @@ struct TcpSackBlockList {
  * segment processing, delivery, and SACK inspection do not allocate.
  */
 class TcpReceiveBuffer final {
-public:
-    explicit TcpReceiveBuffer(std::size_t capacity,
-                               std::uint32_t initial_sequence = 0,
-                               std::size_t initial_advertised_window = 0);
+  public:
+    explicit TcpReceiveBuffer(std::size_t capacity, std::uint32_t initial_sequence = 0,
+                              std::size_t initial_advertised_window = 0);
 
-    TcpReceiveBuffer(const TcpReceiveBuffer&) = delete;
-    TcpReceiveBuffer& operator=(const TcpReceiveBuffer&) = delete;
+    TcpReceiveBuffer(const TcpReceiveBuffer &) = delete;
+    TcpReceiveBuffer &operator=(const TcpReceiveBuffer &) = delete;
 
-    TcpReceiveResult OnSegment(std::uint32_t sequence,
-                               const std::uint8_t* data,
-                               std::size_t length,
-                               bool psh) noexcept;
-    bool IsSequenceAcceptable(std::uint32_t sequence,
-                              std::size_t segment_length) const noexcept;
+    TcpReceiveResult OnSegment(std::uint32_t sequence, const std::uint8_t *data, std::size_t length, bool psh) noexcept;
+    bool IsSequenceAcceptable(std::uint32_t sequence, std::size_t segment_length) const noexcept;
 
     TcpReadyView ReadyView() const noexcept;
     std::size_t ConsumeReady(std::size_t length) noexcept;
@@ -77,25 +72,19 @@ public:
     void RecordAdvertisedWindow(std::size_t window) noexcept;
     TcpSackBlockList SackBlocks(std::size_t max_blocks = 4) const noexcept;
 
-    std::size_t AdvertisedWindow() const noexcept {
-        return blocked_ ? 0 : capacity_ - bytes_held_;
-    }
+    std::size_t AdvertisedWindow() const noexcept { return blocked_ ? 0 : capacity_ - bytes_held_; }
     std::size_t AcceptableWindow() const noexcept;
     std::size_t BytesHeld() const noexcept { return bytes_held_; }
     std::size_t ReadyBytes() const noexcept { return ready_bytes_; }
-    std::size_t OutOfOrderBytes() const noexcept {
-        return bytes_held_ - ready_bytes_;
-    }
+    std::size_t OutOfOrderBytes() const noexcept { return bytes_held_ - ready_bytes_; }
     std::uint32_t RcvNxt() const noexcept { return rcv_nxt_; }
     void ConsumeFin() noexcept;
     bool FinReceived() const noexcept { return fin_received_; }
     std::size_t Capacity() const noexcept { return capacity_; }
     bool Blocked() const noexcept { return blocked_; }
-    std::size_t MemoryBytes() const noexcept {
-        return storage_.size() + occupancy_.size() * sizeof(std::uint64_t);
-    }
+    std::size_t MemoryBytes() const noexcept { return storage_.size() + occupancy_.size() * sizeof(std::uint64_t); }
 
-private:
+  private:
     std::size_t PhysicalIndex(std::size_t logical_offset) const noexcept;
     bool Occupied(std::size_t physical_index) const noexcept;
     void SetOccupied(std::size_t physical_index, bool occupied) noexcept;

@@ -40,12 +40,10 @@ void ReassemblyEntry::Reset() noexcept {
     data_buffer_.clear();
 }
 
-bool ReassemblyEntry::HasOverlap(std::uint32_t offset,
-                                  std::uint32_t length) const noexcept {
+bool ReassemblyEntry::HasOverlap(std::uint32_t offset, std::uint32_t length) const noexcept {
     const std::uint32_t new_end = offset + length; // caller checks overflow
     for (std::size_t i = 0; i < fragment_count_; ++i) {
-        const std::uint32_t existing_end =
-            pieces_[i].offset + pieces_[i].length;
+        const std::uint32_t existing_end = pieces_[i].offset + pieces_[i].length;
         if (offset < existing_end && pieces_[i].offset < new_end) {
             return true;
         }
@@ -53,12 +51,10 @@ bool ReassemblyEntry::HasOverlap(std::uint32_t offset,
     return false;
 }
 
-FragmentAddResult ReassemblyEntry::AddFragment(
-    std::uint32_t offset, const std::uint8_t* data,
-    std::uint32_t length, bool more_fragments,
-    std::uint64_t now_ms, std::uint32_t expires_ms,
-    std::uint32_t max_payload_bytes,
-    std::size_t additional_byte_budget, std::uint8_t ecn) noexcept {
+FragmentAddResult ReassemblyEntry::AddFragment(std::uint32_t offset, const std::uint8_t *data, std::uint32_t length,
+                                               bool more_fragments, std::uint64_t now_ms, std::uint32_t expires_ms,
+                                               std::uint32_t max_payload_bytes, std::size_t additional_byte_budget,
+                                               std::uint8_t ecn) noexcept {
 
     FragmentAddResult result;
 
@@ -140,8 +136,7 @@ FragmentAddResult ReassemblyEntry::AddFragment(
     }
 
     const std::size_t required_size = static_cast<std::size_t>(end);
-    if (required_size > data_buffer_.size() &&
-        required_size - data_buffer_.size() > additional_byte_budget) {
+    if (required_size > data_buffer_.size() && required_size - data_buffer_.size() > additional_byte_budget) {
         result.error = FragmentError::ByteBudgetExceeded;
         return result;
     }
@@ -152,7 +147,8 @@ FragmentAddResult ReassemblyEntry::AddFragment(
 
     // Set fixed deadline on first fragment (not refreshed by subsequent fragments).
     if (fragment_count_ == 0) {
-        if (expires_ms == 0) expires_ms = kFragmentDefaultTtlMs;
+        if (expires_ms == 0)
+            expires_ms = kFragmentDefaultTtlMs;
         // Saturating add: if now_ms is near UINT64_MAX, deadline wraps to
         // a very large value (entry stays alive), which is safe.
         std::uint64_t deadline = now_ms;
@@ -246,11 +242,9 @@ FragmentAddResult ReassemblyEntry::AddFragment(
 // FragmentReassembler
 // ---------------------------------------------------------------------------
 
-FragmentReassembler::FragmentReassembler(std::size_t max_entries,
-                                          std::size_t max_total_bytes)
-    : max_entries_(max_entries == 0 ? 1 : max_entries)
-    , max_total_bytes_(max_total_bytes == 0 ? kDefaultMaxTotalBytes
-                                            : max_total_bytes) {
+FragmentReassembler::FragmentReassembler(std::size_t max_entries, std::size_t max_total_bytes)
+    : max_entries_(max_entries == 0 ? 1 : max_entries),
+      max_total_bytes_(max_total_bytes == 0 ? kDefaultMaxTotalBytes : max_total_bytes) {
     if (max_entries_ > kMaxReassemblyEntries) {
         max_entries_ = kMaxReassemblyEntries;
     }
@@ -268,13 +262,12 @@ void FillIpv4Mapped(const std::uint8_t src4[4], std::uint8_t out[16]) noexcept {
 
 } // namespace
 
-FragmentAddResult FragmentReassembler::AddIpv4Fragment(
-    const std::uint8_t src_ip[4], const std::uint8_t dst_ip[4],
-    std::uint8_t protocol, std::uint16_t identification,
-    std::uint16_t fragment_offset, bool more_fragments,
-    const std::uint8_t* payload, std::size_t payload_len,
-    std::uint64_t now_ms, std::uint32_t expires_ms,
-    std::uint32_t max_payload_bytes, std::uint8_t ecn) noexcept {
+FragmentAddResult FragmentReassembler::AddIpv4Fragment(const std::uint8_t src_ip[4], const std::uint8_t dst_ip[4],
+                                                       std::uint8_t protocol, std::uint16_t identification,
+                                                       std::uint16_t fragment_offset, bool more_fragments,
+                                                       const std::uint8_t *payload, std::size_t payload_len,
+                                                       std::uint64_t now_ms, std::uint32_t expires_ms,
+                                                       std::uint32_t max_payload_bytes, std::uint8_t ecn) noexcept {
 
     FragmentAddResult result;
 
@@ -298,14 +291,12 @@ FragmentAddResult FragmentReassembler::AddIpv4Fragment(
 
     // Convert fragment_offset from 8-byte units to byte offset.
     std::uint32_t byte_offset = 0;
-    if (!CheckedMul<std::uint32_t>(static_cast<std::uint32_t>(fragment_offset),
-                                    std::uint32_t{8}, byte_offset)) {
+    if (!CheckedMul<std::uint32_t>(static_cast<std::uint32_t>(fragment_offset), std::uint32_t{8}, byte_offset)) {
         result.error = FragmentError::PayloadTooLarge;
         return result;
     }
 
-    const std::uint32_t hard_payload_limit =
-        static_cast<std::uint32_t>(kMaxIpv4FragmentPayloadBytes);
+    const std::uint32_t hard_payload_limit = static_cast<std::uint32_t>(kMaxIpv4FragmentPayloadBytes);
     if (max_payload_bytes == 0 || max_payload_bytes > hard_payload_limit) {
         max_payload_bytes = hard_payload_limit;
     }
@@ -318,8 +309,7 @@ FragmentAddResult FragmentReassembler::AddIpv4Fragment(
     FillIpv4Mapped(dst_ip, key.dst_ip);
 
     FragmentError find_error = FragmentError::None;
-    ReassemblyEntry* entry = FindOrCreate(key, now_ms, expires_ms,
-                                           find_error);
+    ReassemblyEntry *entry = FindOrCreate(key, now_ms, expires_ms, find_error);
     if (entry == nullptr) {
         result.error = find_error;
         return result;
@@ -330,11 +320,8 @@ FragmentAddResult FragmentReassembler::AddIpv4Fragment(
     const std::size_t additional_byte_budget =
         current_bytes_ < max_total_bytes_ ? max_total_bytes_ - current_bytes_ : 0;
 
-    result = entry->AddFragment(byte_offset, payload,
-                                static_cast<std::uint32_t>(payload_len),
-                                more_fragments, now_ms, expires_ms,
-                                max_payload_bytes, additional_byte_budget,
-                                ecn);
+    result = entry->AddFragment(byte_offset, payload, static_cast<std::uint32_t>(payload_len), more_fragments, now_ms,
+                                expires_ms, max_payload_bytes, additional_byte_budget, ecn);
 
     std::size_t bytes_after = entry->BytesHeld();
 
@@ -352,14 +339,12 @@ FragmentAddResult FragmentReassembler::AddIpv4Fragment(
     return result;
 }
 
-FragmentAddResult FragmentReassembler::AddIpv6Fragment(
-    const std::uint8_t src_ip[16], const std::uint8_t dst_ip[16],
-    std::uint32_t identification,
-    std::uint16_t fragment_offset, bool more_fragments,
-    const std::uint8_t* payload, std::size_t payload_len,
-    std::uint64_t now_ms, std::uint32_t expires_ms,
-    std::uint32_t max_payload_bytes, std::uint8_t protocol,
-    std::uint8_t ecn) noexcept {
+FragmentAddResult FragmentReassembler::AddIpv6Fragment(const std::uint8_t src_ip[16], const std::uint8_t dst_ip[16],
+                                                       std::uint32_t identification, std::uint16_t fragment_offset,
+                                                       bool more_fragments, const std::uint8_t *payload,
+                                                       std::size_t payload_len, std::uint64_t now_ms,
+                                                       std::uint32_t expires_ms, std::uint32_t max_payload_bytes,
+                                                       std::uint8_t protocol, std::uint8_t ecn) noexcept {
 
     FragmentAddResult result;
 
@@ -382,14 +367,12 @@ FragmentAddResult FragmentReassembler::AddIpv6Fragment(
 
     // Convert fragment_offset from 8-byte units to byte offset.
     std::uint32_t byte_offset = 0;
-    if (!CheckedMul<std::uint32_t>(static_cast<std::uint32_t>(fragment_offset),
-                                    std::uint32_t{8}, byte_offset)) {
+    if (!CheckedMul<std::uint32_t>(static_cast<std::uint32_t>(fragment_offset), std::uint32_t{8}, byte_offset)) {
         result.error = FragmentError::PayloadTooLarge;
         return result;
     }
 
-    const std::uint32_t hard_payload_limit =
-        static_cast<std::uint32_t>(kMaxFragmentPayloadBytes);
+    const std::uint32_t hard_payload_limit = static_cast<std::uint32_t>(kMaxFragmentPayloadBytes);
     if (max_payload_bytes == 0 || max_payload_bytes > hard_payload_limit) {
         max_payload_bytes = hard_payload_limit;
     }
@@ -402,8 +385,7 @@ FragmentAddResult FragmentReassembler::AddIpv6Fragment(
     std::memcpy(key.dst_ip, dst_ip, 16);
 
     FragmentError find_error = FragmentError::None;
-    ReassemblyEntry* entry = FindOrCreate(key, now_ms, expires_ms,
-                                           find_error);
+    ReassemblyEntry *entry = FindOrCreate(key, now_ms, expires_ms, find_error);
     if (entry == nullptr) {
         result.error = find_error;
         return result;
@@ -413,11 +395,8 @@ FragmentAddResult FragmentReassembler::AddIpv6Fragment(
     const std::size_t additional_byte_budget =
         current_bytes_ < max_total_bytes_ ? max_total_bytes_ - current_bytes_ : 0;
 
-    result = entry->AddFragment(byte_offset, payload,
-                                static_cast<std::uint32_t>(payload_len),
-                                more_fragments, now_ms, expires_ms,
-                                max_payload_bytes, additional_byte_budget,
-                                ecn);
+    result = entry->AddFragment(byte_offset, payload, static_cast<std::uint32_t>(payload_len), more_fragments, now_ms,
+                                expires_ms, max_payload_bytes, additional_byte_budget, ecn);
 
     std::size_t bytes_after = entry->BytesHeld();
 
@@ -431,10 +410,8 @@ FragmentAddResult FragmentReassembler::AddIpv6Fragment(
     return result;
 }
 
-ReassemblyEntry* FragmentReassembler::FindOrCreate(
-    const FragmentKey& key, std::uint64_t now_ms,
-    std::uint32_t /*expires_ms*/,
-    FragmentError& error) noexcept {
+ReassemblyEntry *FragmentReassembler::FindOrCreate(const FragmentKey &key, std::uint64_t now_ms,
+                                                   std::uint32_t /*expires_ms*/, FragmentError &error) noexcept {
 
     error = FragmentError::None;
 
@@ -500,13 +477,12 @@ std::size_t FragmentReassembler::Purge(std::uint64_t now_ms) noexcept {
 std::size_t FragmentReassembler::Size() const noexcept {
     std::size_t count = 0;
     for (std::size_t i = 0; i < entries_.size(); ++i) {
-        if (entries_[i].InUse()) ++count;
+        if (entries_[i].InUse())
+            ++count;
     }
     return count;
 }
 
-std::size_t FragmentReassembler::BytesHeld() const noexcept {
-    return current_bytes_;
-}
+std::size_t FragmentReassembler::BytesHeld() const noexcept { return current_bytes_; }
 
 } // namespace tcpip2

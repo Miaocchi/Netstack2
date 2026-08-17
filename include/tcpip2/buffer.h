@@ -50,11 +50,11 @@ class BufferRef;
  * No atomic reference count by design.
  */
 class PktBuffer final {
-public:
+  public:
     PktBuffer() noexcept = default;
 
-    std::uint8_t* Data() noexcept { return data_; }
-    const std::uint8_t* Data() const noexcept { return data_; }
+    std::uint8_t *Data() noexcept { return data_; }
+    const std::uint8_t *Data() const noexcept { return data_; }
     std::size_t Capacity() const noexcept { return capacity_; }
     std::size_t Size() const noexcept { return size_; }
     void Resize(std::size_t n) noexcept {
@@ -65,13 +65,13 @@ public:
         size_ = n;
     }
 
-private:
+  private:
     friend class PktBufferPool;
     friend class BufferLease;
     friend class BufferRef;
 
-    PktBufferPool* pool_ = nullptr;
-    std::uint8_t* data_ = nullptr;
+    PktBufferPool *pool_ = nullptr;
+    std::uint8_t *data_ = nullptr;
     std::size_t capacity_ = 0;
     std::size_t size_ = 0;
     std::size_t slot_ = 0;
@@ -83,36 +83,37 @@ private:
  * the buffer back to the pool that created it.
  */
 class BufferLease final {
-public:
+  public:
     BufferLease() noexcept = default;
     ~BufferLease();
 
-    BufferLease(BufferLease&& other) noexcept : pkt_(other.pkt_) { other.pkt_ = nullptr; }
-    BufferLease& operator=(BufferLease&& other) noexcept;
-    BufferLease(const BufferLease&) = delete;
-    BufferLease& operator=(const BufferLease&) = delete;
+    BufferLease(BufferLease &&other) noexcept : pkt_(other.pkt_) { other.pkt_ = nullptr; }
+    BufferLease &operator=(BufferLease &&other) noexcept;
+    BufferLease(const BufferLease &) = delete;
+    BufferLease &operator=(const BufferLease &) = delete;
 
     explicit operator bool() const noexcept { return pkt_ != nullptr; }
-    PktBuffer* Get() const noexcept { return pkt_; }
+    PktBuffer *Get() const noexcept { return pkt_; }
 
-    std::uint8_t* Data() noexcept { return pkt_ ? pkt_->Data() : nullptr; }
-    const std::uint8_t* Data() const noexcept { return pkt_ ? pkt_->Data() : nullptr; }
+    std::uint8_t *Data() noexcept { return pkt_ ? pkt_->Data() : nullptr; }
+    const std::uint8_t *Data() const noexcept { return pkt_ ? pkt_->Data() : nullptr; }
     std::size_t Size() const noexcept { return pkt_ ? pkt_->Size() : 0; }
     std::size_t Capacity() const noexcept { return pkt_ ? pkt_->Capacity() : 0; }
     void Resize(std::size_t n) noexcept {
-        if (pkt_) pkt_->Resize(n);
+        if (pkt_)
+            pkt_->Resize(n);
     }
 
     /** Return the buffer to its pool immediately (no-op if already released). */
     void Reset() noexcept { Release(); }
 
-private:
+  private:
     friend class PktBufferPool;
-    explicit BufferLease(PktBuffer* pkt) noexcept : pkt_(pkt) {}
+    explicit BufferLease(PktBuffer *pkt) noexcept : pkt_(pkt) {}
 
     void Release() noexcept;
 
-    PktBuffer* pkt_ = nullptr;
+    PktBuffer *pkt_ = nullptr;
 };
 
 /**
@@ -120,22 +121,23 @@ private:
  * Must not outlive the lease/ref it was taken from.
  */
 class BufferSlice final {
-public:
+  public:
     BufferSlice() noexcept = default;
-    BufferSlice(const std::uint8_t* data, std::size_t size) noexcept : data_(data), size_(size) {}
+    BufferSlice(const std::uint8_t *data, std::size_t size) noexcept : data_(data), size_(size) {}
 
-    const std::uint8_t* Data() const noexcept { return data_; }
+    const std::uint8_t *Data() const noexcept { return data_; }
     std::size_t Size() const noexcept { return size_; }
     bool Empty() const noexcept { return size_ == 0; }
 
     BufferSlice Subslice(std::size_t offset, std::size_t length) const noexcept {
-        if (offset > size_) return {};
+        if (offset > size_)
+            return {};
         const std::size_t take = (length > size_ - offset) ? (size_ - offset) : length;
         return BufferSlice(data_ + offset, take);
     }
 
-private:
-    const std::uint8_t* data_ = nullptr;
+  private:
+    const std::uint8_t *data_ = nullptr;
     std::size_t size_ = 0;
 };
 
@@ -145,32 +147,33 @@ private:
  * destroyed or reset (non-atomic retain count, shard-local).
  */
 class BufferRef final {
-public:
+  public:
     BufferRef() noexcept = default;
     ~BufferRef();
 
-    BufferRef(const BufferRef& other) noexcept : pkt_(other.pkt_) {
-        if (pkt_) ++pkt_->ref_count_;
+    BufferRef(const BufferRef &other) noexcept : pkt_(other.pkt_) {
+        if (pkt_)
+            ++pkt_->ref_count_;
     }
-    BufferRef& operator=(const BufferRef& other) noexcept;
-    BufferRef(BufferRef&& other) noexcept : pkt_(other.pkt_) { other.pkt_ = nullptr; }
-    BufferRef& operator=(BufferRef&& other) noexcept;
+    BufferRef &operator=(const BufferRef &other) noexcept;
+    BufferRef(BufferRef &&other) noexcept : pkt_(other.pkt_) { other.pkt_ = nullptr; }
+    BufferRef &operator=(BufferRef &&other) noexcept;
 
-    PktBuffer* Get() const noexcept { return pkt_; }
-    const std::uint8_t* Data() const noexcept { return pkt_ ? pkt_->Data() : nullptr; }
+    PktBuffer *Get() const noexcept { return pkt_; }
+    const std::uint8_t *Data() const noexcept { return pkt_ ? pkt_->Data() : nullptr; }
     std::size_t Size() const noexcept { return pkt_ ? pkt_->Size() : 0; }
     explicit operator bool() const noexcept { return pkt_ != nullptr; }
 
     /** Release this reference. If it was the last reference, return the buffer to its pool. */
     void Reset() noexcept;
 
-private:
+  private:
     friend class PktBufferPool;
-    explicit BufferRef(PktBuffer* pkt) noexcept : pkt_(pkt) {}
+    explicit BufferRef(PktBuffer *pkt) noexcept : pkt_(pkt) {}
 
     void Release() noexcept;
 
-    PktBuffer* pkt_ = nullptr;
+    PktBuffer *pkt_ = nullptr;
 };
 
 /** Metadata for one TCP segment held in the retransmission queue. */
@@ -198,12 +201,12 @@ struct TxSegment {
  * to assert against leaks in tests.
  */
 class PktBufferPool final {
-public:
+  public:
     PktBufferPool(std::size_t slot_count, std::size_t slot_capacity);
     ~PktBufferPool();
 
-    PktBufferPool(const PktBufferPool&) = delete;
-    PktBufferPool& operator=(const PktBufferPool&) = delete;
+    PktBufferPool(const PktBufferPool &) = delete;
+    PktBufferPool &operator=(const PktBufferPool &) = delete;
 
     /** Allocate a lease, or an empty lease if the pool is exhausted. */
     BufferLease Allocate();
@@ -212,14 +215,14 @@ public:
      * Move a leased buffer into the retained state (flow ownership).
      * Consumes @p lease; the returned BufferRef keeps the payload alive.
      */
-    BufferRef Retain(BufferLease&& lease);
+    BufferRef Retain(BufferLease &&lease);
 
     /**
      * Internal: return a buffer to the free list. Used by BufferLease;
      * calling directly is a contract violation and the second return of the
      * same buffer aborts (double-release detection).
      */
-    void ReturnBuffer(PktBuffer* pkt);
+    void ReturnBuffer(PktBuffer *pkt);
 
     /**
      * Move buffers parked by foreign-thread releases onto the free list.
@@ -247,7 +250,7 @@ public:
      */
     void SetOwnerThread(std::thread::id id) noexcept { owner_thread_id_ = id; }
 
-private:
+  private:
     enum class SlotState : std::uint8_t { Free, Leased, Retained, Queued };
 
     friend class BufferRef;
@@ -255,7 +258,7 @@ private:
     void DrainLocked() noexcept;
 
     /** Return a retained buffer to the pool (called by BufferRef on last reference). */
-    void ReleaseRetained(PktBuffer* pkt);
+    void ReleaseRetained(PktBuffer *pkt);
 
     std::size_t slot_count_;
     std::vector<PktBuffer> slots_;

@@ -12,22 +12,28 @@ namespace {
 
 /// Build a minimal IPv4 header (no payload) with a valid checksum.
 /// Parameters allow overriding IHL, total_length, protocol, and TTL.
-static std::vector<std::uint8_t> BuildIpv4Header(std::uint8_t ihl = 5,
-                                                   std::uint16_t total_len = 20,
-                                                   std::uint8_t protocol = 6,
-                                                   std::uint8_t ttl = 64) {
+static std::vector<std::uint8_t> BuildIpv4Header(std::uint8_t ihl = 5, std::uint16_t total_len = 20,
+                                                 std::uint8_t protocol = 6, std::uint8_t ttl = 64) {
     std::vector<std::uint8_t> hdr(static_cast<std::size_t>(ihl) * 4, 0);
     hdr[0] = static_cast<std::uint8_t>(0x40 | (ihl & 0x0F)); // version 4 + IHL
-    hdr[1] = 0x00;                                            // DSCP/ECN
+    hdr[1] = 0x00;                                           // DSCP/ECN
     hdr[2] = static_cast<std::uint8_t>((total_len >> 8) & 0xFF);
     hdr[3] = static_cast<std::uint8_t>(total_len & 0xFF);
-    hdr[4] = 0x00; hdr[5] = 0x01; // identification = 1
-    hdr[6] = 0x00; hdr[7] = 0x00; // flags/frag = 0
+    hdr[4] = 0x00;
+    hdr[5] = 0x01; // identification = 1
+    hdr[6] = 0x00;
+    hdr[7] = 0x00; // flags/frag = 0
     hdr[8] = ttl;
     hdr[9] = protocol;
     // checksum at [10..11] left as 0 for now
-    hdr[12] = 0x0A; hdr[13] = 0x00; hdr[14] = 0x00; hdr[15] = 0x01; // src 10.0.0.1
-    hdr[16] = 0x0A; hdr[17] = 0x00; hdr[18] = 0x00; hdr[19] = 0x02; // dst 10.0.0.2
+    hdr[12] = 0x0A;
+    hdr[13] = 0x00;
+    hdr[14] = 0x00;
+    hdr[15] = 0x01; // src 10.0.0.1
+    hdr[16] = 0x0A;
+    hdr[17] = 0x00;
+    hdr[18] = 0x00;
+    hdr[19] = 0x02; // dst 10.0.0.2
 
     // Compute and place checksum
     std::uint16_t cs = InternetChecksum(hdr.data(), hdr.size(), 0);
@@ -152,14 +158,24 @@ TCPIP2_TEST(TruncatedHeader) {
     std::vector<std::uint8_t> hdr(22, 0);
     hdr[0] = 0x46; // version 4, IHL 6
     hdr[1] = 0x00;
-    hdr[2] = 0x00; hdr[3] = 0x18; // total_length = 24
-    hdr[4] = 0x00; hdr[5] = 0x01; // identification
-    hdr[6] = 0x00; hdr[7] = 0x00; // flags/frag
+    hdr[2] = 0x00;
+    hdr[3] = 0x18; // total_length = 24
+    hdr[4] = 0x00;
+    hdr[5] = 0x01; // identification
+    hdr[6] = 0x00;
+    hdr[7] = 0x00; // flags/frag
     hdr[8] = 0x40; // TTL
     hdr[9] = 0x06; // protocol = TCP
-    hdr[10] = 0x00; hdr[11] = 0x00; // checksum (placeholder)
-    hdr[12] = 0x0A; hdr[13] = 0x00; hdr[14] = 0x00; hdr[15] = 0x01;
-    hdr[16] = 0x0A; hdr[17] = 0x00; hdr[18] = 0x00; hdr[19] = 0x02;
+    hdr[10] = 0x00;
+    hdr[11] = 0x00; // checksum (placeholder)
+    hdr[12] = 0x0A;
+    hdr[13] = 0x00;
+    hdr[14] = 0x00;
+    hdr[15] = 0x01;
+    hdr[16] = 0x0A;
+    hdr[17] = 0x00;
+    hdr[18] = 0x00;
+    hdr[19] = 0x02;
     // Bytes 20-21 are option bytes; header needs 24 but only 22 available
 
     auto result = ParseIpv4(hdr.data(), hdr.size());

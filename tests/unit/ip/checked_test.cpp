@@ -162,7 +162,7 @@ TCPIP2_TEST(CursorPeek) {
     const std::uint8_t data[] = {0x42, 0x99};
     ReadCursor cur(data, 2);
 
-    const std::uint8_t* p = cur.Peek();
+    const std::uint8_t *p = cur.Peek();
     TCPIP2_EXPECT_TRUE(p != nullptr);
     TCPIP2_EXPECT_EQ(std::uint8_t{0x42}, *p);
 

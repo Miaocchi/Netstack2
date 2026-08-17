@@ -14,8 +14,7 @@ using namespace tcpip2;
 
 namespace {
 
-std::vector<std::uint8_t> BuildIpv4Udp(std::uint32_t source, std::uint32_t destination,
-                                       std::uint16_t source_port,
+std::vector<std::uint8_t> BuildIpv4Udp(std::uint32_t source, std::uint32_t destination, std::uint16_t source_port,
                                        std::uint16_t destination_port) {
     std::vector<std::uint8_t> packet(28, 0);
     packet[0] = 0x45;
@@ -89,14 +88,11 @@ TCPIP2_TEST(DispatcherFlowShardDistribution) {
     std::size_t counts[4] = {0, 0, 0, 0};
     for (std::size_t i = 0; i < 1000; ++i) {
         FlowKey fk;
-        fk.source = IpAddress::Ipv4(static_cast<std::uint8_t>(i & 0xFF),
-                                    static_cast<std::uint8_t>((i >> 8) & 0xFF),
-                                    static_cast<std::uint8_t>(i & 0x7F),
-                                    static_cast<std::uint8_t>(i % 200 + 1));
-        fk.destination = IpAddress::Ipv4(static_cast<std::uint8_t>((i * 7) & 0xFF),
-                                    static_cast<std::uint8_t>((i * 13) & 0xFF),
-                                    static_cast<std::uint8_t>((i * 3) & 0xFF),
-                                    static_cast<std::uint8_t>((i % 250) + 1));
+        fk.source = IpAddress::Ipv4(static_cast<std::uint8_t>(i & 0xFF), static_cast<std::uint8_t>((i >> 8) & 0xFF),
+                                    static_cast<std::uint8_t>(i & 0x7F), static_cast<std::uint8_t>(i % 200 + 1));
+        fk.destination =
+            IpAddress::Ipv4(static_cast<std::uint8_t>((i * 7) & 0xFF), static_cast<std::uint8_t>((i * 13) & 0xFF),
+                            static_cast<std::uint8_t>((i * 3) & 0xFF), static_cast<std::uint8_t>((i % 250) + 1));
         fk.source_port = static_cast<std::uint16_t>(i + 1024);
         fk.destination_port = static_cast<std::uint16_t>((i * 17) % 60000 + 1);
         fk.protocol = 6;
@@ -112,19 +108,19 @@ TCPIP2_TEST(DispatcherFlowShardDistribution) {
 
 TCPIP2_TEST(DispatcherDirectVsRedirect) {
     PacketDispatcher d(4, 4);
-    const std::vector<std::uint8_t> packet = test::PacketBuilder::BuildIpv4Tcp(
-        0x0a000001u, 0x0a000002u, 1000, 80, 1, 0, test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> packet =
+        test::PacketBuilder::BuildIpv4Tcp(0x0a000001u, 0x0a000002u, 1000, 80, 1, 0, test::TcpFlags::Syn, {});
     const PacketClassification classified = d.ClassifyPacket(packet.data(), packet.size());
     TCPIP2_EXPECT_TRUE(classified.error == PacketClassificationError::None);
     TCPIP2_EXPECT_TRUE(classified.packet_class == PacketClass::kTcp);
     TCPIP2_EXPECT_TRUE(classified.IsRoutable());
 
-    const DispatchDecision direct = d.Dispatch(
-        classified.owner_shard, packet.data(), packet.size());
+    const DispatchDecision direct = d.Dispatch(classified.owner_shard, packet.data(), packet.size());
     TCPIP2_EXPECT_TRUE(direct.action == DispatchAction::kLocal);
 
     for (std::size_t source = 0; source < 4; ++source) {
-        if (source == classified.owner_shard) continue;
+        if (source == classified.owner_shard)
+            continue;
         const DispatchDecision redirect = d.Dispatch(source, packet.data(), packet.size());
         TCPIP2_EXPECT_TRUE(redirect.action == DispatchAction::kRedirect);
         TCPIP2_EXPECT_EQ(classified.owner_shard, redirect.classification.owner_shard);
@@ -133,15 +129,14 @@ TCPIP2_TEST(DispatcherDirectVsRedirect) {
 
 TCPIP2_TEST(DispatcherClassifiesCanonicalTcpAndUdpFlows) {
     PacketDispatcher d(8, 1);
-    const std::vector<std::uint8_t> tcp = test::PacketBuilder::BuildIpv4Tcp(
-        0x0a000002u, 0x0a000001u, 443, 40000, 1, 0, test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> tcp =
+        test::PacketBuilder::BuildIpv4Tcp(0x0a000002u, 0x0a000001u, 443, 40000, 1, 0, test::TcpFlags::Syn, {});
     const PacketClassification tcp_class = d.ClassifyPacket(tcp.data(), tcp.size());
     TCPIP2_EXPECT_TRUE(tcp_class.packet_class == PacketClass::kTcp);
     TCPIP2_EXPECT_TRUE(tcp_class.flow == tcp_class.flow.Canonical());
     TCPIP2_EXPECT_EQ(tcp_class.owner_shard, d.FlowShard(tcp_class.flow));
 
-    const std::vector<std::uint8_t> udp = BuildIpv4Udp(
-        0x0a000002u, 0x0a000001u, 53, 50000);
+    const std::vector<std::uint8_t> udp = BuildIpv4Udp(0x0a000002u, 0x0a000001u, 53, 50000);
     const PacketClassification udp_class = d.ClassifyPacket(udp.data(), udp.size());
     TCPIP2_EXPECT_TRUE(udp_class.error == PacketClassificationError::None);
     TCPIP2_EXPECT_TRUE(udp_class.packet_class == PacketClass::kUdp);
@@ -151,11 +146,11 @@ TCPIP2_TEST(DispatcherClassifiesCanonicalTcpAndUdpFlows) {
 
 TCPIP2_TEST(DispatcherClassifiesFragmentsByStableFragmentKey) {
     PacketDispatcher d(4, 1);
-    const std::vector<std::uint8_t> syn = test::PacketBuilder::BuildIpv4Tcp(
-        0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
+    const std::vector<std::uint8_t> syn =
+        test::PacketBuilder::BuildIpv4Tcp(0x0a000001u, 0x0a000002u, 40000, 443, 1000, 0, test::TcpFlags::Syn, {});
     const std::vector<std::uint8_t> first_segment(syn.begin() + 20, syn.begin() + 28);
-    const std::vector<std::uint8_t> fragment = test::PacketBuilder::BuildIpv4TcpFragment(
-        0x0a000001u, 0x0a000002u, 0x1234, 0, true, first_segment);
+    const std::vector<std::uint8_t> fragment =
+        test::PacketBuilder::BuildIpv4TcpFragment(0x0a000001u, 0x0a000002u, 0x1234, 0, true, first_segment);
 
     const PacketClassification classified = d.ClassifyPacket(fragment.data(), fragment.size());
     TCPIP2_EXPECT_TRUE(classified.error == PacketClassificationError::None);
@@ -167,8 +162,8 @@ TCPIP2_TEST(DispatcherClassifiesFragmentsByStableFragmentKey) {
 TCPIP2_TEST(DispatcherInvalidQueueShard) {
     PacketDispatcher d(4, 2);
     // Setting out-of-range queue or shard should be a no-op.
-    d.SetQueueShard(10, 0);  // invalid queue
-    d.SetQueueShard(0, 10);  // invalid shard
+    d.SetQueueShard(10, 0); // invalid queue
+    d.SetQueueShard(0, 10); // invalid shard
     // Identity mapping still holds.
     TCPIP2_EXPECT_EQ(std::size_t{0}, d.QueueShard(0));
     TCPIP2_EXPECT_EQ(std::size_t{1}, d.QueueShard(1));

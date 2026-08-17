@@ -34,23 +34,23 @@ constexpr std::size_t kMaxIpv4FragmentPayloadBytes = 65515;
 /// A single fragment within a reassembly entry.
 /// Data is copied on arrival into the entry's owned buffer.
 struct FragmentPiece {
-    std::uint32_t offset = 0;       // byte offset in the reassembled payload
-    std::uint32_t length = 0;       // payload length in bytes
+    std::uint32_t offset = 0; // byte offset in the reassembled payload
+    std::uint32_t length = 0; // payload length in bytes
 };
 
 /// Error codes for fragment reassembly.
 enum class FragmentError {
     None,
-    TooManyFragments,       // exceeded kMaxFragmentsPerEntry
-    OverlapDetected,        // overlapping fragments (IPv4) or RFC 5722 datagram discard (IPv6)
-    PayloadTooLarge,        // reassembled size would exceed max_payload_bytes
-    InvalidOffset,          // non-zero offset but not a multiple of 8
-    InvalidFragment,        // zero-length fragment, MF=1 with non-multiple-of-8 length, etc.
-    TooManyEntries,         // reassembly table full (kMaxReassemblyEntries)
-    NullData,               // null fragment data pointer or null addresses
-    DuplicateTerminal,      // second MF=0 fragment with different total length
-    TerminalOverflow,       // fragment beyond already-known total length
-    ByteBudgetExceeded,     // per-shard total byte budget exceeded
+    TooManyFragments,   // exceeded kMaxFragmentsPerEntry
+    OverlapDetected,    // overlapping fragments (IPv4) or RFC 5722 datagram discard (IPv6)
+    PayloadTooLarge,    // reassembled size would exceed max_payload_bytes
+    InvalidOffset,      // non-zero offset but not a multiple of 8
+    InvalidFragment,    // zero-length fragment, MF=1 with non-multiple-of-8 length, etc.
+    TooManyEntries,     // reassembly table full (kMaxReassemblyEntries)
+    NullData,           // null fragment data pointer or null addresses
+    DuplicateTerminal,  // second MF=0 fragment with different total length
+    TerminalOverflow,   // fragment beyond already-known total length
+    ByteBudgetExceeded, // per-shard total byte budget exceeded
 };
 
 /// Result of adding a fragment. When complete, the caller takes ownership
@@ -62,7 +62,7 @@ struct FragmentAddResult {
     /// ECN codepoint of the reassembled datagram (RFC 3168 §5.2.2: the OR of
     /// the constituent fragments' ECN fields). Valid when complete == true.
     std::uint8_t ecn = 0;
-    std::vector<std::uint8_t> payload;  // owning buffer (moved from entry on completion)
+    std::vector<std::uint8_t> payload; // owning buffer (moved from entry on completion)
 };
 
 /// Key for identifying a fragment group.
@@ -71,23 +71,20 @@ struct FragmentAddResult {
 struct FragmentKey {
     std::uint8_t src_ip[16] = {};
     std::uint8_t dst_ip[16] = {};
-    std::uint8_t ip_version = 0;     // 4 or 6
-    std::uint8_t protocol = 0;       // IPv4 protocol or IPv6 final next-header
+    std::uint8_t ip_version = 0; // 4 or 6
+    std::uint8_t protocol = 0;   // IPv4 protocol or IPv6 final next-header
     std::uint32_t identification = 0;
 
-    bool Matches(const FragmentKey& other) const noexcept {
-        return ip_version == other.ip_version &&
-               protocol == other.protocol &&
-               identification == other.identification &&
-               std::memcmp(src_ip, other.src_ip, 16) == 0 &&
-               std::memcmp(dst_ip, other.dst_ip, 16) == 0;
+    bool Matches(const FragmentKey &other) const noexcept {
+        return ip_version == other.ip_version && protocol == other.protocol && identification == other.identification &&
+               std::memcmp(src_ip, other.src_ip, 16) == 0 && std::memcmp(dst_ip, other.dst_ip, 16) == 0;
     }
 };
 
 /// A reassembly entry holding fragments for one packet.
 /// Each fragment's data is copied into an owned buffer on arrival (no UAF).
 class ReassemblyEntry {
-public:
+  public:
     /// Add a fragment to this entry.
     /// @param offset byte offset of this fragment's payload in the reassembled packet
     /// @param data pointer to the fragment payload (copied immediately)
@@ -97,12 +94,9 @@ public:
     /// @param expires_ms TTL for this entry (0 = use default)
     /// @param max_payload_bytes per-datagram payload upper bound
     /// @param additional_byte_budget bytes this entry may grow before exhausting the shard budget
-    FragmentAddResult AddFragment(std::uint32_t offset, const std::uint8_t* data,
-                                  std::uint32_t length, bool more_fragments,
-                                  std::uint64_t now_ms,
-                                  std::uint32_t expires_ms,
-                                  std::uint32_t max_payload_bytes,
-                                  std::size_t additional_byte_budget,
+    FragmentAddResult AddFragment(std::uint32_t offset, const std::uint8_t *data, std::uint32_t length,
+                                  bool more_fragments, std::uint64_t now_ms, std::uint32_t expires_ms,
+                                  std::uint32_t max_payload_bytes, std::size_t additional_byte_budget,
                                   std::uint8_t ecn = 0) noexcept;
 
     /// Check if this entry has expired. Deadline is fixed at first fragment.
@@ -118,10 +112,10 @@ public:
     std::size_t FragmentCount() const noexcept { return fragment_count_; }
 
     /// Key for this entry.
-    const FragmentKey& Key() const noexcept { return key_; }
+    const FragmentKey &Key() const noexcept { return key_; }
 
     /// Set the key for this entry.
-    void SetKey(const FragmentKey& key) noexcept { key_ = key; }
+    void SetKey(const FragmentKey &key) noexcept { key_ = key; }
 
     /// Creation timestamp (fixed at first fragment, not refreshed).
     std::uint64_t DeadlineMs() const noexcept { return deadline_ms_; }
@@ -135,17 +129,17 @@ public:
     /// Mark entry as discarded (RFC 5722: discard entire datagram on IPv6 overlap).
     void MarkDiscarded() noexcept { discarded_ = true; }
 
-private:
+  private:
     FragmentKey key_{};
     FragmentPiece pieces_[kMaxFragmentsPerEntry];
     std::size_t fragment_count_ = 0;
     std::uint32_t highest_end_ = 0;
     bool last_received_ = false;
     std::uint32_t total_payload_length_ = 0;
-    std::uint64_t deadline_ms_ = 0;       // fixed at first fragment
-    bool discarded_ = false;               // RFC 5722: IPv6 overlap → discard all
-    std::uint8_t ecn_or_ = 0;              // OR of fragment ECN codepoints (RFC 3168 §5.2.2)
-    std::vector<std::uint8_t> data_buffer_;  // owned, contiguous reassembly buffer
+    std::uint64_t deadline_ms_ = 0;         // fixed at first fragment
+    bool discarded_ = false;                // RFC 5722: IPv6 overlap → discard all
+    std::uint8_t ecn_or_ = 0;               // OR of fragment ECN codepoints (RFC 3168 §5.2.2)
+    std::vector<std::uint8_t> data_buffer_; // owned, contiguous reassembly buffer
 
     bool HasOverlap(std::uint32_t offset, std::uint32_t length) const noexcept;
 };
@@ -154,11 +148,10 @@ private:
 /// Rejects overlapping fragments (IPv4) or discards the datagram (IPv6, RFC 5722).
 /// Evicts expired entries when full. Per-shard byte budget limits total memory.
 class FragmentReassembler {
-public:
+  public:
     /// @param max_entries maximum concurrent reassembly entries
     /// @param max_total_bytes per-shard total byte budget (0 = use default)
-    explicit FragmentReassembler(std::size_t max_entries = kMaxReassemblyEntries,
-                                  std::size_t max_total_bytes = 0);
+    explicit FragmentReassembler(std::size_t max_entries = kMaxReassemblyEntries, std::size_t max_total_bytes = 0);
 
     /// Add an IPv4 fragment.
     /// @param src_ip source IPv4 address (4 bytes, must not be null)
@@ -172,13 +165,11 @@ public:
     /// @param now_ms current monotonic time
     /// @param expires_ms TTL for this entry (0 = use default)
     /// @param max_payload_bytes per-datagram payload upper bound (0 = use default)
-    FragmentAddResult AddIpv4Fragment(
-        const std::uint8_t src_ip[4], const std::uint8_t dst_ip[4],
-        std::uint8_t protocol, std::uint16_t identification,
-        std::uint16_t fragment_offset, bool more_fragments,
-        const std::uint8_t* payload, std::size_t payload_len,
-        std::uint64_t now_ms, std::uint32_t expires_ms = 0,
-        std::uint32_t max_payload_bytes = 0, std::uint8_t ecn = 0) noexcept;
+    FragmentAddResult AddIpv4Fragment(const std::uint8_t src_ip[4], const std::uint8_t dst_ip[4], std::uint8_t protocol,
+                                      std::uint16_t identification, std::uint16_t fragment_offset, bool more_fragments,
+                                      const std::uint8_t *payload, std::size_t payload_len, std::uint64_t now_ms,
+                                      std::uint32_t expires_ms = 0, std::uint32_t max_payload_bytes = 0,
+                                      std::uint8_t ecn = 0) noexcept;
 
     /// Add an IPv6 fragment.
     /// @param src_ip source IPv6 address (16 bytes, must not be null)
@@ -192,14 +183,11 @@ public:
     /// @param expires_ms TTL for this entry (0 = use default)
     /// @param max_payload_bytes per-datagram payload upper bound (0 = use default)
     /// @param protocol final IPv6 next-header protocol for fragment association
-    FragmentAddResult AddIpv6Fragment(
-        const std::uint8_t src_ip[16], const std::uint8_t dst_ip[16],
-        std::uint32_t identification,
-        std::uint16_t fragment_offset, bool more_fragments,
-        const std::uint8_t* payload, std::size_t payload_len,
-        std::uint64_t now_ms, std::uint32_t expires_ms = 0,
-        std::uint32_t max_payload_bytes = 0, std::uint8_t protocol = 0,
-        std::uint8_t ecn = 0) noexcept;
+    FragmentAddResult AddIpv6Fragment(const std::uint8_t src_ip[16], const std::uint8_t dst_ip[16],
+                                      std::uint32_t identification, std::uint16_t fragment_offset, bool more_fragments,
+                                      const std::uint8_t *payload, std::size_t payload_len, std::uint64_t now_ms,
+                                      std::uint32_t expires_ms = 0, std::uint32_t max_payload_bytes = 0,
+                                      std::uint8_t protocol = 0, std::uint8_t ecn = 0) noexcept;
 
     /// Purge expired entries. Returns number of entries removed.
     std::size_t Purge(std::uint64_t now_ms) noexcept;
@@ -210,15 +198,14 @@ public:
     /// Total bytes held across all active entries.
     std::size_t BytesHeld() const noexcept;
 
-private:
+  private:
     std::vector<ReassemblyEntry> entries_;
     std::size_t max_entries_;
     std::size_t max_total_bytes_;
     std::size_t current_bytes_ = 0;
 
-    ReassemblyEntry* FindOrCreate(const FragmentKey& key, std::uint64_t now_ms,
-                                  std::uint32_t expires_ms,
-                                  FragmentError& error) noexcept;
+    ReassemblyEntry *FindOrCreate(const FragmentKey &key, std::uint64_t now_ms, std::uint32_t expires_ms,
+                                  FragmentError &error) noexcept;
 };
 
 } // namespace tcpip2

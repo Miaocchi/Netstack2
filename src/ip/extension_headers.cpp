@@ -2,8 +2,7 @@
 
 namespace tcpip2 {
 
-bool ParseIpv6Options(const std::uint8_t* data, std::size_t len,
-                      Ipv6Option* out, std::size_t& out_count) noexcept {
+bool ParseIpv6Options(const std::uint8_t *data, std::size_t len, Ipv6Option *out, std::size_t &out_count) noexcept {
     ReadCursor cur(data, len);
     std::size_t count = 0;
 
@@ -33,7 +32,7 @@ bool ParseIpv6Options(const std::uint8_t* data, std::size_t len,
             return false;
         }
 
-        const std::uint8_t* opt_data = cur.Peek();
+        const std::uint8_t *opt_data = cur.Peek();
         if (!cur.Skip(static_cast<std::size_t>(opt_len))) {
             return false;
         }
@@ -48,8 +47,7 @@ bool ParseIpv6Options(const std::uint8_t* data, std::size_t len,
     return true;
 }
 
-Ipv6RoutingHeader ParseIpv6RoutingHeader(const std::uint8_t* data,
-                                          std::size_t len) noexcept {
+Ipv6RoutingHeader ParseIpv6RoutingHeader(const std::uint8_t *data, std::size_t len) noexcept {
     Ipv6RoutingHeader rh;
     if (len < 2) {
         return rh;

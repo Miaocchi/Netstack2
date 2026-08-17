@@ -52,7 +52,7 @@ namespace tcpip2 {
 
 namespace {
 
-std::uint32_t HashTxLease(const std::uint8_t* data, std::size_t size) noexcept {
+std::uint32_t HashTxLease(const std::uint8_t *data, std::size_t size) noexcept {
     // Derive a flow hash from source/dest IP and ports in the serialized
     // IPv4/IPv6 + TCP packet. Falls back to FNV-1a of the whole packet if
     // the packet is too short or not IP/TCP.
@@ -68,35 +68,27 @@ std::uint32_t HashTxLease(const std::uint8_t* data, std::size_t size) noexcept {
 
     const std::uint8_t version = static_cast<std::uint8_t>(data[0] >> 4);
     if (version == 4 && size >= 20) {
-        const std::uint8_t* tcp = data + 20;
+        const std::uint8_t *tcp = data + 20;
         FlowKey key;
         key.source = IpAddress::Ipv4(
-            (static_cast<std::uint32_t>(data[12]) << 24) |
-            (static_cast<std::uint32_t>(data[13]) << 16) |
-            (static_cast<std::uint32_t>(data[14]) << 8) |
-            static_cast<std::uint32_t>(data[15]));
+            (static_cast<std::uint32_t>(data[12]) << 24) | (static_cast<std::uint32_t>(data[13]) << 16) |
+            (static_cast<std::uint32_t>(data[14]) << 8) | static_cast<std::uint32_t>(data[15]));
         key.destination = IpAddress::Ipv4(
-            (static_cast<std::uint32_t>(data[16]) << 24) |
-            (static_cast<std::uint32_t>(data[17]) << 16) |
-            (static_cast<std::uint32_t>(data[18]) << 8) |
-            static_cast<std::uint32_t>(data[19]));
-        key.source_port = static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(tcp[0]) << 8) | tcp[1]);
-        key.destination_port = static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(tcp[2]) << 8) | tcp[3]);
+            (static_cast<std::uint32_t>(data[16]) << 24) | (static_cast<std::uint32_t>(data[17]) << 16) |
+            (static_cast<std::uint32_t>(data[18]) << 8) | static_cast<std::uint32_t>(data[19]));
+        key.source_port = static_cast<std::uint16_t>((static_cast<std::uint16_t>(tcp[0]) << 8) | tcp[1]);
+        key.destination_port = static_cast<std::uint16_t>((static_cast<std::uint16_t>(tcp[2]) << 8) | tcp[3]);
         key.protocol = 6;
         return static_cast<std::uint32_t>(FlowHash(key) >> 32);
     }
 
     if (version == 6 && size >= 40) {
-        const std::uint8_t* tcp = data + 40;
+        const std::uint8_t *tcp = data + 40;
         FlowKey key;
         key.source = IpAddress::Ipv6(data + 8);
         key.destination = IpAddress::Ipv6(data + 24);
-        key.source_port = static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(tcp[0]) << 8) | tcp[1]);
-        key.destination_port = static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(tcp[2]) << 8) | tcp[3]);
+        key.source_port = static_cast<std::uint16_t>((static_cast<std::uint16_t>(tcp[0]) << 8) | tcp[1]);
+        key.destination_port = static_cast<std::uint16_t>((static_cast<std::uint16_t>(tcp[2]) << 8) | tcp[3]);
         key.protocol = 6;
         return static_cast<std::uint32_t>(FlowHash(key) >> 32);
     }
@@ -113,29 +105,18 @@ std::uint32_t HashTxLease(const std::uint8_t* data, std::size_t size) noexcept {
 
 } // namespace
 
-StackShard::StackShard(std::size_t shard_id, PktBufferPool& pool, IPacketQueue* queue,
-                        std::size_t inbox_capacity,
-                        ISessionFactory* session_factory,
-                        IClock* clock,
-                        IEventSink* event_sink,
-                        TcpHandshakeConfig tcp_config) noexcept
-    : shard_id_(shard_id),
-      pool_(pool),
-      queue_(queue),
-       session_factory_(session_factory),
-       clock_(clock ? clock : DefaultClock()),
-       event_sink_(event_sink),
-       tcp_config_(std::move(tcp_config)),
-      packet_inbox_(inbox_capacity),
-      control_inbox_(inbox_capacity),
-      timer_(256) {}
+StackShard::StackShard(std::size_t shard_id, PktBufferPool &pool, IPacketQueue *queue, std::size_t inbox_capacity,
+                       ISessionFactory *session_factory, IClock *clock, IEventSink *event_sink,
+                       TcpHandshakeConfig tcp_config) noexcept
+    : shard_id_(shard_id), pool_(pool), queue_(queue), session_factory_(session_factory),
+      clock_(clock ? clock : DefaultClock()), event_sink_(event_sink), tcp_config_(std::move(tcp_config)),
+      packet_inbox_(inbox_capacity), control_inbox_(inbox_capacity), timer_(256) {}
 
-StackShard::~StackShard() {
-    Stop();
-}
+StackShard::~StackShard() { Stop(); }
 
 bool StackShard::Start() noexcept {
-    if (running_.load(std::memory_order_relaxed)) return false;
+    if (running_.load(std::memory_order_relaxed))
+        return false;
     // Wire the per-shard KCC bandwidth filter into the TCP engine config.
     // The filter is owned by this StackShard and only accessed on the shard
     // thread; its address is stable because the shard object never moves.
@@ -147,41 +128,36 @@ bool StackShard::Start() noexcept {
         tcp_config_.kcc_kf = &kcc_kf_;
     }
     std::array<std::uint64_t, 2> isn_secret{};
-    if (!LoadTcpIsnSecret(isn_secret)) return false;
+    if (!LoadTcpIsnSecret(isn_secret))
+        return false;
     ++tcp_engine_epoch_;
-    if (tcp_engine_epoch_ == 0) ++tcp_engine_epoch_;
+    if (tcp_engine_epoch_ == 0)
+        ++tcp_engine_epoch_;
     try {
         tcp_ = std::make_unique<TcpHandshakeEngine>(
-            tcp_config_, TcpIsnGenerator(isn_secret), timer_,
-            tcp_engine_epoch_, session_factory_,
-            [this](ShardMessage&& msg) noexcept {
-                return control_inbox_.Push(std::move(msg));
-            },
-            event_sink_);
+            tcp_config_, TcpIsnGenerator(isn_secret), timer_, tcp_engine_epoch_, session_factory_,
+            [this](ShardMessage &&msg) noexcept { return control_inbox_.Push(std::move(msg)); }, event_sink_);
     } catch (...) {
         tcp_.reset();
         return false;
     }
     try {
-        udp_ = std::make_unique<UdpFlowTable>(
-            udp_config_, session_factory_, clock_,
-            [this](ShardMessage&& msg) noexcept {
+        udp_ =
+            std::make_unique<UdpFlowTable>(udp_config_, session_factory_, clock_, [this](ShardMessage &&msg) noexcept {
                 return control_inbox_.Push(std::move(msg));
             });
         // Remote UDP datagrams are serialized and routed through the same
         // FQ-CoDel egress scheduler as TCP (R6: TCP and UDP share the path).
-        udp_->SetEgressEmitter([this](const FlowKey& flow, BufferLease& payload) {
+        udp_->SetEgressEmitter([this](const FlowKey &flow, BufferLease &payload) {
             BufferLease tx = pool_.Allocate();
-            if (!tx) return false;
-            const UdpOutputResult out = BuildUdpPacket(
-                flow, payload.Data(), payload.Size(), tx.Data(), tx.Capacity());
+            if (!tx)
+                return false;
+            const UdpOutputResult out = BuildUdpPacket(flow, payload.Data(), payload.Size(), tx.Data(), tx.Capacity());
             if (out.error != UdpOutputError::None) {
                 return false;
             }
             tx.Resize(out.packet_length);
-            if (!fq_codel_.Enqueue(std::move(tx),
-                                   static_cast<std::uint32_t>(FlowHash(flow) >> 32),
-                                   clock_->NowMs())) {
+            if (!fq_codel_.Enqueue(std::move(tx), static_cast<std::uint32_t>(FlowHash(flow) >> 32), clock_->NowMs())) {
                 packets_dropped_.fetch_add(1, std::memory_order_relaxed);
                 return false;
             }
@@ -212,7 +188,8 @@ void StackShard::Stop() noexcept {
         std::fprintf(stderr, "tcpip2: Stop() called from shard thread (would deadlock)\n");
         std::abort();
     }
-    if (!running_.load(std::memory_order_relaxed)) return;
+    if (!running_.load(std::memory_order_relaxed))
+        return;
 
     // Post a stop message to the control inbox.
     ShardMessage msg;
@@ -228,28 +205,32 @@ void StackShard::Stop() noexcept {
     running_.store(false, std::memory_order_release);
     // Quiesce UDP session callbacks (adapter thread) before releasing the
     // table so no message can arrive after it is gone.
-    if (udp_) udp_->Shutdown();
+    if (udp_)
+        udp_->Shutdown();
     udp_.reset();
     tcp_.reset();
 }
 
-bool StackShard::PostMessage(ShardMessage&& msg) noexcept {
-    if (!running_.load(std::memory_order_relaxed)) return false;
+bool StackShard::PostMessage(ShardMessage &&msg) noexcept {
+    if (!running_.load(std::memory_order_relaxed))
+        return false;
     return control_inbox_.Push(std::move(msg));
 }
 
-bool StackShard::PostPacket(BufferLease&& lease) noexcept {
+bool StackShard::PostPacket(BufferLease &&lease) noexcept {
     if (!running_.load(std::memory_order_relaxed)) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    if (packet_inbox_.Push(std::move(lease))) return true;
+    if (packet_inbox_.Push(std::move(lease)))
+        return true;
     packets_dropped_.fetch_add(1, std::memory_order_relaxed);
     return false;
 }
 
-bool StackShard::SetRxQueues(const std::vector<IPacketQueue*>& queues) noexcept {
-    if (running_.load(std::memory_order_relaxed)) return false;
+bool StackShard::SetRxQueues(const std::vector<IPacketQueue *> &queues) noexcept {
+    if (running_.load(std::memory_order_relaxed))
+        return false;
     try {
         rx_queues_ = queues;
         next_rx_queue_ = 0;
@@ -259,12 +240,11 @@ bool StackShard::SetRxQueues(const std::vector<IPacketQueue*>& queues) noexcept 
     }
 }
 
-bool StackShard::SetPacketLanes(PacketDispatcher* dispatcher,
-                                 const std::vector<ShardPacketLane*>& inbound,
-                                 const std::vector<ShardPacketLane*>& outbound,
-                                const std::vector<StackShard*>& targets) noexcept {
-    if (running_.load(std::memory_order_relaxed) || dispatcher == nullptr ||
-        inbound.size() != outbound.size() || outbound.size() != targets.size()) {
+bool StackShard::SetPacketLanes(PacketDispatcher *dispatcher, const std::vector<ShardPacketLane *> &inbound,
+                                const std::vector<ShardPacketLane *> &outbound,
+                                const std::vector<StackShard *> &targets) noexcept {
+    if (running_.load(std::memory_order_relaxed) || dispatcher == nullptr || inbound.size() != outbound.size() ||
+        outbound.size() != targets.size()) {
         return false;
     }
     try {
@@ -283,8 +263,9 @@ bool StackShard::SetPacketLanes(PacketDispatcher* dispatcher,
     }
 }
 
-bool StackShard::SetTxQueues(const std::vector<IPacketQueue*>& queues) noexcept {
-    if (running_.load(std::memory_order_relaxed)) return false;
+bool StackShard::SetTxQueues(const std::vector<IPacketQueue *> &queues) noexcept {
+    if (running_.load(std::memory_order_relaxed))
+        return false;
     try {
         tx_queues_ = queues;
         return true;
@@ -294,10 +275,9 @@ bool StackShard::SetTxQueues(const std::vector<IPacketQueue*>& queues) noexcept 
     }
 }
 
-bool StackShard::SetEgressLanes(const std::vector<ShardEgressLane*>& inbound,
-                                 const std::vector<ShardEgressLane*>& outbound) noexcept {
-    if (running_.load(std::memory_order_relaxed) ||
-        inbound.size() != outbound.size() ||
+bool StackShard::SetEgressLanes(const std::vector<ShardEgressLane *> &inbound,
+                                const std::vector<ShardEgressLane *> &outbound) noexcept {
+    if (running_.load(std::memory_order_relaxed) || inbound.size() != outbound.size() ||
         outbound.size() != redirect_targets_.size()) {
         return false;
     }
@@ -323,7 +303,8 @@ void StackShard::Run() noexcept {
     while (!stop_requested_.load(std::memory_order_relaxed)) {
         EventLoopIteration();
     }
-    if (tcp_) tcp_->Shutdown();
+    if (tcp_)
+        tcp_->Shutdown();
     fq_codel_.Reset();
     tcp_tx_.clear();
     deferred_session_data_ = ShardMessage{};
@@ -333,12 +314,14 @@ void StackShard::Run() noexcept {
     // teardown; cross-shard lanes are released by Runtime after every join.
     for (;;) {
         BufferLease lease;
-        if (!packet_inbox_.Pop(lease)) break;
+        if (!packet_inbox_.Pop(lease))
+            break;
         lease.Reset();
     }
     for (;;) {
         ShardMessage msg;
-        if (!control_inbox_.Pop(msg)) break;
+        if (!control_inbox_.Pop(msg))
+            break;
         msg.data.Reset();
     }
     tcp_pcb_count_.store(0, std::memory_order_relaxed);
@@ -356,17 +339,16 @@ void StackShard::EventLoopIteration() noexcept {
 
     // Step 2: RX batches from queues owned by this shard. Rotate the first
     // queue each iteration so a busy queue cannot starve another owner queue.
-    const std::size_t queue_count = rx_queues_.empty()
-        ? (queue_ == nullptr ? 0 : 1)
-        : rx_queues_.size();
+    const std::size_t queue_count = rx_queues_.empty() ? (queue_ == nullptr ? 0 : 1) : rx_queues_.size();
     const std::size_t queue_visits = std::min(queue_count, kRxBudget);
     const std::size_t per_queue_budget = queue_visits == 0 ? 0 : kRxBudget / queue_visits;
     for (std::size_t visit = 0; visit < queue_visits; ++visit) {
-        IPacketQueue* rx_queue = queue_;
+        IPacketQueue *rx_queue = queue_;
         if (!rx_queues_.empty()) {
             rx_queue = rx_queues_[(next_rx_queue_ + visit) % queue_count];
         }
-        if (rx_queue == nullptr) continue;
+        if (rx_queue == nullptr)
+            continue;
 
         BufferLease rx[kRxBudget];
         IoError error = IoError::None;
@@ -384,11 +366,13 @@ void StackShard::EventLoopIteration() noexcept {
     // lane has one producer, avoiding an unsafe MPSC use of InboxSpsc.
     if (!inbound_lanes_.empty()) {
         for (std::size_t i = 0; i < kPacketInboxBudget; ++i) {
-            ShardPacketLane* lane = inbound_lanes_[next_inbound_lane_];
+            ShardPacketLane *lane = inbound_lanes_[next_inbound_lane_];
             next_inbound_lane_ = (next_inbound_lane_ + 1) % inbound_lanes_.size();
-            if (lane == nullptr) continue;
+            if (lane == nullptr)
+                continue;
             PacketEnvelope envelope;
-            if (!lane->Pop(envelope)) continue;
+            if (!lane->Pop(envelope))
+                continue;
             packets_received_.fetch_add(1, std::memory_order_relaxed);
             ProcessEnvelope(std::move(envelope), now_ms);
         }
@@ -397,7 +381,8 @@ void StackShard::EventLoopIteration() noexcept {
     // Legacy SPSC inbox is retained for single-producer unit tests only.
     for (std::size_t i = 0; i < kPacketInboxBudget; ++i) {
         BufferLease lease;
-        if (!packet_inbox_.Pop(lease)) break;
+        if (!packet_inbox_.Pop(lease))
+            break;
         packets_received_.fetch_add(1, std::memory_order_relaxed);
         ProcessPacket(std::move(lease), now_ms);
     }
@@ -405,17 +390,18 @@ void StackShard::EventLoopIteration() noexcept {
     // Step 4: Drain control inbox (MPSC). Check for StopMessage first.
     bool session_data_blocked = false;
     if (deferred_session_data_.data && tcp_) {
-        session_data_blocked = !tcp_->EnqueueRemoteData(
-            deferred_session_data_.flow_id, deferred_session_data_.generation,
-            deferred_session_data_.data);
+        session_data_blocked = !tcp_->EnqueueRemoteData(deferred_session_data_.flow_id,
+                                                        deferred_session_data_.generation, deferred_session_data_.data);
         if (!session_data_blocked) {
             deferred_session_data_ = ShardMessage{};
         }
     }
     for (std::size_t i = 0; i < kControlInboxBudget; ++i) {
-        if (session_data_blocked) break;
+        if (session_data_blocked)
+            break;
         ShardMessage msg;
-        if (!control_inbox_.Pop(msg)) break;
+        if (!control_inbox_.Pop(msg))
+            break;
         if (msg.type == ShardMessageType::kStop) {
             stop_requested_.store(true, std::memory_order_relaxed);
             // Release any carried data.
@@ -423,8 +409,7 @@ void StackShard::EventLoopIteration() noexcept {
             break;
         }
         if (msg.type == ShardMessageType::kSessionWritable && tcp_) {
-            const TcpHandshakeResult writable = tcp_->OnSessionWritable(
-                msg.flow_id, msg.generation, now_ms);
+            const TcpHandshakeResult writable = tcp_->OnSessionWritable(msg.flow_id, msg.generation, now_ms);
             if (writable.response.valid && !EnqueueTcpResponse(writable.response)) {
                 tcp_->DeferResponse(writable.response);
             }
@@ -456,18 +441,19 @@ void StackShard::EventLoopIteration() noexcept {
         msg.data.Reset();
     }
 
-    if (stop_requested_.load(std::memory_order_relaxed)) return;
+    if (stop_requested_.load(std::memory_order_relaxed))
+        return;
 
     // Step 5: advance timers, then drain bounded retry/control output.
     timer_.AdvanceTo(now_ms);
     reassembler_.Purge(now_ms);
     pmtu_cache_.Purge(now_ms);
-    if (udp_) udp_->PurgeExpired(now_ms);
+    if (udp_)
+        udp_->PurgeExpired(now_ms);
     if (tcp_) {
         tcp_->PumpSessionDeliveries(now_ms, kControlInboxBudget);
         TcpResponse response;
-        while (fq_codel_.QueueLength() < kTcpTxBudget &&
-               tcp_->PopPendingResponse(response)) {
+        while (fq_codel_.QueueLength() < kTcpTxBudget && tcp_->PopPendingResponse(response)) {
             if (!EnqueueTcpResponse(response)) {
                 tcp_->DeferResponse(response);
                 break;
@@ -480,11 +466,10 @@ void StackShard::EventLoopIteration() noexcept {
     // Step 7: pump TCP send paths (new data, retransmissions, persist probes).
     if (tcp_) {
         PumpTcpSendPaths(now_ms);
-        const std::size_t remote_low_watermark = std::max<std::size_t>(
-            1, control_inbox_.Capacity() / kRemoteReceiveLowWatermarkDivisor);
-        const std::size_t remote_backlog = control_inbox_.Count(
-            ShardMessageType::kSessionData) +
-            (deferred_session_data_.data ? 1U : 0U);
+        const std::size_t remote_low_watermark =
+            std::max<std::size_t>(1, control_inbox_.Capacity() / kRemoteReceiveLowWatermarkDivisor);
+        const std::size_t remote_backlog =
+            control_inbox_.Count(ShardMessageType::kSessionData) + (deferred_session_data_.data ? 1U : 0U);
         tcp_->ResumeSessionReceives(remote_backlog, remote_low_watermark);
     }
 
@@ -497,15 +482,14 @@ void StackShard::EventLoopIteration() noexcept {
     // Throttled to once per second to avoid overhead on the hot path.
     if (event_sink_ != nullptr) {
         constexpr std::uint64_t kMetricIntervalMs = 1000;
-        if (now_ms - last_metric_snapshot_ms_ >= kMetricIntervalMs ||
-            last_metric_snapshot_ms_ == 0) {
+        if (now_ms - last_metric_snapshot_ms_ >= kMetricIntervalMs || last_metric_snapshot_ms_ == 0) {
             last_metric_snapshot_ms_ = now_ms;
             MetricSnapshot snapshot;
             snapshot.shard_id = shard_id_;
             snapshot.rx_packets = packets_received_.load(std::memory_order_relaxed);
-            snapshot.rx_bytes = 0;  // Byte counter not yet tracked per-shard.
+            snapshot.rx_bytes = 0; // Byte counter not yet tracked per-shard.
             snapshot.dropped_packets = packets_dropped_.load(std::memory_order_relaxed);
-            snapshot.tx_packets = 0;  // TX counter not yet tracked per-shard.
+            snapshot.tx_packets = 0; // TX counter not yet tracked per-shard.
             snapshot.tx_bytes = 0;
             snapshot.tcp_pcb_count = tcp_pcb_count_.load(std::memory_order_relaxed);
             snapshot.tcp_half_open_count = tcp_half_open_count_.load(std::memory_order_relaxed);
@@ -522,15 +506,15 @@ void StackShard::EventLoopIteration() noexcept {
     }
 }
 
-void StackShard::RouteRxPacket(BufferLease&& lease, std::uint64_t now_ms) noexcept {
-    if (!lease) return;
+void StackShard::RouteRxPacket(BufferLease &&lease, std::uint64_t now_ms) noexcept {
+    if (!lease)
+        return;
     if (dispatcher_ == nullptr) {
         ProcessPacket(std::move(lease), now_ms);
         return;
     }
 
-    const DispatchDecision decision = dispatcher_->Dispatch(
-        shard_id_, lease.Data(), lease.Size());
+    const DispatchDecision decision = dispatcher_->Dispatch(shard_id_, lease.Data(), lease.Size());
     if (decision.action != DispatchAction::kRedirect) {
         ProcessPacket(std::move(lease), now_ms);
         return;
@@ -541,8 +525,9 @@ void StackShard::RouteRxPacket(BufferLease&& lease, std::uint64_t now_ms) noexce
     RedirectPacket(decision.classification.owner_shard, std::move(envelope));
 }
 
-void StackShard::ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexcept {
-    if (!lease || !tcp_) return;
+void StackShard::ProcessPacket(BufferLease &&lease, std::uint64_t now_ms) noexcept {
+    if (!lease || !tcp_)
+        return;
     const TcpInputResult input = ParseIpTcpPacket(lease.Data(), lease.Size());
     if (input.error == TcpInputError::FragmentRequiresReassembly) {
         HandleFragment(lease.Data(), lease.Size(), now_ms);
@@ -551,20 +536,17 @@ void StackShard::ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexce
     if (input.error != TcpInputError::None) {
         if (input.error == TcpInputError::NotTcp) {
             const std::uint8_t version = static_cast<std::uint8_t>(lease.Data()[0] >> 4);
-            const std::uint8_t protocol = (version == 4)
-                ? [&] {
-                    const Ipv4ParseResult ip = ParseIpv4(lease.Data(), lease.Size());
-                    return (ip.error == Ipv4ParseError::None) ? ip.header.protocol
-                                                              : static_cast<std::uint8_t>(0);
-                }()
-                : (version == 6)
-                ? [&] {
-                    const Ipv6ParseResult ip = ParseIpv6(lease.Data(), lease.Size());
-                    return (ip.error == Ipv6ParseResult::Error::None)
-                        ? ip.final_next_header
-                        : static_cast<std::uint8_t>(0);
-                }()
-                : static_cast<std::uint8_t>(0);
+            const std::uint8_t protocol = (version == 4) ? [&] {
+                const Ipv4ParseResult ip = ParseIpv4(lease.Data(), lease.Size());
+                return (ip.error == Ipv4ParseError::None) ? ip.header.protocol : static_cast<std::uint8_t>(0);
+            }()
+                                          : (version == 6) ? [&] {
+                                                const Ipv6ParseResult ip = ParseIpv6(lease.Data(), lease.Size());
+                                                return (ip.error == Ipv6ParseResult::Error::None)
+                                                           ? ip.final_next_header
+                                                           : static_cast<std::uint8_t>(0);
+                                            }()
+                                                           : static_cast<std::uint8_t>(0);
 
             if (protocol == 1 || protocol == 58) {
                 HandleIcmp(lease, now_ms);
@@ -583,8 +565,7 @@ void StackShard::ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexce
                 }
                 const UdpInputResult udp = ParseIpUdpPacket(lease.Data(), lease.Size());
                 if (udp.error == UdpInputResult::Error::None) {
-                    if (dispatcher_ != nullptr &&
-                        dispatcher_->FlowShard(udp.datagram.flow) != shard_id_) {
+                    if (dispatcher_ != nullptr && dispatcher_->FlowShard(udp.datagram.flow) != shard_id_) {
                         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
                         return;
                     }
@@ -599,16 +580,16 @@ void StackShard::ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexce
     ProcessTcpSegment(input.segment, now_ms);
 }
 
-void StackShard::ProcessEnvelope(PacketEnvelope&& envelope, std::uint64_t now_ms) noexcept {
-    if (!envelope.lease) return;
+void StackShard::ProcessEnvelope(PacketEnvelope &&envelope, std::uint64_t now_ms) noexcept {
+    if (!envelope.lease)
+        return;
     if (envelope.type == PacketEnvelopeType::kRawIp) {
         ProcessPacket(std::move(envelope.lease), now_ms);
         return;
     }
     if (envelope.type == PacketEnvelopeType::kReassembledTcp) {
-        const TcpParseResult tcp = ParseTcpSegment(
-            envelope.source, envelope.destination,
-            envelope.lease.Data(), envelope.lease.Size(), envelope.ecn);
+        const TcpParseResult tcp = ParseTcpSegment(envelope.source, envelope.destination, envelope.lease.Data(),
+                                                   envelope.lease.Size(), envelope.ecn);
         if (tcp.error != TcpParseError::None) {
             packets_dropped_.fetch_add(1, std::memory_order_relaxed);
             return;
@@ -616,12 +597,10 @@ void StackShard::ProcessEnvelope(PacketEnvelope&& envelope, std::uint64_t now_ms
         ProcessTcpSegment(tcp.segment, now_ms);
         return;
     }
-    HandleReassembledUdp(envelope.source, envelope.destination, std::move(envelope.lease),
-                         now_ms);
+    HandleReassembledUdp(envelope.source, envelope.destination, std::move(envelope.lease), now_ms);
 }
 
-void StackShard::ProcessTcpSegment(const TcpSegmentView& segment,
-                                   std::uint64_t now_ms) noexcept {
+void StackShard::ProcessTcpSegment(const TcpSegmentView &segment, std::uint64_t now_ms) noexcept {
     TCPIP2_ASSERT_OWNER(ownership_);
     if (dispatcher_ != nullptr && dispatcher_->FlowShard(segment.flow) != shard_id_) {
         // No caller may mutate a PCB after a misrouted segment. The runtime
@@ -638,8 +617,7 @@ void StackShard::ProcessTcpSegment(const TcpSegmentView& segment,
     }
 }
 
-void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
-                                std::uint64_t now_ms) noexcept {
+void StackShard::HandleFragment(const std::uint8_t *packet, std::size_t length, std::uint64_t now_ms) noexcept {
     const FragmentInfo fi = ExtractFragmentInfo(packet, length);
     if (!fi.valid) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
@@ -647,22 +625,20 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
     }
     FragmentAddResult result;
     if (fi.ip_version == 4) {
-        result = reassembler_.AddIpv4Fragment(
-            fi.src_ip, fi.dst_ip, fi.protocol,
-            static_cast<std::uint16_t>(fi.identification),
-            fi.fragment_offset, fi.more_fragments,
-            fi.payload, fi.payload_length, now_ms, 0, 0, fi.ecn);
+        result = reassembler_.AddIpv4Fragment(fi.src_ip, fi.dst_ip, fi.protocol,
+                                              static_cast<std::uint16_t>(fi.identification), fi.fragment_offset,
+                                              fi.more_fragments, fi.payload, fi.payload_length, now_ms, 0, 0, fi.ecn);
     } else {
-        result = reassembler_.AddIpv6Fragment(
-            fi.src_ip, fi.dst_ip, fi.identification,
-            fi.fragment_offset, fi.more_fragments,
-            fi.payload, fi.payload_length, now_ms, 0, 0, fi.protocol, fi.ecn);
+        result =
+            reassembler_.AddIpv6Fragment(fi.src_ip, fi.dst_ip, fi.identification, fi.fragment_offset, fi.more_fragments,
+                                         fi.payload, fi.payload_length, now_ms, 0, 0, fi.protocol, fi.ecn);
     }
     if (result.error != FragmentError::None) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    if (!result.complete) return;
+    if (!result.complete)
+        return;
 
     // Reassembly complete — its fragment shard may differ from the canonical
     // flow owner, so classify the transport segment before mutating a PCB.
@@ -675,15 +651,12 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
         dst = IpAddress::Ipv6(fi.dst_ip);
     }
     if (fi.protocol == 6) {
-        const TcpParseResult tcp = ParseTcpSegment(
-            src, dst, result.payload.data(), result.total_length, result.ecn);
+        const TcpParseResult tcp = ParseTcpSegment(src, dst, result.payload.data(), result.total_length, result.ecn);
         if (tcp.error != TcpParseError::None) {
             packets_dropped_.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        const std::size_t owner = dispatcher_ == nullptr
-            ? shard_id_
-            : dispatcher_->FlowShard(tcp.segment.flow);
+        const std::size_t owner = dispatcher_ == nullptr ? shard_id_ : dispatcher_->FlowShard(tcp.segment.flow);
         if (owner == shard_id_) {
             ProcessTcpSegment(tcp.segment, now_ms);
             return;
@@ -707,18 +680,15 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
     }
 
     if (fi.protocol == 17) {
-        const bool validate_checksum = src.IsIpv6() ||
-            (result.total_length >= 8 &&
-             (result.payload[6] != 0 || result.payload[7] != 0));
-        const UdpParseResult udp = ParseUdpDatagram(
-            src, dst, result.payload.data(), result.total_length, validate_checksum);
+        const bool validate_checksum =
+            src.IsIpv6() || (result.total_length >= 8 && (result.payload[6] != 0 || result.payload[7] != 0));
+        const UdpParseResult udp =
+            ParseUdpDatagram(src, dst, result.payload.data(), result.total_length, validate_checksum);
         if (udp.error != UdpParseError::None) {
             packets_dropped_.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        const std::size_t owner = dispatcher_ == nullptr
-            ? shard_id_
-            : dispatcher_->FlowShard(udp.flow);
+        const std::size_t owner = dispatcher_ == nullptr ? shard_id_ : dispatcher_->FlowShard(udp.flow);
         if (owner == shard_id_) {
             // R7: local reassembled UDP is dispatched to the flow table
             // (previously counted-and-dropped). Copy the payload into a pool
@@ -753,26 +723,24 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
     packets_dropped_.fetch_add(1, std::memory_order_relaxed);
 }
 
-void StackShard::EmitUdpUnreachable(const std::uint8_t* original,
-                                    std::size_t original_len,
-                                    std::uint8_t version,
-                                    const FlowKey& reply_flow) noexcept {
-    if (!udp_config_.emit_icmp_unreachable || original == nullptr) return;
+void StackShard::EmitUdpUnreachable(const std::uint8_t *original, std::size_t original_len, std::uint8_t version,
+                                    const FlowKey &reply_flow) noexcept {
+    if (!udp_config_.emit_icmp_unreachable || original == nullptr)
+        return;
     if (fq_codel_.QueueLength() >= kTcpTxBudget) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     BufferLease tx = pool_.Allocate();
-    if (!tx) return;
+    if (!tx)
+        return;
     IcmpUnreachableResult out;
     if (version == 4) {
-        out = BuildIcmpv4Unreachable(
-            original, original_len, Icmpv4DestUnreachableCode::Port, 0,
-            tx.Data(), tx.Capacity());
+        out = BuildIcmpv4Unreachable(original, original_len, Icmpv4DestUnreachableCode::Port, 0, tx.Data(),
+                                     tx.Capacity());
     } else if (version == 6) {
-        out = BuildIcmpv6Unreachable(
-            original, original_len, Icmpv6DestUnreachableCode::PortUnreachable,
-            tx.Data(), tx.Capacity());
+        out = BuildIcmpv6Unreachable(original, original_len, Icmpv6DestUnreachableCode::PortUnreachable, tx.Data(),
+                                     tx.Capacity());
     } else {
         return;
     }
@@ -780,33 +748,28 @@ void StackShard::EmitUdpUnreachable(const std::uint8_t* original,
         return;
     }
     tx.Resize(out.packet_length);
-    if (!fq_codel_.Enqueue(std::move(tx),
-                           static_cast<std::uint32_t>(FlowHash(reply_flow) >> 32),
-                           clock_->NowMs())) {
+    if (!fq_codel_.Enqueue(std::move(tx), static_cast<std::uint32_t>(FlowHash(reply_flow) >> 32), clock_->NowMs())) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
-void StackShard::EmitUdpPmtuError(const std::uint8_t* original,
-                                  std::size_t original_len,
-                                  std::uint8_t version,
-                                  std::uint32_t pmtu,
-                                  const FlowKey& reply_flow) noexcept {
-    if (original == nullptr) return;
+void StackShard::EmitUdpPmtuError(const std::uint8_t *original, std::size_t original_len, std::uint8_t version,
+                                  std::uint32_t pmtu, const FlowKey &reply_flow) noexcept {
+    if (original == nullptr)
+        return;
     if (fq_codel_.QueueLength() >= kTcpTxBudget) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     BufferLease tx = pool_.Allocate();
-    if (!tx) return;
+    if (!tx)
+        return;
     IcmpUnreachableResult out;
     if (version == 4) {
-        out = BuildIcmpv4Unreachable(
-            original, original_len, Icmpv4DestUnreachableCode::FragmentationNeeded,
-            static_cast<std::uint16_t>(pmtu), tx.Data(), tx.Capacity());
+        out = BuildIcmpv4Unreachable(original, original_len, Icmpv4DestUnreachableCode::FragmentationNeeded,
+                                     static_cast<std::uint16_t>(pmtu), tx.Data(), tx.Capacity());
     } else if (version == 6) {
-        out = BuildIcmpv6PacketTooBig(
-            original, original_len, pmtu, tx.Data(), tx.Capacity());
+        out = BuildIcmpv6PacketTooBig(original, original_len, pmtu, tx.Data(), tx.Capacity());
     } else {
         return;
     }
@@ -814,16 +777,15 @@ void StackShard::EmitUdpPmtuError(const std::uint8_t* original,
         return;
     }
     tx.Resize(out.packet_length);
-    if (!fq_codel_.Enqueue(std::move(tx),
-                           static_cast<std::uint32_t>(FlowHash(reply_flow) >> 32),
-                           clock_->NowMs())) {
+    if (!fq_codel_.Enqueue(std::move(tx), static_cast<std::uint32_t>(FlowHash(reply_flow) >> 32), clock_->NowMs())) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
-void StackShard::HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept {
+void StackShard::HandleUdp(BufferLease &&lease, std::uint64_t now_ms) noexcept {
     udp_datagrams_received_.fetch_add(1, std::memory_order_relaxed);
-    if (!udp_ || !lease) return;
+    if (!udp_ || !lease)
+        return;
     const UdpInputResult input = ParseIpUdpPacket(lease.Data(), lease.Size());
     if (input.error != UdpInputResult::Error::None) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
@@ -835,9 +797,8 @@ void StackShard::HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept {
     // larger than the path MTU cannot be fragmented (UDP is atomic), so drop it
     // and report ICMP Fragmentation Needed (IPv4) / Packet Too Big (IPv6) to
     // the sender.
-    const PmtuLookupResult pmtu = pmtu_cache_.Lookup(
-        input.datagram.flow.destination.Bytes(),
-        input.datagram.flow.destination.IsIpv4() ? 4 : 6, now_ms);
+    const PmtuLookupResult pmtu = pmtu_cache_.Lookup(input.datagram.flow.destination.Bytes(),
+                                                     input.datagram.flow.destination.IsIpv4() ? 4 : 6, now_ms);
     if (pmtu.found && lease.Size() > pmtu.pmtu) {
         udp_oversize_.fetch_add(1, std::memory_order_relaxed);
         FlowKey reply = input.datagram.flow;
@@ -852,9 +813,8 @@ void StackShard::HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept {
 
     // Client datagram -> remote session (flow table opens the adapter session
     // on the first packet and forwards the payload).
-    const UdpFlowTable::Dispatch d = udp_->OnClientDatagram(
-        input.datagram.flow, input.datagram.payload,
-        input.datagram.payload_length, now_ms);
+    const UdpFlowTable::Dispatch d =
+        udp_->OnClientDatagram(input.datagram.flow, input.datagram.payload, input.datagram.payload_length, now_ms);
     if (d == UdpFlowTable::Dispatch::Accepted) {
         return;
     }
@@ -874,28 +834,27 @@ void StackShard::HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept {
     packets_dropped_.fetch_add(1, std::memory_order_relaxed);
 }
 
-void StackShard::HandleReassembledUdp(const IpAddress& source, const IpAddress& destination,
-                                      BufferLease&& lease, std::uint64_t now_ms) noexcept {
-    if (!lease) return;
-    const bool validate_checksum = source.IsIpv6() ||
-        (lease.Size() >= 8 && (lease.Data()[6] != 0 || lease.Data()[7] != 0));
-    const UdpParseResult udp = ParseUdpDatagram(
-        source, destination, lease.Data(), lease.Size(), validate_checksum);
-    if (udp.error != UdpParseError::None ||
-        (dispatcher_ != nullptr && dispatcher_->FlowShard(udp.flow) != shard_id_)) {
+void StackShard::HandleReassembledUdp(const IpAddress &source, const IpAddress &destination, BufferLease &&lease,
+                                      std::uint64_t now_ms) noexcept {
+    if (!lease)
+        return;
+    const bool validate_checksum =
+        source.IsIpv6() || (lease.Size() >= 8 && (lease.Data()[6] != 0 || lease.Data()[7] != 0));
+    const UdpParseResult udp = ParseUdpDatagram(source, destination, lease.Data(), lease.Size(), validate_checksum);
+    if (udp.error != UdpParseError::None || (dispatcher_ != nullptr && dispatcher_->FlowShard(udp.flow) != shard_id_)) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     udp_datagrams_received_.fetch_add(1, std::memory_order_relaxed);
-    if (!udp_) return;
+    if (!udp_)
+        return;
     const bool is_v4 = source.IsIpv4();
     const std::size_t header_len = is_v4 ? 20 : 40;
 
     // R7 step 8: enforce the learned path MTU to the remote. A client datagram
     // larger than the path MTU cannot be fragmented (UDP is atomic), so drop it
     // and report ICMP Fragmentation Needed (IPv4) / Packet Too Big (IPv6).
-    const PmtuLookupResult pmtu = pmtu_cache_.Lookup(
-        udp.flow.destination.Bytes(), is_v4 ? 4 : 6, now_ms);
+    const PmtuLookupResult pmtu = pmtu_cache_.Lookup(udp.flow.destination.Bytes(), is_v4 ? 4 : 6, now_ms);
     if (pmtu.found && (header_len + lease.Size()) > pmtu.pmtu) {
         udp_oversize_.fetch_add(1, std::memory_order_relaxed);
         FlowKey reply = udp.flow;
@@ -923,8 +882,7 @@ void StackShard::HandleReassembledUdp(const IpAddress& source, const IpAddress& 
         return;
     }
 
-    const UdpFlowTable::Dispatch d = udp_->OnClientDatagram(
-        udp.flow, udp.payload, udp.payload_length, now_ms);
+    const UdpFlowTable::Dispatch d = udp_->OnClientDatagram(udp.flow, udp.payload, udp.payload_length, now_ms);
     if (d == UdpFlowTable::Dispatch::Accepted) {
         return;
     }
@@ -959,7 +917,7 @@ void StackShard::HandleReassembledUdp(const IpAddress& source, const IpAddress& 
     packets_dropped_.fetch_add(1, std::memory_order_relaxed);
 }
 
-bool StackShard::RedirectPacket(std::size_t target_shard, PacketEnvelope&& envelope) noexcept {
+bool StackShard::RedirectPacket(std::size_t target_shard, PacketEnvelope &&envelope) noexcept {
     if (target_shard >= outbound_lanes_.size() || target_shard >= redirect_targets_.size() ||
         outbound_lanes_[target_shard] == nullptr || redirect_targets_[target_shard] == nullptr) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
@@ -976,44 +934,49 @@ bool StackShard::RedirectPacket(std::size_t target_shard, PacketEnvelope&& envel
     return true;
 }
 
-bool StackShard::QuotedPacketMatchesFlow(const std::uint8_t* quoted,
-                                         std::size_t quoted_len,
+bool StackShard::QuotedPacketMatchesFlow(const std::uint8_t *quoted, std::size_t quoted_len,
                                          std::uint8_t family) const noexcept {
     // RFC 1191 §6 / RFC 4443 §2.4 attribution: the ICMP-quoted packet is one
     // WE sent, so its reversed 5-tuple must match a tracked TCP or UDP flow
     // before the error may influence PMTU state. A forged ICMP for a path we
     // are not sending on must not poison the PMTU cache.
-    if (tcp_ == nullptr && udp_ == nullptr) return false;
+    if (tcp_ == nullptr && udp_ == nullptr)
+        return false;
 
     FlowKey incoming;
     std::size_t l4_offset;
     if (family == 4) {
-        if (quoted_len < 20) return false;
+        if (quoted_len < 20)
+            return false;
         const std::uint8_t ihl_words = static_cast<std::uint8_t>(quoted[0] & 0x0Fu);
-        if (ihl_words < 5) return false;
+        if (ihl_words < 5)
+            return false;
         l4_offset = static_cast<std::size_t>(ihl_words) * 4;
-        if (quoted_len < l4_offset + 4) return false; // need both ports
+        if (quoted_len < l4_offset + 4)
+            return false; // need both ports
         const std::uint8_t proto = quoted[9];
-        if (proto != 6 && proto != 17) return false;  // attribute TCP/UDP only
+        if (proto != 6 && proto != 17)
+            return false; // attribute TCP/UDP only
         incoming.source = IpAddress::Ipv4(quoted[16], quoted[17], quoted[18], quoted[19]);
         incoming.destination = IpAddress::Ipv4(quoted[12], quoted[13], quoted[14], quoted[15]);
         // Quoted packet's dst_port is the peer's port (incoming source_port);
         // its src_port is our port (incoming destination_port).
-        incoming.source_port = static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(quoted[l4_offset + 2]) << 8) | quoted[l4_offset + 3]);
-        incoming.destination_port = static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(quoted[l4_offset]) << 8) | quoted[l4_offset + 1]);
+        incoming.source_port = static_cast<std::uint16_t>((static_cast<std::uint16_t>(quoted[l4_offset + 2]) << 8) |
+                                                          quoted[l4_offset + 3]);
+        incoming.destination_port =
+            static_cast<std::uint16_t>((static_cast<std::uint16_t>(quoted[l4_offset]) << 8) | quoted[l4_offset + 1]);
         incoming.protocol = proto;
     } else {
-        if (quoted_len < 40 + 4) return false;
+        if (quoted_len < 40 + 4)
+            return false;
         const std::uint8_t proto = quoted[6];
-        if (proto != 6 && proto != 17) return false;  // next header TCP/UDP
+        if (proto != 6 && proto != 17)
+            return false; // next header TCP/UDP
         incoming.source = IpAddress::Ipv6(quoted + 24);
         incoming.destination = IpAddress::Ipv6(quoted + 8);
-        incoming.source_port = static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(quoted[42]) << 8) | quoted[43]);
-        incoming.destination_port = static_cast<std::uint16_t>(
-            (static_cast<std::uint16_t>(quoted[40]) << 8) | quoted[41]);
+        incoming.source_port = static_cast<std::uint16_t>((static_cast<std::uint16_t>(quoted[42]) << 8) | quoted[43]);
+        incoming.destination_port =
+            static_cast<std::uint16_t>((static_cast<std::uint16_t>(quoted[40]) << 8) | quoted[41]);
         incoming.protocol = proto;
     }
 
@@ -1023,7 +986,8 @@ bool StackShard::QuotedPacketMatchesFlow(const std::uint8_t* quoted,
     // UDP: the flow table keys flows by the client datagram's direction
     // (client->remote). The quoted packet is what WE sent (also client->remote);
     // incoming is its reverse, so look up the reversed flow.
-    if (udp_ == nullptr) return false;
+    if (udp_ == nullptr)
+        return false;
     FlowKey sent;
     sent.source = incoming.destination;
     sent.destination = incoming.source;
@@ -1034,62 +998,62 @@ bool StackShard::QuotedPacketMatchesFlow(const std::uint8_t* quoted,
     return udp_->Find(sent, snap);
 }
 
-void StackShard::SendEchoReply(BufferLease lease, const FlowKey& reply_flow) noexcept {
+void StackShard::SendEchoReply(BufferLease lease, const FlowKey &reply_flow) noexcept {
     if (fq_codel_.QueueLength() >= kTcpTxBudget) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    if (!fq_codel_.Enqueue(std::move(lease),
-                           static_cast<std::uint32_t>(FlowHash(reply_flow) >> 32),
-                           clock_->NowMs())) {
+    if (!fq_codel_.Enqueue(std::move(lease), static_cast<std::uint32_t>(FlowHash(reply_flow) >> 32), clock_->NowMs())) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
-void StackShard::HandleIcmp(BufferLease& lease, std::uint64_t now_ms) noexcept {
-    std::uint8_t* const packet = lease.Data();
+void StackShard::HandleIcmp(BufferLease &lease, std::uint64_t now_ms) noexcept {
+    std::uint8_t *const packet = lease.Data();
     const std::size_t length = lease.Size();
-    if (packet == nullptr || length == 0) return;
+    if (packet == nullptr || length == 0)
+        return;
 
     const std::uint8_t version = static_cast<std::uint8_t>(packet[0] >> 4);
 
     if (version == 4) {
         const Ipv4ParseResult ip = ParseIpv4(packet, length);
-        if (ip.error != Ipv4ParseError::None) return;
-        if (ip.header.protocol != 1) return;  // ICMPv4
+        if (ip.error != Ipv4ParseError::None)
+            return;
+        if (ip.header.protocol != 1)
+            return; // ICMPv4
 
         const Icmpv4ParseResult icmp = ParseIcmpv4(ip.payload, ip.header.payload_length);
-        if (icmp.error != Icmpv4ParseError::None) return;
+        if (icmp.error != Icmpv4ParseError::None)
+            return;
 
         // Verify ICMPv4 checksum before acting. ICMPv4 does not use a
         // pseudo-header (seed == 0). A corrupted message must not lower PMTU.
-        if (!icmp.checksum_ok) return;
+        if (!icmp.checksum_ok)
+            return;
 
         if (icmp.header.type == Icmpv4Type::DestinationUnreachable &&
             icmp.header.code == Icmpv4DestUnreachableCode::FragmentationNeeded) {
             // Extract original dst_ip from the quoted IPv4 header (bytes 16-19).
-            if (icmp.header.quoted_payload == nullptr ||
-                icmp.header.quoted_payload_len < 20) {
-                return;  // quoted payload too short
+            if (icmp.header.quoted_payload == nullptr || icmp.header.quoted_payload_len < 20) {
+                return; // quoted payload too short
             }
             // Attribution: ignore errors whose quoted packet does not belong
             // to an existing TCP flow (prevents PMTU-cache poisoning).
-            if (!QuotedPacketMatchesFlow(icmp.header.quoted_payload,
-                                         icmp.header.quoted_payload_len, 4)) {
+            if (!QuotedPacketMatchesFlow(icmp.header.quoted_payload, icmp.header.quoted_payload_len, 4)) {
                 return;
             }
-            const std::uint8_t* orig_dst = icmp.header.quoted_payload + 16;
+            const std::uint8_t *orig_dst = icmp.header.quoted_payload + 16;
             pmtu_cache_.LowerFromIcmp(orig_dst, 4, icmp.header.mtu, now_ms);
-            NotifyTcpPmtuLowered(
-                IpAddress::Ipv4(orig_dst[0], orig_dst[1], orig_dst[2], orig_dst[3]),
-                now_ms);
+            NotifyTcpPmtuLowered(IpAddress::Ipv4(orig_dst[0], orig_dst[1], orig_dst[2], orig_dst[3]), now_ms);
             return;
         }
 
         if (icmp.header.type == Icmpv4Type::Echo) {
             // RFC 792 echo reply, built in place on the received lease. Do
             // not reply to requests addressed to multicast/broadcast groups.
-            if (ip.header.dst_ip[0] >= 224) return;
+            if (ip.header.dst_ip[0] >= 224)
+                return;
 
             // Swap IPv4 src/dst and refresh TTL.
             for (std::size_t i = 0; i < 4; ++i) {
@@ -1098,12 +1062,11 @@ void StackShard::HandleIcmp(BufferLease& lease, std::uint64_t now_ms) noexcept {
             packet[8] = 64;
 
             // Flip type to Echo Reply and recompute the ICMP checksum.
-            std::uint8_t* const msg = packet + ip.header.header_length;
+            std::uint8_t *const msg = packet + ip.header.header_length;
             msg[0] = Icmpv4Type::EchoReply;
             msg[2] = 0;
             msg[3] = 0;
-            const std::uint16_t icmp_cksum = InternetChecksum(
-                msg, ip.header.payload_length, 0);
+            const std::uint16_t icmp_cksum = InternetChecksum(msg, ip.header.payload_length, 0);
             msg[2] = static_cast<std::uint8_t>(icmp_cksum >> 8);
             msg[3] = static_cast<std::uint8_t>(icmp_cksum & 0xFFu);
 
@@ -1115,41 +1078,39 @@ void StackShard::HandleIcmp(BufferLease& lease, std::uint64_t now_ms) noexcept {
             packet[11] = static_cast<std::uint8_t>(ip_cksum & 0xFFu);
 
             FlowKey reply_flow;
-            reply_flow.source = IpAddress::Ipv4(packet[12], packet[13],
-                                                packet[14], packet[15]);
-            reply_flow.destination = IpAddress::Ipv4(packet[16], packet[17],
-                                                     packet[18], packet[19]);
+            reply_flow.source = IpAddress::Ipv4(packet[12], packet[13], packet[14], packet[15]);
+            reply_flow.destination = IpAddress::Ipv4(packet[16], packet[17], packet[18], packet[19]);
             reply_flow.protocol = 1;
             SendEchoReply(std::move(lease), reply_flow);
         }
         // TimeExceeded, ParameterProblem and EchoReply: no further action.
     } else if (version == 6) {
         const Ipv6ParseResult ip = ParseIpv6(packet, length);
-        if (ip.error != Ipv6ParseResult::Error::None) return;
-        if (ip.final_next_header != 58) return;  // ICMPv6
+        if (ip.error != Ipv6ParseResult::Error::None)
+            return;
+        if (ip.final_next_header != 58)
+            return; // ICMPv6
 
         // Verify ICMPv6 checksum (includes IPv6 pseudo-header).
-        if (!VerifyIcmpv6Checksum(ip.payload, ip.payload_length,
-                                  ip.header.src_ip, ip.header.dst_ip)) {
+        if (!VerifyIcmpv6Checksum(ip.payload, ip.payload_length, ip.header.src_ip, ip.header.dst_ip)) {
             return;
         }
 
         const Icmpv6ParseResult icmp = ParseIcmpv6(ip.payload, ip.payload_length);
-        if (icmp.error != Icmpv6ParseResult::Error::None) return;
+        if (icmp.error != Icmpv6ParseResult::Error::None)
+            return;
 
         if (icmp.header.type == Icmpv6Type::PacketTooBig) {
             // Extract original dst_ip from the quoted IPv6 fixed header (bytes 24-39).
-            if (icmp.header.quoted_payload == nullptr ||
-                icmp.header.quoted_payload_len < 40) {
-                return;  // quoted payload too short
+            if (icmp.header.quoted_payload == nullptr || icmp.header.quoted_payload_len < 40) {
+                return; // quoted payload too short
             }
             // Attribution: ignore errors whose quoted packet does not belong
             // to an existing TCP flow (prevents PMTU-cache poisoning).
-            if (!QuotedPacketMatchesFlow(icmp.header.quoted_payload,
-                                         icmp.header.quoted_payload_len, 6)) {
+            if (!QuotedPacketMatchesFlow(icmp.header.quoted_payload, icmp.header.quoted_payload_len, 6)) {
                 return;
             }
-            const std::uint8_t* orig_dst = icmp.header.quoted_payload + 24;
+            const std::uint8_t *orig_dst = icmp.header.quoted_payload + 24;
             pmtu_cache_.LowerFromIcmp(orig_dst, 6, icmp.header.mtu, now_ms);
             NotifyTcpPmtuLowered(IpAddress::Ipv6(orig_dst), now_ms);
             return;
@@ -1158,7 +1119,8 @@ void StackShard::HandleIcmp(BufferLease& lease, std::uint64_t now_ms) noexcept {
         if (icmp.header.type == Icmpv6Type::EchoRequest) {
             // RFC 4443 §4.1 echo reply, built in place. Do not reply to
             // requests addressed to a multicast group.
-            if (ip.header.dst_ip[0] == 0xFF) return;
+            if (ip.header.dst_ip[0] == 0xFF)
+                return;
 
             // Swap IPv6 src/dst and refresh hop limit.
             for (std::size_t i = 0; i < 16; ++i) {
@@ -1168,15 +1130,13 @@ void StackShard::HandleIcmp(BufferLease& lease, std::uint64_t now_ms) noexcept {
 
             // Flip type to Echo Reply and recompute the ICMPv6 checksum
             // (pseudo-header uses the new source/destination).
-            std::uint8_t* const msg = packet + ip.payload_offset;
+            std::uint8_t *const msg = packet + ip.payload_offset;
             msg[0] = Icmpv6Type::EchoReply;
             msg[2] = 0;
             msg[3] = 0;
-            const std::uint32_t seed = Ipv6PseudoHeaderSeed(
-                packet + 8, packet + 24, 58,
-                static_cast<std::uint32_t>(ip.payload_length));
-            const std::uint16_t icmp_cksum = InternetChecksum(
-                msg, ip.payload_length, seed);
+            const std::uint32_t seed =
+                Ipv6PseudoHeaderSeed(packet + 8, packet + 24, 58, static_cast<std::uint32_t>(ip.payload_length));
+            const std::uint16_t icmp_cksum = InternetChecksum(msg, ip.payload_length, seed);
             msg[2] = static_cast<std::uint8_t>(icmp_cksum >> 8);
             msg[3] = static_cast<std::uint8_t>(icmp_cksum & 0xFFu);
 
@@ -1189,16 +1149,16 @@ void StackShard::HandleIcmp(BufferLease& lease, std::uint64_t now_ms) noexcept {
     }
 }
 
-void StackShard::NotifyTcpPmtuLowered(const IpAddress& peer,
-                                      std::uint64_t now_ms) noexcept {
-    if (!tcp_) return;
-    const PmtuLookupResult r = pmtu_cache_.Lookup(peer.Bytes(),
-                                                  peer.IsIpv4() ? 4 : 6, now_ms);
-    if (!r.found) return;
+void StackShard::NotifyTcpPmtuLowered(const IpAddress &peer, std::uint64_t now_ms) noexcept {
+    if (!tcp_)
+        return;
+    const PmtuLookupResult r = pmtu_cache_.Lookup(peer.Bytes(), peer.IsIpv4() ? 4 : 6, now_ms);
+    if (!r.found)
+        return;
     tcp_->OnPathMtuLowered(peer, r.pmtu);
 }
 
-bool StackShard::EnqueueTcpResponse(const TcpResponse& response) noexcept {
+bool StackShard::EnqueueTcpResponse(const TcpResponse &response) noexcept {
     if (queue_ == nullptr && tx_queues_.empty()) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return false;
@@ -1212,16 +1172,14 @@ bool StackShard::EnqueueTcpResponse(const TcpResponse& response) noexcept {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    const TcpOutputResult output = BuildTcpControlPacket(
-        response, lease.Data(), lease.Capacity());
+    const TcpOutputResult output = BuildTcpControlPacket(response, lease.Data(), lease.Capacity());
     if (output.error != TcpOutputError::None) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     lease.Resize(output.packet_length);
-    if (!fq_codel_.Enqueue(std::move(lease),
-                            static_cast<std::uint32_t>(FlowHash(response.flow) >> 32),
-                            clock_->NowMs())) {
+    if (!fq_codel_.Enqueue(std::move(lease), static_cast<std::uint32_t>(FlowHash(response.flow) >> 32),
+                           clock_->NowMs())) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
@@ -1229,13 +1187,16 @@ bool StackShard::EnqueueTcpResponse(const TcpResponse& response) noexcept {
 }
 
 void StackShard::PumpTcpSendPaths(std::uint64_t now_ms) noexcept {
-    if (!tcp_) return;
-    if (fq_codel_.QueueLength() >= kTcpTxBudget) return;
+    if (!tcp_)
+        return;
+    if (fq_codel_.QueueLength() >= kTcpTxBudget)
+        return;
     const std::size_t remaining = kTcpTxBudget - fq_codel_.QueueLength();
     tcp_tx_.clear();
     tcp_->PumpSendPaths(now_ms, kControlInboxBudget, pool_, tcp_tx_, remaining);
-    for (auto& lease : tcp_tx_) {
-        if (!lease) continue;
+    for (auto &lease : tcp_tx_) {
+        if (!lease)
+            continue;
         const std::uint32_t flow_hash = HashTxLease(lease.Data(), lease.Size());
         if (!fq_codel_.Enqueue(std::move(lease), flow_hash, now_ms)) {
             packets_dropped_.fetch_add(1, std::memory_order_relaxed);
@@ -1245,44 +1206,44 @@ void StackShard::PumpTcpSendPaths(std::uint64_t now_ms) noexcept {
 }
 
 void StackShard::DrainEgressLanes() noexcept {
-    if (inbound_egress_lanes_.empty()) return;
+    if (inbound_egress_lanes_.empty())
+        return;
 
-    for (std::size_t i = 0;
-         i < kTcpTxBudget && fq_codel_.QueueLength() < kTcpTxBudget;
-         ++i) {
-        ShardEgressLane* lane = inbound_egress_lanes_[next_inbound_egress_lane_];
-        next_inbound_egress_lane_ =
-            (next_inbound_egress_lane_ + 1) % inbound_egress_lanes_.size();
-        if (lane == nullptr) continue;
+    for (std::size_t i = 0; i < kTcpTxBudget && fq_codel_.QueueLength() < kTcpTxBudget; ++i) {
+        ShardEgressLane *lane = inbound_egress_lanes_[next_inbound_egress_lane_];
+        next_inbound_egress_lane_ = (next_inbound_egress_lane_ + 1) % inbound_egress_lanes_.size();
+        if (lane == nullptr)
+            continue;
 
         EgressEnvelope envelope;
-        if (!lane->Pop(envelope)) continue;
+        if (!lane->Pop(envelope))
+            continue;
 
-        const bool valid_queue = envelope.queue_id < tx_queues_.size() &&
-            tx_queues_[envelope.queue_id] != nullptr && dispatcher_ != nullptr &&
-            dispatcher_->QueueShard(envelope.queue_id) == shard_id_ &&
-            (static_cast<std::size_t>(envelope.flow_hash) % tx_queues_.size()) ==
-                envelope.queue_id;
+        const bool valid_queue =
+            envelope.queue_id < tx_queues_.size() && tx_queues_[envelope.queue_id] != nullptr &&
+            dispatcher_ != nullptr && dispatcher_->QueueShard(envelope.queue_id) == shard_id_ &&
+            (static_cast<std::size_t>(envelope.flow_hash) % tx_queues_.size()) == envelope.queue_id;
         if (!valid_queue || !envelope.lease ||
-            !fq_codel_.Enqueue(std::move(envelope.lease),
-                                envelope.flow_hash, envelope.enqueue_time_ms)) {
+            !fq_codel_.Enqueue(std::move(envelope.lease), envelope.flow_hash, envelope.enqueue_time_ms)) {
             packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         }
         envelope.lease.Reset();
     }
 }
 
-bool StackShard::RouteEgressPacket(FqCoDelPacket& packet) noexcept {
-    if (packet.Empty()) return false;
+bool StackShard::RouteEgressPacket(FqCoDelPacket &packet) noexcept {
+    if (packet.Empty())
+        return false;
 
     // Legacy standalone shards have one directly owned queue. Runtime-configured
     // shards have an index for every queue but only retain local queue pointers.
     std::size_t queue_id = 0;
     std::size_t target_shard = shard_id_;
-    IPacketQueue* queue = queue_;
+    IPacketQueue *queue = queue_;
     if (!tx_queues_.empty()) {
         queue_id = static_cast<std::size_t>(packet.flow_hash) % tx_queues_.size();
-        if (dispatcher_ == nullptr) return false;
+        if (dispatcher_ == nullptr)
+            return false;
         target_shard = dispatcher_->QueueShard(queue_id);
         if (target_shard == shard_id_) {
             queue = tx_queues_[queue_id];
@@ -1294,10 +1255,8 @@ bool StackShard::RouteEgressPacket(FqCoDelPacket& packet) noexcept {
     BufferLease lease = std::move(packet.lease);
 
     if (target_shard != shard_id_) {
-        if (target_shard >= outbound_egress_lanes_.size() ||
-            target_shard >= redirect_targets_.size() ||
-            outbound_egress_lanes_[target_shard] == nullptr ||
-            redirect_targets_[target_shard] == nullptr) {
+        if (target_shard >= outbound_egress_lanes_.size() || target_shard >= redirect_targets_.size() ||
+            outbound_egress_lanes_[target_shard] == nullptr || redirect_targets_[target_shard] == nullptr) {
             packets_dropped_.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
@@ -1323,8 +1282,10 @@ bool StackShard::RouteEgressPacket(FqCoDelPacket& packet) noexcept {
 
     IoError error = IoError::None;
     std::size_t sent = queue->SendBatch(&lease, 1, error);
-    if (sent > 1) sent = 1;
-    if (sent == 1) return true;
+    if (sent > 1)
+        sent = 1;
+    if (sent == 1)
+        return true;
     // SendBatch would block — the lease was not consumed. Restore it so the
     // caller can re-enqueue the packet with its original timestamp.
     packet.lease = std::move(lease);
@@ -1332,17 +1293,18 @@ bool StackShard::RouteEgressPacket(FqCoDelPacket& packet) noexcept {
 }
 
 void StackShard::FlushTcpTx() noexcept {
-    if (fq_codel_.Empty()) return;
+    if (fq_codel_.Empty())
+        return;
 
     // CoDel makes the drop decision on the protocol-owner shard. A surviving
     // packet is then either submitted locally or moved to one bounded egress
     // lane. A blocked queue/lane is re-admitted with its original timestamp.
     for (std::size_t i = 0; i < kTcpTxBudget; ++i) {
         auto pkt = fq_codel_.Dequeue(clock_->NowMs());
-        if (!pkt) break;
+        if (!pkt)
+            break;
         if (!RouteEgressPacket(*pkt)) {
-            if (!fq_codel_.Enqueue(std::move(pkt->lease), pkt->flow_hash,
-                                   pkt->enqueue_time_ms)) {
+            if (!fq_codel_.Enqueue(std::move(pkt->lease), pkt->flow_hash, pkt->enqueue_time_ms)) {
                 packets_dropped_.fetch_add(1, std::memory_order_relaxed);
             }
             // A full egress lane or a queue that would block applies bounded

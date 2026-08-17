@@ -41,7 +41,7 @@ namespace tcpip2 {
  *   Shard → OnClosed() → closed_callback_ → App
  */
 class TcpSession : public ITransportSession {
-public:
+  public:
     /// Default send queue capacity before WouldBlock (256 KiB).
     static constexpr std::size_t kDefaultSendQueueLimit = 256 * 1024;
 
@@ -49,8 +49,8 @@ public:
 
     ~TcpSession() override = default;
 
-    TcpSession(const TcpSession&) = delete;
-    TcpSession& operator=(const TcpSession&) = delete;
+    TcpSession(const TcpSession &) = delete;
+    TcpSession &operator=(const TcpSession &) = delete;
 
     // ---- ITransportSession (application-facing) ----
 
@@ -79,7 +79,7 @@ public:
 
     /// Pull pending send data into @p out (up to @p max bytes).
     /// Returns the number of bytes copied.  Clears those bytes from the queue.
-    std::size_t DrainSendQueue(std::uint8_t* out, std::size_t max) noexcept;
+    std::size_t DrainSendQueue(std::uint8_t *out, std::size_t max) noexcept;
 
     /// True when ShutdownWrite() has been called.
     bool CloseRequested() const noexcept;
@@ -93,7 +93,7 @@ public:
     /// True when the session is closed (Abort or OnClosed was called).
     bool IsClosed() const noexcept;
 
-private:
+  private:
     mutable std::mutex mutex_;
     std::vector<std::uint8_t> send_queue_;
     std::size_t send_queue_limit_;

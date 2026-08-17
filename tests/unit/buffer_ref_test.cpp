@@ -10,7 +10,7 @@ using namespace tcpip2;
 TCPIP2_TEST(RetainKeepsPayload) {
     PktBufferPool pool(4, 512);
     BufferLease lease = pool.Allocate();
-    std::uint8_t* d = lease.Data();
+    std::uint8_t *d = lease.Data();
     for (std::size_t i = 0; i < 16; ++i) {
         d[i] = static_cast<std::uint8_t>(i * 2);
     }
@@ -82,7 +82,7 @@ TCPIP2_TEST(CrossPoolReturnAborts) {
     PktBufferPool poolA(4, 512);
     PktBufferPool poolB(4, 512);
     BufferLease a = poolA.Allocate();
-    PktBuffer* pkt = a.Get();
+    PktBuffer *pkt = a.Get();
     a.Reset();
     // Try to return poolA's buffer to poolB
     TCPIP2_EXPECT_DEATH(poolB.ReturnBuffer(pkt););

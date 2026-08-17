@@ -56,11 +56,11 @@ struct NullPacketIo::Impl {
 namespace {
 
 class NullQueue final : public IPacketQueue {
-public:
+  public:
     NullQueue(std::size_t queue_id, std::shared_ptr<NullPacketIo::Impl> impl) noexcept
         : queue_id_(queue_id), impl_(std::move(impl)) {}
 
-    std::size_t RecvBatch(BufferLease out[], std::size_t capacity, IoError& error) noexcept override {
+    std::size_t RecvBatch(BufferLease out[], std::size_t capacity, IoError &error) noexcept override {
         if (capacity == 0) {
             error = IoError::None;
             return 0;
@@ -75,7 +75,8 @@ public:
         while (taken < capacity && !impl_->rx_backlog[queue_id_].empty()) {
             BufferLease lease = std::move(impl_->rx_backlog[queue_id_].front());
             impl_->rx_backlog[queue_id_].pop_front();
-            if (!lease) continue;
+            if (!lease)
+                continue;
             out[taken++] = std::move(lease);
         }
         if (taken == 0 && impl_->recv_would_block) {
@@ -84,7 +85,7 @@ public:
         return taken;
     }
 
-    std::size_t SendBatch(BufferLease packets[], std::size_t count, IoError& error) noexcept override {
+    std::size_t SendBatch(BufferLease packets[], std::size_t count, IoError &error) noexcept override {
         if (count == 0) {
             error = IoError::None;
             return 0;
@@ -99,9 +100,10 @@ public:
         if (impl_->max_send_per_batch != 0 && impl_->max_send_per_batch < budget) {
             budget = impl_->max_send_per_batch;
         }
-        auto& egress = impl_->egress[queue_id_];
+        auto &egress = impl_->egress[queue_id_];
         for (std::size_t i = 0; i < budget; ++i) {
-            if (!packets[i]) continue;
+            if (!packets[i])
+                continue;
             // Copy egress bytes first; then transfer the lease to the backend.
             egress.emplace_back(packets[i].Data(), packets[i].Data() + packets[i].Size());
             if (impl_->async_tx_completion) {
@@ -117,15 +119,13 @@ public:
 
     std::size_t QueueId() const noexcept override { return queue_id_; }
 
-    void SetBufferPool(PktBufferPool* pool) noexcept override {
-        pool_ = pool;
-    }
+    void SetBufferPool(PktBufferPool *pool) noexcept override { pool_ = pool; }
 
     void StopRx() noexcept override {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->recv_handler[queue_id_] = nullptr;
         impl_->rx_stopped[queue_id_] = true;
-        auto& backlog = impl_->rx_backlog[queue_id_];
+        auto &backlog = impl_->rx_backlog[queue_id_];
         while (!backlog.empty()) {
             backlog.front().Reset();
             backlog.pop_front();
@@ -134,7 +134,7 @@ public:
 
     IoError DrainTx(std::uint64_t deadline_ms) noexcept override {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        auto& pending = impl_->pending_tx[queue_id_];
+        auto &pending = impl_->pending_tx[queue_id_];
         if (impl_->drain_tx_would_block && deadline_ms != 0 && !pending.empty()) {
             return IoError::WouldBlock;
         }
@@ -155,16 +155,15 @@ public:
         impl_->recv_handler[queue_id_] = std::move(wake);
     }
 
-private:
+  private:
     std::size_t queue_id_;
     std::shared_ptr<NullPacketIo::Impl> impl_;
-    PktBufferPool* pool_ = nullptr;  // stored for interface conformance; NullQueue does not allocate from it
+    PktBufferPool *pool_ = nullptr; // stored for interface conformance; NullQueue does not allocate from it
 };
 
 } // namespace
 
-NullPacketIo::NullPacketIo(std::size_t queue_count)
-    : impl_(std::make_shared<Impl>()) {
+NullPacketIo::NullPacketIo(std::size_t queue_count) : impl_(std::make_shared<Impl>()) {
     impl_->queue_count = queue_count;
     impl_->rx_backlog.resize(queue_count);
     impl_->pending_tx.resize(queue_count);
@@ -178,7 +177,8 @@ NullPacketIo::~NullPacketIo() = default;
 std::size_t NullPacketIo::QueueCount() const noexcept { return impl_->queue_count; }
 
 std::unique_ptr<IPacketQueue> NullPacketIo::OpenQueue(std::size_t queue_id) {
-    if (queue_id >= impl_->queue_count) return nullptr;
+    if (queue_id >= impl_->queue_count)
+        return nullptr;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->rx_stopped[queue_id] = false;
@@ -186,12 +186,14 @@ std::unique_ptr<IPacketQueue> NullPacketIo::OpenQueue(std::size_t queue_id) {
     return std::unique_ptr<IPacketQueue>(new NullQueue(queue_id, impl_));
 }
 
-bool NullPacketIo::Inject(std::size_t queue_id, BufferLease&& lease) {
-    if (!lease || queue_id >= impl_->queue_count) return false;
+bool NullPacketIo::Inject(std::size_t queue_id, BufferLease &&lease) {
+    if (!lease || queue_id >= impl_->queue_count)
+        return false;
     std::function<void()> wake;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (impl_->rx_stopped[queue_id]) return false;
+        if (impl_->rx_stopped[queue_id])
+            return false;
         const bool was_empty = impl_->rx_backlog[queue_id].empty();
         impl_->rx_backlog[queue_id].push_back(std::move(lease));
         if (was_empty) {
@@ -200,7 +202,8 @@ bool NullPacketIo::Inject(std::size_t queue_id, BufferLease&& lease) {
             wake = impl_->recv_handler[queue_id];
         }
     }
-    if (wake) wake();
+    if (wake)
+        wake();
     return true;
 }
 
@@ -230,9 +233,10 @@ void NullPacketIo::SetDrainTxWouldBlock(bool on) {
 }
 
 void NullPacketIo::DrainTxCompletions(std::size_t queue_id) {
-    if (queue_id >= impl_->queue_count) return;
+    if (queue_id >= impl_->queue_count)
+        return;
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    auto& pending = impl_->pending_tx[queue_id];
+    auto &pending = impl_->pending_tx[queue_id];
     while (!pending.empty()) {
         pending.front().Reset();
         pending.pop_front();
@@ -241,19 +245,22 @@ void NullPacketIo::DrainTxCompletions(std::size_t queue_id) {
 
 std::size_t NullPacketIo::PendingTxCompletions(std::size_t queue_id) const {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    if (queue_id >= impl_->queue_count) return 0;
+    if (queue_id >= impl_->queue_count)
+        return 0;
     return impl_->pending_tx[queue_id].size();
 }
 
-const std::vector<std::vector<std::uint8_t>>& NullPacketIo::Egress(std::size_t queue_id) const {
+const std::vector<std::vector<std::uint8_t>> &NullPacketIo::Egress(std::size_t queue_id) const {
     static const std::vector<std::vector<std::uint8_t>> kEmpty;
-    if (queue_id >= impl_->queue_count) return kEmpty;
+    if (queue_id >= impl_->queue_count)
+        return kEmpty;
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->egress[queue_id];
 }
 
 std::vector<std::vector<std::uint8_t>> NullPacketIo::EgressSnapshot(std::size_t queue_id) const {
-    if (queue_id >= impl_->queue_count) return {};
+    if (queue_id >= impl_->queue_count)
+        return {};
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->egress[queue_id];
 }

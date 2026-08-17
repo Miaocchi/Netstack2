@@ -12,7 +12,7 @@ namespace {
 
 /// Build an ICMPv6 message with a 4-byte header and optional body.
 static std::vector<std::uint8_t> BuildIcmpv6(std::uint8_t type, std::uint8_t code,
-                                             const std::vector<std::uint8_t>& body) {
+                                             const std::vector<std::uint8_t> &body) {
     std::vector<std::uint8_t> msg(4 + body.size(), 0);
     msg[0] = type;
     msg[1] = code;
@@ -67,8 +67,7 @@ TCPIP2_TEST(DestinationUnreachable) {
     // bytes [4..7] are unused (zeros)
     std::vector<std::uint8_t> body(4, 0);
     body.insert(body.end(), quoted.begin(), quoted.end());
-    auto msg = BuildIcmpv6(Icmpv6Type::DestinationUnreachable,
-                           Icmpv6DestUnreachableCode::PortUnreachable, body);
+    auto msg = BuildIcmpv6(Icmpv6Type::DestinationUnreachable, Icmpv6DestUnreachableCode::PortUnreachable, body);
 
     auto result = ParseIcmpv6(msg.data(), msg.size());
     TCPIP2_EXPECT_TRUE(result.error == Icmpv6ParseResult::Error::None);

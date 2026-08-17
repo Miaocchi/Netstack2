@@ -26,10 +26,7 @@ struct TcpOutputResult {
     std::size_t packet_length = 0;
 };
 
-TcpOutputResult BuildTcpControlPacket(const TcpResponse& response,
-                                      std::uint8_t* output,
-                                      std::size_t capacity,
-                                      std::uint16_t ipv4_id = 0,
-                                      std::uint8_t hop_limit = 64) noexcept;
+TcpOutputResult BuildTcpControlPacket(const TcpResponse &response, std::uint8_t *output, std::size_t capacity,
+                                      std::uint16_t ipv4_id = 0, std::uint8_t hop_limit = 64) noexcept;
 
 } // namespace tcpip2

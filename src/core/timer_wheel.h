@@ -22,19 +22,19 @@ namespace tcpip2 {
 
 struct TimerId {
     std::uint64_t value = 0;
-    bool operator==(const TimerId& o) const noexcept { return value == o.value; }
-    bool operator!=(const TimerId& o) const noexcept { return value != o.value; }
+    bool operator==(const TimerId &o) const noexcept { return value == o.value; }
+    bool operator!=(const TimerId &o) const noexcept { return value != o.value; }
 };
 
 using TimerCallback = std::function<void()>;
 
 class TimerWheel final {
-public:
+  public:
     explicit TimerWheel(std::size_t slot_count = 256) noexcept;
     ~TimerWheel();
 
-    TimerWheel(const TimerWheel&) = delete;
-    TimerWheel& operator=(const TimerWheel&) = delete;
+    TimerWheel(const TimerWheel &) = delete;
+    TimerWheel &operator=(const TimerWheel &) = delete;
 
     /** Schedule @p cb at absolute @p deadline_ms (clamped to now+1). */
     TimerId Schedule(std::uint64_t deadline_ms, TimerCallback cb);
@@ -51,7 +51,7 @@ public:
     std::uint64_t Now() const noexcept { return cursor_ms_; }
     std::size_t PendingCount() const noexcept { return pending_; }
 
-private:
+  private:
     struct Entry {
         TimerId id;
         std::uint64_t deadline_ms;

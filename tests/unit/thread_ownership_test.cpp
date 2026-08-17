@@ -46,9 +46,7 @@ TCPIP2_TEST(NonOwnerAccessAborts) {
     TCPIP2_EXPECT_DEATH({
         ThreadOwnershipGuard g;
         g.SetOwner();
-        std::thread worker([&g] {
-            g.AssertOwner(__FILE__, __LINE__);
-        });
+        std::thread worker([&g] { g.AssertOwner(__FILE__, __LINE__); });
         worker.join();
     });
 }

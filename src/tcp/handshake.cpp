@@ -14,7 +14,7 @@ namespace {
 
 constexpr std::size_t kNotFound = std::numeric_limits<std::size_t>::max();
 
-FlowKey ReverseFlow(const FlowKey& flow) noexcept {
+FlowKey ReverseFlow(const FlowKey &flow) noexcept {
     FlowKey reversed;
     reversed.source = flow.destination;
     reversed.destination = flow.source;
@@ -45,20 +45,21 @@ std::uint16_t WireWindow(std::uint32_t window, std::uint8_t scale) noexcept {
     return static_cast<std::uint16_t>(std::min<std::uint32_t>(scaled, 65535));
 }
 
-bool SameListener(const FlowKey& left, const FlowKey& right) noexcept {
-    return left.destination == right.destination &&
-           left.destination_port == right.destination_port;
+bool SameListener(const FlowKey &left, const FlowKey &right) noexcept {
+    return left.destination == right.destination && left.destination_port == right.destination_port;
 }
 
-bool SequenceAcceptable(const TcpSegmentView& segment,
-                        std::uint32_t rcv_nxt,
-                        std::uint32_t receive_window) noexcept {
+bool SequenceAcceptable(const TcpSegmentView &segment, std::uint32_t rcv_nxt, std::uint32_t receive_window) noexcept {
     std::uint32_t segment_length = static_cast<std::uint32_t>(segment.payload_length);
-    if (segment.HasFlag(TcpFlag::Syn)) ++segment_length;
-    if (segment.HasFlag(TcpFlag::Fin)) ++segment_length;
-    if (receive_window == 0) return segment_length == 0 && segment.sequence == rcv_nxt;
+    if (segment.HasFlag(TcpFlag::Syn))
+        ++segment_length;
+    if (segment.HasFlag(TcpFlag::Fin))
+        ++segment_length;
+    if (receive_window == 0)
+        return segment_length == 0 && segment.sequence == rcv_nxt;
     const std::uint32_t first_offset = segment.sequence - rcv_nxt;
-    if (segment_length == 0) return first_offset < receive_window;
+    if (segment_length == 0)
+        return first_offset < receive_window;
     const std::uint32_t last_offset = segment.sequence + segment_length - 1 - rcv_nxt;
     return first_offset < receive_window || last_offset < receive_window;
 }
@@ -74,26 +75,23 @@ bool SequenceAfter(std::uint32_t left, std::uint32_t right) noexcept {
 } // namespace
 
 bool TcpHandshakeConfig::Validate() const noexcept {
-    if (backlog_limit == 0 || half_open_limit == 0 || pcb_limit == 0 ||
-        pending_response_limit == 0 || receive_memory_budget == 0 ||
-        delivery_call_budget == 0 || delayed_ack_ms == 0) {
+    if (backlog_limit == 0 || half_open_limit == 0 || pcb_limit == 0 || pending_response_limit == 0 ||
+        receive_memory_budget == 0 || delivery_call_budget == 0 || delayed_ack_ms == 0) {
         return false;
     }
-    if (backlog_limit > pcb_limit || half_open_limit > pcb_limit) return false;
+    if (backlog_limit > pcb_limit || half_open_limit > pcb_limit)
+        return false;
     constexpr std::uint32_t kMaxScaledWindow = std::uint32_t{65535} << 14;
-    if (local_mss == 0 || path_mtu < 1280 ||
-        receive_window == 0 || receive_window > kMaxScaledWindow) {
+    if (local_mss == 0 || path_mtu < 1280 || receive_window == 0 || receive_window > kMaxScaledWindow) {
         return false;
     }
     for (std::uint64_t interval : syn_ack_retry_intervals_ms) {
-        if (interval == 0) return false;
+        if (interval == 0)
+            return false;
     }
-    if (send_queue_limit == 0 || retransmit_queue_limit == 0 ||
-        min_rto_ms == 0 || max_rto_ms == 0 ||
-        min_rto_ms > initial_rto_ms || initial_rto_ms > max_rto_ms ||
-        persist_timer_base_ms == 0 ||
-        persist_timer_base_ms > persist_timer_max_ms ||
-        max_retransmissions == 0 || max_persist_probes == 0) {
+    if (send_queue_limit == 0 || retransmit_queue_limit == 0 || min_rto_ms == 0 || max_rto_ms == 0 ||
+        min_rto_ms > initial_rto_ms || initial_rto_ms > max_rto_ms || persist_timer_base_ms == 0 ||
+        persist_timer_base_ms > persist_timer_max_ms || max_retransmissions == 0 || max_persist_probes == 0) {
         return false;
     }
     if (max_timewait_entries == 0 || timewait_ms == 0 || keepalive_ms == 0) {
@@ -102,12 +100,10 @@ bool TcpHandshakeConfig::Validate() const noexcept {
     return true;
 }
 
-std::uint16_t TcpHandshakeEngine::LocalSendCap(
-    std::uint16_t fixed_header_bytes) const noexcept {
+std::uint16_t TcpHandshakeEngine::LocalSendCap(std::uint16_t fixed_header_bytes) const noexcept {
     std::uint16_t cap = config_.local_mss;
     if (config_.path_mtu > fixed_header_bytes) {
-        cap = std::min<std::uint16_t>(
-            cap, static_cast<std::uint16_t>(config_.path_mtu - fixed_header_bytes));
+        cap = std::min<std::uint16_t>(cap, static_cast<std::uint16_t>(config_.path_mtu - fixed_header_bytes));
     }
     if (config_.tx_payload_limit != 0) {
         cap = std::min<std::uint16_t>(cap, config_.tx_payload_limit);
@@ -115,26 +111,29 @@ std::uint16_t TcpHandshakeEngine::LocalSendCap(
     return cap;
 }
 
-void TcpHandshakeEngine::OnPathMtuLowered(const IpAddress& peer,
-                                          std::uint32_t pmtu) noexcept {
+void TcpHandshakeEngine::OnPathMtuLowered(const IpAddress &peer, std::uint32_t pmtu) noexcept {
     // Send-side header weight for the peer's family.
     const std::uint16_t fixed_header_bytes = peer.IsIpv4() ? 40 : 60;
     if (pmtu <= fixed_header_bytes) {
         return; // Path MTU too small to carry any TCP payload.
     }
-    const std::uint16_t pmtu_mss = static_cast<std::uint16_t>(
-        std::min<std::uint32_t>(pmtu - fixed_header_bytes, UINT16_MAX));
+    const std::uint16_t pmtu_mss =
+        static_cast<std::uint16_t>(std::min<std::uint32_t>(pmtu - fixed_header_bytes, UINT16_MAX));
 
-    for (Pcb& pcb : pcbs_) {
-        if (!pcb.send) continue;
+    for (Pcb &pcb : pcbs_) {
+        if (!pcb.send)
+            continue;
         // A flow sends to its incoming_flow source (the peer), so only flows
         // whose peer address matches the shrunken path are affected.
-        if (pcb.incoming_flow.source != peer) continue;
+        if (pcb.incoming_flow.source != peer)
+            continue;
 
         std::uint16_t new_mss = pcb.options.peer_mss;
-        if (new_mss > pmtu_mss) new_mss = pmtu_mss;
+        if (new_mss > pmtu_mss)
+            new_mss = pmtu_mss;
         // Re-apply the local caps in case the negotiated MSS predates them.
-        if (new_mss > config_.local_mss) new_mss = config_.local_mss;
+        if (new_mss > config_.local_mss)
+            new_mss = config_.local_mss;
         if (config_.tx_payload_limit != 0 && new_mss > config_.tx_payload_limit) {
             new_mss = config_.tx_payload_limit;
         }
@@ -145,19 +144,12 @@ void TcpHandshakeEngine::OnPathMtuLowered(const IpAddress& peer,
     }
 }
 
-TcpHandshakeEngine::TcpHandshakeEngine(const TcpHandshakeConfig& config,
-                                       const TcpIsnGenerator& isn,
-                                       TimerWheel& timers,
-                                       std::uint64_t generation_epoch,
-                                       ISessionFactory* session_factory,
-                                       PostMessageFn post_message,
-                                       IEventSink* event_sink)
-    : config_(config), isn_(isn), timers_(timers),
-      callback_gate_(std::make_shared<CallbackGate>()),
-      generation_epoch_(generation_epoch == 0 ? 1 : generation_epoch),
-      session_factory_(session_factory),
-      post_message_fn_(std::move(post_message)),
-      event_sink_(event_sink) {
+TcpHandshakeEngine::TcpHandshakeEngine(const TcpHandshakeConfig &config, const TcpIsnGenerator &isn, TimerWheel &timers,
+                                       std::uint64_t generation_epoch, ISessionFactory *session_factory,
+                                       PostMessageFn post_message, IEventSink *event_sink)
+    : config_(config), isn_(isn), timers_(timers), callback_gate_(std::make_shared<CallbackGate>()),
+      generation_epoch_(generation_epoch == 0 ? 1 : generation_epoch), session_factory_(session_factory),
+      post_message_fn_(std::move(post_message)), event_sink_(event_sink) {
     if (!config_.Validate()) {
         throw std::invalid_argument("invalid TCP handshake configuration");
     }
@@ -166,31 +158,27 @@ TcpHandshakeEngine::TcpHandshakeEngine(const TcpHandshakeConfig& config,
     callback_gate_->post_message = post_message_fn_;
 }
 
-TcpHandshakeEngine::~TcpHandshakeEngine() {
-    Shutdown();
-}
+TcpHandshakeEngine::~TcpHandshakeEngine() { Shutdown(); }
 
-std::size_t TcpHandshakeEngine::FindIndex(const FlowKey& incoming_flow) const noexcept {
+std::size_t TcpHandshakeEngine::FindIndex(const FlowKey &incoming_flow) const noexcept {
     for (std::size_t i = 0; i < pcbs_.size(); ++i) {
-        if (pcbs_[i].incoming_flow == incoming_flow) return i;
+        if (pcbs_[i].incoming_flow == incoming_flow)
+            return i;
     }
     return kNotFound;
 }
 
-std::size_t TcpHandshakeEngine::ListenerHalfOpenCount(
-    const FlowKey& incoming_flow) const noexcept {
+std::size_t TcpHandshakeEngine::ListenerHalfOpenCount(const FlowKey &incoming_flow) const noexcept {
     std::size_t count = 0;
-    for (const Pcb& pcb : pcbs_) {
-        if (pcb.state == TcpState::SynReceived &&
-            SameListener(pcb.incoming_flow, incoming_flow)) {
+    for (const Pcb &pcb : pcbs_) {
+        if (pcb.state == TcpState::SynReceived && SameListener(pcb.incoming_flow, incoming_flow)) {
             ++count;
         }
     }
     return count;
 }
 
-TcpResponse TcpHandshakeEngine::BuildSynAck(Pcb& pcb,
-                                            std::uint64_t now_ms) noexcept {
+TcpResponse TcpHandshakeEngine::BuildSynAck(Pcb &pcb, std::uint64_t now_ms) noexcept {
     TcpResponse response;
     response.valid = true;
     response.flow = ReverseFlow(pcb.incoming_flow);
@@ -199,8 +187,7 @@ TcpResponse TcpHandshakeEngine::BuildSynAck(Pcb& pcb,
     response.flags = static_cast<std::uint8_t>(TcpFlag::Syn | TcpFlag::Ack);
     if (pcb.options.ecn) {
         // Confirm the negotiated ECN capability (RFC 3168 §6.1.1).
-        response.flags = static_cast<std::uint8_t>(
-            response.flags | TcpFlag::Ece | TcpFlag::Cwr);
+        response.flags = static_cast<std::uint8_t>(response.flags | TcpFlag::Ece | TcpFlag::Cwr);
     }
     response.window = pcb.response_window;
     response.syn_options = pcb.response_options;
@@ -211,10 +198,10 @@ TcpResponse TcpHandshakeEngine::BuildSynAck(Pcb& pcb,
     return response;
 }
 
-TcpResponse TcpHandshakeEngine::BuildAck(Pcb& pcb,
-                                         std::uint64_t now_ms) noexcept {
+TcpResponse TcpHandshakeEngine::BuildAck(Pcb &pcb, std::uint64_t now_ms) noexcept {
     TcpResponse response;
-    if (!pcb.receive) return response;
+    if (!pcb.receive)
+        return response;
     if (pcb.delayed_ack_timer.value != 0) {
         timers_.Cancel(pcb.delayed_ack_timer);
         pcb.delayed_ack_timer = TimerId{};
@@ -229,12 +216,10 @@ TcpResponse TcpHandshakeEngine::BuildAck(Pcb& pcb,
         response.flags = static_cast<std::uint8_t>(response.flags | TcpFlag::Ece);
     }
 
-    const std::uint8_t scale = pcb.options.window_scale
-        ? pcb.options.receive_window_scale : 0;
+    const std::uint8_t scale = pcb.options.window_scale ? pcb.options.receive_window_scale : 0;
     const std::size_t available = pcb.receive->AdvertisedWindow();
     response.window = WireWindow(
-        static_cast<std::uint32_t>(std::min<std::size_t>(
-            available, std::numeric_limits<std::uint32_t>::max())), scale);
+        static_cast<std::uint32_t>(std::min<std::size_t>(available, std::numeric_limits<std::uint32_t>::max())), scale);
     const std::size_t represented = static_cast<std::size_t>(response.window) << scale;
     pcb.receive->RecordAdvertisedWindow(represented);
 
@@ -242,14 +227,13 @@ TcpResponse TcpHandshakeEngine::BuildAck(Pcb& pcb,
     response.timestamp_value = static_cast<std::uint32_t>(now_ms);
     response.timestamp_echo = pcb.options.peer_timestamp;
     if (pcb.options.sack_permitted) {
-        response.sack_blocks = pcb.receive->SackBlocks(
-            pcb.options.timestamps ? 3 : 4);
+        response.sack_blocks = pcb.receive->SackBlocks(pcb.options.timestamps ? 3 : 4);
     }
     pcb.receive->AckSent();
     return response;
 }
 
-TcpResponse TcpHandshakeEngine::BuildReset(const TcpSegmentView& segment) noexcept {
+TcpResponse TcpHandshakeEngine::BuildReset(const TcpSegmentView &segment) noexcept {
     TcpResponse response;
     response.valid = true;
     response.flow = ReverseFlow(segment.flow);
@@ -261,24 +245,27 @@ TcpResponse TcpHandshakeEngine::BuildReset(const TcpSegmentView& segment) noexce
     }
 
     std::uint32_t segment_length = static_cast<std::uint32_t>(segment.payload_length);
-    if (segment.HasFlag(TcpFlag::Syn)) ++segment_length;
-    if (segment.HasFlag(TcpFlag::Fin)) ++segment_length;
+    if (segment.HasFlag(TcpFlag::Syn))
+        ++segment_length;
+    if (segment.HasFlag(TcpFlag::Fin))
+        ++segment_length;
     response.acknowledgment = segment.sequence + segment_length;
     response.flags = static_cast<std::uint8_t>(TcpFlag::Rst | TcpFlag::Ack);
     return response;
 }
 
-bool TcpHandshakeEngine::ScheduleRetry(Pcb& pcb,
-                                       std::uint64_t deadline_ms) noexcept {
+bool TcpHandshakeEngine::ScheduleRetry(Pcb &pcb, std::uint64_t deadline_ms) noexcept {
     const FlowKey flow = pcb.incoming_flow;
     const std::uint64_t generation = pcb.generation;
     const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
     try {
         pcb.retry_timer = timers_.Schedule(deadline_ms, [weak_gate, this, flow, generation] {
             const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
-            if (!gate) return;
+            if (!gate)
+                return;
             gate->TryRun([this, flow, generation] {
-                if (!shutdown_) OnRetry(flow, generation);
+                if (!shutdown_)
+                    OnRetry(flow, generation);
             });
         });
         return true;
@@ -297,19 +284,18 @@ void TcpHandshakeEngine::EmitFlowEvent(FlowId flow_id, FlowEventType type) noexc
     }
 }
 
-void TcpHandshakeEngine::QueueResponse(const TcpResponse& response) noexcept {
+void TcpHandshakeEngine::QueueResponse(const TcpResponse &response) noexcept {
     const bool replaceable_ack = response.valid && response.flags == TcpFlag::Ack;
     if (replaceable_ack) {
-        for (Pcb& pcb : pcbs_) {
+        for (Pcb &pcb : pcbs_) {
             if (ReverseFlow(pcb.incoming_flow) == response.flow) {
                 pcb.pending_ack = response;
                 pcb.pending_ack_valid = true;
                 return;
             }
         }
-        for (TcpResponse& pending : pending_responses_) {
-            if (pending.valid && pending.flags == TcpFlag::Ack &&
-                pending.flow == response.flow) {
+        for (TcpResponse &pending : pending_responses_) {
+            if (pending.valid && pending.flags == TcpFlag::Ack && pending.flow == response.flow) {
                 pending = response;
                 return;
             }
@@ -326,12 +312,13 @@ void TcpHandshakeEngine::QueueResponse(const TcpResponse& response) noexcept {
     }
 }
 
-void TcpHandshakeEngine::OnRetry(const FlowKey& incoming_flow,
-                                 std::uint64_t generation) noexcept {
+void TcpHandshakeEngine::OnRetry(const FlowKey &incoming_flow, std::uint64_t generation) noexcept {
     const std::size_t index = FindIndex(incoming_flow);
-    if (index == kNotFound) return;
-    Pcb& pcb = pcbs_[index];
-    if (pcb.generation != generation || pcb.state != TcpState::SynReceived) return;
+    if (index == kNotFound)
+        return;
+    Pcb &pcb = pcbs_[index];
+    if (pcb.generation != generation || pcb.state != TcpState::SynReceived)
+        return;
 
     if (pcb.retry_index >= config_.syn_ack_retry_intervals_ms.size()) {
         RemoveAt(index);
@@ -341,27 +328,28 @@ void TcpHandshakeEngine::OnRetry(const FlowKey& incoming_flow,
     QueueResponse(BuildSynAck(pcb, timers_.Now()));
     ++pcb.retry_index;
     const std::uint64_t interval = pcb.retry_index < config_.syn_ack_retry_intervals_ms.size()
-        ? config_.syn_ack_retry_intervals_ms[pcb.retry_index]
-        : config_.syn_ack_retry_intervals_ms.back();
+                                       ? config_.syn_ack_retry_intervals_ms[pcb.retry_index]
+                                       : config_.syn_ack_retry_intervals_ms.back();
     if (!ScheduleRetry(pcb, SaturatingAdd(timers_.Now(), interval))) {
         RemoveAt(index);
     }
 }
 
-bool TcpHandshakeEngine::ScheduleDelayedAck(Pcb& pcb,
-                                            std::uint64_t now_ms) noexcept {
-    if (pcb.delayed_ack_timer.value != 0) return true;
+bool TcpHandshakeEngine::ScheduleDelayedAck(Pcb &pcb, std::uint64_t now_ms) noexcept {
+    if (pcb.delayed_ack_timer.value != 0)
+        return true;
     const FlowKey flow = pcb.incoming_flow;
     const std::uint64_t generation = pcb.generation;
     const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
     try {
-        pcb.delayed_ack_timer = timers_.Schedule(
-            SaturatingAdd(now_ms, config_.delayed_ack_ms),
-            [weak_gate, this, flow, generation] {
+        pcb.delayed_ack_timer =
+            timers_.Schedule(SaturatingAdd(now_ms, config_.delayed_ack_ms), [weak_gate, this, flow, generation] {
                 const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
-                if (!gate) return;
+                if (!gate)
+                    return;
                 gate->TryRun([this, flow, generation] {
-                    if (!shutdown_) OnDelayedAck(flow, generation);
+                    if (!shutdown_)
+                        OnDelayedAck(flow, generation);
                 });
             });
         return true;
@@ -371,14 +359,12 @@ bool TcpHandshakeEngine::ScheduleDelayedAck(Pcb& pcb,
     }
 }
 
-void TcpHandshakeEngine::OnDelayedAck(const FlowKey& incoming_flow,
-                                      std::uint64_t generation) noexcept {
+void TcpHandshakeEngine::OnDelayedAck(const FlowKey &incoming_flow, std::uint64_t generation) noexcept {
     const std::size_t index = FindIndex(incoming_flow);
-    if (index == kNotFound) return;
-    Pcb& pcb = pcbs_[index];
-    if (pcb.generation != generation ||
-        (pcb.state == TcpState::SynReceived ||
-         pcb.state == TcpState::TimeWait) ||
+    if (index == kNotFound)
+        return;
+    Pcb &pcb = pcbs_[index];
+    if (pcb.generation != generation || (pcb.state == TcpState::SynReceived || pcb.state == TcpState::TimeWait) ||
         !pcb.receive) {
         return;
     }
@@ -386,7 +372,7 @@ void TcpHandshakeEngine::OnDelayedAck(const FlowKey& incoming_flow,
     QueueResponse(BuildAck(pcb, timers_.Now()));
 }
 
-TcpDeliveryResult TcpHandshakeEngine::DrainSession(Pcb& pcb) noexcept {
+TcpDeliveryResult TcpHandshakeEngine::DrainSession(Pcb &pcb) noexcept {
     TcpDeliveryResult result;
     if (!pcb.receive || pcb.session == nullptr || pcb.receive->ReadyBytes() == 0) {
         return result;
@@ -399,16 +385,11 @@ TcpDeliveryResult TcpHandshakeEngine::DrainSession(Pcb& pcb) noexcept {
     // through TrySend(). Remote payload travels in the other direction via
     // the DataCallback registered in BindSessionCallbacks().
     const std::shared_ptr<ITransportSession> session = pcb.session;
-    DeliverFn deliver = [session](BufferView data) -> SendResult {
-        return session->TrySend(data);
-    };
-    result = DrainTcpReceiveBuffer(
-        *pcb.receive, deliver, config_.delivery_call_budget);
+    DeliverFn deliver = [session](BufferView data) -> SendResult { return session->TrySend(data); };
+    result = DrainTcpReceiveBuffer(*pcb.receive, deliver, config_.delivery_call_budget);
     pcb.delivery_pending = result.status == TcpDeliveryStatus::BudgetExhausted;
-    if (result.status == TcpDeliveryStatus::Closed ||
-        result.status == TcpDeliveryStatus::Error ||
-        result.status == TcpDeliveryStatus::InvalidResult ||
-        result.status == TcpDeliveryStatus::NoProgress) {
+    if (result.status == TcpDeliveryStatus::Closed || result.status == TcpDeliveryStatus::Error ||
+        result.status == TcpDeliveryStatus::InvalidResult || result.status == TcpDeliveryStatus::NoProgress) {
         pcb.session = nullptr;
         pcb.session_bound = false;
         pcb.delivery_pending = false;
@@ -416,8 +397,8 @@ TcpDeliveryResult TcpHandshakeEngine::DrainSession(Pcb& pcb) noexcept {
     return result;
 }
 
-TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
-    Pcb& pcb, const TcpSegmentView& segment, std::uint64_t now_ms) noexcept {
+TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(Pcb &pcb, const TcpSegmentView &segment,
+                                                          std::uint64_t now_ms) noexcept {
     TcpHandshakeResult result;
     if (pcb.state == TcpState::TimeWait) {
         // Fix 7: retransmitted FIN in TIME-WAIT restarts the 2MSL timer.
@@ -445,8 +426,7 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
         result.error = TcpHandshakeError::InvalidFlags;
         return result;
     }
-    const std::uint32_t effective_snd_nxt =
-        pcb.send ? pcb.send->SndNxt() : pcb.snd_nxt;
+    const std::uint32_t effective_snd_nxt = pcb.send ? pcb.send->SndNxt() : pcb.snd_nxt;
     if (SequenceAfter(segment.acknowledgment, effective_snd_nxt)) {
         result.response = BuildAck(pcb, now_ms);
         return result;
@@ -455,15 +435,12 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
     std::uint32_t incoming_timestamp = 0;
     bool timestamp_present = false;
     if (pcb.options.timestamps) {
-        const TcpOptionParseResult parsed =
-            ParseTcpSynOptions(segment.options, segment.options_length);
-        if (parsed.error != TcpOptionError::None ||
-            !parsed.options.timestamp_present) {
+        const TcpOptionParseResult parsed = ParseTcpSynOptions(segment.options, segment.options_length);
+        if (parsed.error != TcpOptionError::None || !parsed.options.timestamp_present) {
             result.error = TcpHandshakeError::InvalidOptions;
             return result;
         }
-        if (TimestampBefore(parsed.options.timestamp_value,
-                            pcb.options.peer_timestamp)) {
+        if (TimestampBefore(parsed.options.timestamp_value, pcb.options.peer_timestamp)) {
             result.response = BuildAck(pcb, now_ms);
             return result;
         }
@@ -478,7 +455,8 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
     // data that was within the previously advertised window.
     {
         std::uint32_t seg_len = static_cast<std::uint32_t>(segment.payload_length);
-        if (segment.HasFlag(TcpFlag::Fin)) ++seg_len;
+        if (segment.HasFlag(TcpFlag::Fin))
+            ++seg_len;
         if (!pcb.receive->IsSequenceAcceptable(segment.sequence, seg_len)) {
             result.response = BuildAck(pcb, now_ms);
             return result;
@@ -488,18 +466,16 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
     // Update peer window and feed ACK to send buffer.
     pcb.peer_window = segment.window;
     if (pcb.send) {
-        const std::uint32_t scaled_pw = pcb.options.window_scale
-            ? static_cast<std::uint32_t>(segment.window)
-                << pcb.options.send_window_scale
-            : static_cast<std::uint32_t>(segment.window);
-        const TcpSendAckResult ar = pcb.send->OnAck(
-            segment.acknowledgment, scaled_pw, now_ms,
-            segment.payload_length == 0,
-            pcb.options.ecn && segment.HasFlag(TcpFlag::Ece));
+        const std::uint32_t scaled_pw = pcb.options.window_scale ? static_cast<std::uint32_t>(segment.window)
+                                                                       << pcb.options.send_window_scale
+                                                                 : static_cast<std::uint32_t>(segment.window);
+        const TcpSendAckResult ar =
+            pcb.send->OnAck(segment.acknowledgment, scaled_pw, now_ms, segment.payload_length == 0,
+                            pcb.options.ecn && segment.HasFlag(TcpFlag::Ece));
         if (ar.duplicate && pcb.options.sack_permitted) {
-            const TcpSackBlockList sacks =
-                ParseTcpSackBlocks(segment.options, segment.options_length);
-            if (sacks.count > 0) pcb.send->OnSack(sacks, now_ms);
+            const TcpSackBlockList sacks = ParseTcpSackBlocks(segment.options, segment.options_length);
+            if (sacks.count > 0)
+                pcb.send->OnSack(sacks, now_ms);
         }
     }
 
@@ -529,8 +505,9 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
     //         (after any payload in this segment has been accepted).
     // Fix 4: Call ShutdownWrite() on the session when FIN is consumed.
     // Fix 8: Set state_changed on all state transitions.
-    auto handle_fin = [&](Pcb& p, std::uint32_t fin_seq) -> bool {
-        if (fin_seq != p.receive->RcvNxt()) return false;
+    auto handle_fin = [&](Pcb &p, std::uint32_t fin_seq) -> bool {
+        if (fin_seq != p.receive->RcvNxt())
+            return false;
         const std::size_t index = &p - pcbs_.data();
         p.receive->ConsumeFin();
         p.fin_received = true;
@@ -541,7 +518,7 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
         if (p.state == TcpState::Established) {
             p.state = TcpState::CloseWait;
             result.state_changed = true;
-            return false;  // PCB still alive; caller should send ACK
+            return false; // PCB still alive; caller should send ACK
         } else if (p.state == TcpState::FinWait1) {
             p.state = TcpState::Closing;
             result.state_changed = true;
@@ -549,7 +526,7 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
         } else if (p.state == TcpState::FinWait2) {
             if (!ScheduleTimeWait(index, now_ms)) {
                 RemoveAt(index);
-                return true;  // PCB removed; caller must not touch pcb
+                return true; // PCB removed; caller must not touch pcb
             }
             result.state_changed = true;
             return false;
@@ -577,7 +554,8 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
             // Fix 2: zero-payload FIN must have SEQ == RCV.NXT.
             if (segment.sequence == pcb.receive->RcvNxt()) {
                 const bool removed = handle_fin(pcb, segment.sequence);
-                if (removed) return result;
+                if (removed)
+                    return result;
                 if (pcb.delayed_ack_timer.value != 0) {
                     timers_.Cancel(pcb.delayed_ack_timer);
                     pcb.delayed_ack_timer = TimerId{};
@@ -592,9 +570,7 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
     }
 
     // Fix 4: Reject peer data in CloseWait and later states (half-close).
-    if (pcb.state == TcpState::CloseWait ||
-        pcb.state == TcpState::Closing ||
-        pcb.state == TcpState::LastAck ||
+    if (pcb.state == TcpState::CloseWait || pcb.state == TcpState::Closing || pcb.state == TcpState::LastAck ||
         pcb.state == TcpState::TimeWait) {
         result.response = BuildAck(pcb, now_ms);
         return result;
@@ -602,9 +578,8 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
 
     const bool was_blocked = pcb.receive->Blocked();
     const std::uint32_t old_rcv_nxt = pcb.receive->RcvNxt();
-    const TcpReceiveResult received = pcb.receive->OnSegment(
-        segment.sequence, segment.payload, segment.payload_length,
-        segment.HasFlag(TcpFlag::Psh));
+    const TcpReceiveResult received = pcb.receive->OnSegment(segment.sequence, segment.payload, segment.payload_length,
+                                                             segment.HasFlag(TcpFlag::Psh));
     if (received.disposition == ReceiveDisposition::Invalid) {
         result.error = TcpHandshakeError::InvalidFlags;
         return result;
@@ -624,10 +599,8 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
         pcb.options.peer_timestamp = incoming_timestamp;
     }
     const TcpDeliveryResult delivered = DrainSession(pcb);
-    if (delivered.status == TcpDeliveryStatus::InvalidResult ||
-        delivered.status == TcpDeliveryStatus::Closed ||
-        delivered.status == TcpDeliveryStatus::Error ||
-        delivered.status == TcpDeliveryStatus::NoProgress) {
+    if (delivered.status == TcpDeliveryStatus::InvalidResult || delivered.status == TcpDeliveryStatus::Closed ||
+        delivered.status == TcpDeliveryStatus::Error || delivered.status == TcpDeliveryStatus::NoProgress) {
         result.error = TcpHandshakeError::InvalidSession;
     }
 
@@ -647,14 +620,13 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
     // Fix 2: data+FIN — only consume FIN if data was accepted (not duplicate/OOO)
     //         and FIN sequence == new RCV.NXT.
     if (segment.HasFlag(TcpFlag::Fin)) {
-        const std::uint32_t fin_seq =
-            segment.sequence + static_cast<std::uint32_t>(segment.payload_length);
-        if (fin_seq == pcb.receive->RcvNxt() &&
-            received.disposition != ReceiveDisposition::Duplicate &&
+        const std::uint32_t fin_seq = segment.sequence + static_cast<std::uint32_t>(segment.payload_length);
+        if (fin_seq == pcb.receive->RcvNxt() && received.disposition != ReceiveDisposition::Duplicate &&
             received.disposition != ReceiveDisposition::OutOfWindow) {
             const bool removed = handle_fin(pcb, fin_seq);
             result.state_changed = true;
-            if (removed) return result;
+            if (removed)
+                return result;
             if (pcb.delayed_ack_timer.value != 0) {
                 timers_.Cancel(pcb.delayed_ack_timer);
                 pcb.delayed_ack_timer = TimerId{};
@@ -671,8 +643,9 @@ TcpHandshakeResult TcpHandshakeEngine::ProcessEstablished(
 }
 
 void TcpHandshakeEngine::RemoveAt(std::size_t index) noexcept {
-    if (index >= pcbs_.size()) return;
-    Pcb& pcb = pcbs_[index];
+    if (index >= pcbs_.size())
+        return;
+    Pcb &pcb = pcbs_[index];
     if (pcb.retry_timer.value != 0) {
         timers_.Cancel(pcb.retry_timer);
     }
@@ -693,8 +666,7 @@ void TcpHandshakeEngine::RemoveAt(std::size_t index) noexcept {
     }
     if (pcb.receive) {
         const std::size_t memory = pcb.receive->MemoryBytes();
-        receive_memory_bytes_ = memory > receive_memory_bytes_
-            ? 0 : receive_memory_bytes_ - memory;
+        receive_memory_bytes_ = memory > receive_memory_bytes_ ? 0 : receive_memory_bytes_ - memory;
     }
     if (pcb.send) {
         pcb.send->CancelTimers();
@@ -708,8 +680,7 @@ void TcpHandshakeEngine::RemoveAt(std::size_t index) noexcept {
     pcbs_.pop_back();
 }
 
-TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
-                                                 std::uint64_t now_ms) noexcept {
+TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView &segment, std::uint64_t now_ms) noexcept {
     TcpHandshakeResult result;
     if (shutdown_) {
         result.error = TcpHandshakeError::Shutdown;
@@ -717,7 +688,7 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
     }
     const std::size_t existing_index = FindIndex(segment.flow);
     if (existing_index != kNotFound) {
-        Pcb& pcb = pcbs_[existing_index];
+        Pcb &pcb = pcbs_[existing_index];
         if (pcb.state == TcpState::SynReceived) {
             if (segment.HasFlag(TcpFlag::Rst)) {
                 if (segment.sequence == pcb.rcv_nxt) {
@@ -729,16 +700,12 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
                 return result;
             }
             if (segment.HasFlag(TcpFlag::Syn)) {
-                if (!segment.HasFlag(TcpFlag::Ack) &&
-                    !segment.HasFlag(TcpFlag::Fin) &&
-                    segment.sequence == pcb.irs) {
+                if (!segment.HasFlag(TcpFlag::Ack) && !segment.HasFlag(TcpFlag::Fin) && segment.sequence == pcb.irs) {
                     const TcpOptionParseResult duplicate_options =
                         ParseTcpSynOptions(segment.options, segment.options_length);
-                    if (duplicate_options.error == TcpOptionError::None &&
-                        pcb.options.timestamps &&
+                    if (duplicate_options.error == TcpOptionError::None && pcb.options.timestamps &&
                         duplicate_options.options.timestamp_present) {
-                        pcb.response_options.timestamp_echo =
-                            duplicate_options.options.timestamp_value;
+                        pcb.response_options.timestamp_echo = duplicate_options.options.timestamp_value;
                     }
                     result.response = BuildSynAck(pcb, now_ms);
                     return result;
@@ -756,15 +723,12 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
                     if (pcb.options.timestamps) {
                         const TcpOptionParseResult ack_options =
                             ParseTcpSynOptions(segment.options, segment.options_length);
-                        if (ack_options.error != TcpOptionError::None ||
-                            !ack_options.options.timestamp_present ||
-                            ack_options.options.timestamp_echo !=
-                                pcb.response_options.timestamp_value) {
+                        if (ack_options.error != TcpOptionError::None || !ack_options.options.timestamp_present ||
+                            ack_options.options.timestamp_echo != pcb.response_options.timestamp_value) {
                             result.error = TcpHandshakeError::InvalidOptions;
                             return result;
                         }
-                        pcb.options.peer_timestamp =
-                            ack_options.options.timestamp_value;
+                        pcb.options.peer_timestamp = ack_options.options.timestamp_value;
                     }
 
                     const std::size_t capacity = pcb.receive_window;
@@ -778,8 +742,7 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
                         return result;
                     }
                     try {
-                        pcb.receive = std::make_unique<TcpReceiveBuffer>(
-                            capacity, pcb.rcv_nxt, pcb.response_window);
+                        pcb.receive = std::make_unique<TcpReceiveBuffer>(capacity, pcb.rcv_nxt, pcb.response_window);
                     } catch (...) {
                         result.response = BuildReset(segment);
                         result.error = TcpHandshakeError::ReceiveBudget;
@@ -787,31 +750,26 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
                         return result;
                     }
                     receive_memory_bytes_ += pcb.receive->MemoryBytes();
-                    if (pcb.retry_timer.value != 0) timers_.Cancel(pcb.retry_timer);
+                    if (pcb.retry_timer.value != 0)
+                        timers_.Cancel(pcb.retry_timer);
                     pcb.retry_timer = TimerId{};
                     pcb.snd_una = segment.acknowledgment;
                     pcb.state = TcpState::Established;
                     try {
                         pcb.send = std::make_unique<TcpSendBuffer>(
-                            pcb.snd_nxt, pcb.options.peer_mss,
-                            pcb.options.send_window_scale,
-                            config_.send_queue_limit,
-                            config_.retransmit_queue_limit,
-                            config_.initial_rto_ms, config_.min_rto_ms,
-                            config_.max_rto_ms, config_.persist_timer_base_ms,
-                            config_.persist_timer_max_ms,
-                            config_.max_retransmissions,
-                            config_.max_persist_probes,
-                            config_.cc_algorithm,
-                            KccConfig{config_.kcc_turbo, config_.kcc_ai_num,
-                                      config_.kcc_ecn, config_.kcc_kf});
+                            pcb.snd_nxt, pcb.options.peer_mss, pcb.options.send_window_scale, config_.send_queue_limit,
+                            config_.retransmit_queue_limit, config_.initial_rto_ms, config_.min_rto_ms,
+                            config_.max_rto_ms, config_.persist_timer_base_ms, config_.persist_timer_max_ms,
+                            config_.max_retransmissions, config_.max_persist_probes, config_.cc_algorithm,
+                            KccConfig{config_.kcc_turbo, config_.kcc_ai_num, config_.kcc_ecn, config_.kcc_kf});
                     } catch (...) {
                         result.response = BuildReset(segment);
                         result.error = TcpHandshakeError::ReceiveBudget;
                         RemoveAt(existing_index);
                         return result;
                     }
-                    if (half_open_count_ > 0) --half_open_count_;
+                    if (half_open_count_ > 0)
+                        --half_open_count_;
                     result.state_changed = true;
                     EmitFlowEvent(pcb.flow_id, FlowEventType::Established);
 
@@ -824,11 +782,9 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
                     if (session_factory_ != nullptr) {
                         TcpOpenRequest req;
                         req.flow_id = pcb.flow_id;
-                        req.source = IpEndpoint{pcb.incoming_flow.source,
-                                                 pcb.incoming_flow.source_port};
-                        req.original_destination = IpEndpoint{
-                            pcb.incoming_flow.destination,
-                            pcb.incoming_flow.destination_port};
+                        req.source = IpEndpoint{pcb.incoming_flow.source, pcb.incoming_flow.source_port};
+                        req.original_destination =
+                            IpEndpoint{pcb.incoming_flow.destination, pcb.incoming_flow.destination_port};
                         // The factory is implemented by the consumer and is not
                         // required to be noexcept; OnSegment is noexcept, so a
                         // throwing factory would terminate. Treat any exception
@@ -839,8 +795,7 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
                         } catch (...) {
                             open_result = SessionOpenResult{};
                         }
-                        if (open_result.session != nullptr &&
-                            open_result.error == SessionError::None) {
+                        if (open_result.session != nullptr && open_result.error == SessionError::None) {
                             pcb.session = open_result.session;
                             pcb.session_bound = true;
                             pcb.receive->SetBlocked(false);
@@ -855,8 +810,7 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
                     }
 
                     if (segment.payload_length != 0 || segment.HasFlag(TcpFlag::Fin)) {
-                        TcpHandshakeResult established =
-                            ProcessEstablished(pcb, segment, now_ms);
+                        TcpHandshakeResult established = ProcessEstablished(pcb, segment, now_ms);
                         established.state_changed = true;
                         return established;
                     }
@@ -868,8 +822,7 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
             return result;
         }
 
-        const std::uint32_t current_rcv_nxt = pcb.receive
-            ? pcb.receive->RcvNxt() : pcb.rcv_nxt;
+        const std::uint32_t current_rcv_nxt = pcb.receive ? pcb.receive->RcvNxt() : pcb.rcv_nxt;
         if (segment.HasFlag(TcpFlag::Rst)) {
             if (segment.sequence == current_rcv_nxt) {
                 const FlowId fid = pcb.flow_id;
@@ -884,12 +837,14 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
         return ProcessEstablished(pcb, segment, now_ms);
     }
 
-    if (segment.HasFlag(TcpFlag::Rst)) return result;
+    if (segment.HasFlag(TcpFlag::Rst))
+        return result;
     if (segment.HasFlag(TcpFlag::Ack)) {
         result.response = BuildReset(segment);
         return result;
     }
-    if (!segment.HasFlag(TcpFlag::Syn)) return result;
+    if (!segment.HasFlag(TcpFlag::Syn))
+        return result;
     if (segment.HasFlag(TcpFlag::Fin)) {
         result.error = TcpHandshakeError::InvalidFlags;
         return result;
@@ -907,8 +862,7 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
         return result;
     }
 
-    const TcpOptionParseResult parsed_options =
-        ParseTcpSynOptions(segment.options, segment.options_length);
+    const TcpOptionParseResult parsed_options = ParseTcpSynOptions(segment.options, segment.options_length);
     if (parsed_options.error != TcpOptionError::None) {
         result.error = TcpHandshakeError::InvalidOptions;
         return result;
@@ -926,7 +880,7 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
     pcb.generation = generation_epoch_;
     pcb.flow_id = FlowId{next_flow_id_++};
 
-    const TcpSynOptions& offered = parsed_options.options;
+    const TcpSynOptions &offered = parsed_options.options;
     const bool is_ipv4 = segment.flow.source.IsIpv4();
     const std::uint16_t fixed_header_bytes = is_ipv4 ? 40 : 60;
     // The send MSS is the peer's advertised MSS clamped to what our local
@@ -935,10 +889,7 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
     // leaving the send path unable to ever build the segment.
     const std::uint16_t send_cap = LocalSendCap(fixed_header_bytes);
     pcb.options.peer_mss = std::min<std::uint16_t>(
-        offered.mss_present
-            ? offered.mss
-            : (is_ipv4 ? std::uint16_t{536} : std::uint16_t{1220}),
-        send_cap);
+        offered.mss_present ? offered.mss : (is_ipv4 ? std::uint16_t{536} : std::uint16_t{1220}), send_cap);
     pcb.options.window_scale = config_.enable_window_scale && offered.window_scale_present;
     if (pcb.options.window_scale) {
         pcb.options.send_window_scale = offered.window_scale;
@@ -949,8 +900,7 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
     pcb.options.peer_timestamp = offered.timestamp_value;
     // RFC 3168 negotiation: the peer announces ECN capability by setting both
     // ECE and CWR on its SYN. Confirm only when our own stack enables ECN.
-    pcb.options.ecn = config_.enable_ecn &&
-        segment.HasFlag(TcpFlag::Ece) && segment.HasFlag(TcpFlag::Cwr);
+    pcb.options.ecn = config_.enable_ecn && segment.HasFlag(TcpFlag::Ece) && segment.HasFlag(TcpFlag::Cwr);
 
     pcb.response_options.mss_present = true;
     pcb.response_options.mss = send_cap;
@@ -968,9 +918,8 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
         return result;
     }
     ++half_open_count_;
-    Pcb& stored = pcbs_.back();
-    if (!ScheduleRetry(stored, SaturatingAdd(
-            now_ms, config_.syn_ack_retry_intervals_ms[0]))) {
+    Pcb &stored = pcbs_.back();
+    if (!ScheduleRetry(stored, SaturatingAdd(now_ms, config_.syn_ack_retry_intervals_ms[0]))) {
         RemoveAt(pcbs_.size() - 1);
         result.error = TcpHandshakeError::TimerFailure;
         return result;
@@ -981,15 +930,15 @@ TcpHandshakeResult TcpHandshakeEngine::OnSegment(const TcpSegmentView& segment,
     return result;
 }
 
-bool TcpHandshakeEngine::HasFlow(const FlowKey& incoming_flow) const noexcept {
+bool TcpHandshakeEngine::HasFlow(const FlowKey &incoming_flow) const noexcept {
     return FindIndex(incoming_flow) != kNotFound;
 }
 
-bool TcpHandshakeEngine::Find(const FlowKey& incoming_flow,
-                              TcpPcbSnapshot& out) const noexcept {
+bool TcpHandshakeEngine::Find(const FlowKey &incoming_flow, TcpPcbSnapshot &out) const noexcept {
     const std::size_t index = FindIndex(incoming_flow);
-    if (index == kNotFound) return false;
-    const Pcb& pcb = pcbs_[index];
+    if (index == kNotFound)
+        return false;
+    const Pcb &pcb = pcbs_[index];
     out.state = pcb.state;
     out.iss = pcb.iss;
     out.irs = pcb.irs;
@@ -1010,8 +959,9 @@ bool TcpHandshakeEngine::Find(const FlowKey& incoming_flow,
     return true;
 }
 
-void TcpHandshakeEngine::BindSessionCallbacks(Pcb& pcb) noexcept {
-    if (pcb.session == nullptr || !post_message_fn_) return;
+void TcpHandshakeEngine::BindSessionCallbacks(Pcb &pcb) noexcept {
+    if (pcb.session == nullptr || !post_message_fn_)
+        return;
 
     const FlowId flow_id = pcb.flow_id;
     const std::uint64_t generation = pcb.generation;
@@ -1020,7 +970,8 @@ void TcpHandshakeEngine::BindSessionCallbacks(Pcb& pcb) noexcept {
     // WritableCallback — posted back to the shard as kSessionWritable.
     pcb.session->SetWritableCallback([weak_gate, flow_id, generation] {
         const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
-        if (!gate) return;
+        if (!gate)
+            return;
         ShardMessage msg;
         msg.type = ShardMessageType::kSessionWritable;
         msg.flow_id = flow_id;
@@ -1031,7 +982,8 @@ void TcpHandshakeEngine::BindSessionCallbacks(Pcb& pcb) noexcept {
     // ClosedCallback — posted back as kSessionClosed.
     pcb.session->SetClosedCallback([weak_gate, flow_id, generation](SessionError error) {
         const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
-        if (!gate) return;
+        if (!gate)
+            return;
         ShardMessage msg;
         msg.type = ShardMessageType::kSessionClosed;
         msg.flow_id = flow_id;
@@ -1041,10 +993,12 @@ void TcpHandshakeEngine::BindSessionCallbacks(Pcb& pcb) noexcept {
     });
 
     // Remote payload returns to the shard, which owns the TCP send buffer.
-    pcb.session->SetDataCallback([weak_gate, flow_id, generation](BufferLease& lease) {
-        if (!lease) return ReceiveStatus::Accepted;
+    pcb.session->SetDataCallback([weak_gate, flow_id, generation](BufferLease &lease) {
+        if (!lease)
+            return ReceiveStatus::Accepted;
         const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
-        if (!gate) return ReceiveStatus::Closed;
+        if (!gate)
+            return ReceiveStatus::Closed;
         ShardMessage msg;
         msg.type = ShardMessageType::kSessionData;
         msg.flow_id = flow_id;
@@ -1054,57 +1008,50 @@ void TcpHandshakeEngine::BindSessionCallbacks(Pcb& pcb) noexcept {
             return ReceiveStatus::Accepted;
         }
         lease = std::move(msg.data);
-        return gate->IsActive() && lease ? ReceiveStatus::WouldBlock
-                                          : ReceiveStatus::Closed;
+        return gate->IsActive() && lease ? ReceiveStatus::WouldBlock : ReceiveStatus::Closed;
     });
 }
 
-TcpHandshakeResult TcpHandshakeEngine::AttachSession(
-    const FlowKey& incoming_flow, std::shared_ptr<ITransportSession> session,
-    std::uint64_t now_ms) noexcept {
+TcpHandshakeResult TcpHandshakeEngine::AttachSession(const FlowKey &incoming_flow,
+                                                     std::shared_ptr<ITransportSession> session,
+                                                     std::uint64_t now_ms) noexcept {
     TcpHandshakeResult result;
     if (!session) {
         result.error = TcpHandshakeError::InvalidSession;
         return result;
     }
     const std::size_t index = FindIndex(incoming_flow);
-    if (index == kNotFound || pcbs_[index].state != TcpState::Established ||
-        !pcbs_[index].receive || pcbs_[index].session_bound) {
+    if (index == kNotFound || pcbs_[index].state != TcpState::Established || !pcbs_[index].receive ||
+        pcbs_[index].session_bound) {
         result.error = TcpHandshakeError::InvalidSession;
         return result;
     }
-    Pcb& pcb = pcbs_[index];
+    Pcb &pcb = pcbs_[index];
     pcb.session = std::move(session);
     pcb.session_bound = true;
     pcb.receive->SetBlocked(false);
     BindSessionCallbacks(pcb);
     const TcpDeliveryResult delivered = DrainSession(pcb);
-    if (delivered.status == TcpDeliveryStatus::InvalidResult ||
-        delivered.status == TcpDeliveryStatus::Closed ||
-        delivered.status == TcpDeliveryStatus::Error ||
-        delivered.status == TcpDeliveryStatus::NoProgress) {
+    if (delivered.status == TcpDeliveryStatus::InvalidResult || delivered.status == TcpDeliveryStatus::Closed ||
+        delivered.status == TcpDeliveryStatus::Error || delivered.status == TcpDeliveryStatus::NoProgress) {
         result.error = TcpHandshakeError::InvalidSession;
     }
     result.response = BuildAck(pcb, now_ms);
     return result;
 }
 
-TcpHandshakeResult TcpHandshakeEngine::OnSessionWritable(
-    FlowId flow_id, std::uint64_t generation, std::uint64_t now_ms) noexcept {
+TcpHandshakeResult TcpHandshakeEngine::OnSessionWritable(FlowId flow_id, std::uint64_t generation,
+                                                         std::uint64_t now_ms) noexcept {
     TcpHandshakeResult result;
-    for (Pcb& pcb : pcbs_) {
-        if (pcb.flow_id != flow_id || pcb.generation != generation ||
-            pcb.state == TcpState::SynReceived ||
-            pcb.state == TcpState::TimeWait ||
-            !pcb.receive || pcb.session == nullptr) {
+    for (Pcb &pcb : pcbs_) {
+        if (pcb.flow_id != flow_id || pcb.generation != generation || pcb.state == TcpState::SynReceived ||
+            pcb.state == TcpState::TimeWait || !pcb.receive || pcb.session == nullptr) {
             continue;
         }
         pcb.receive->SetBlocked(false);
         const TcpDeliveryResult delivered = DrainSession(pcb);
-        if (delivered.status == TcpDeliveryStatus::InvalidResult ||
-            delivered.status == TcpDeliveryStatus::Closed ||
-            delivered.status == TcpDeliveryStatus::Error ||
-            delivered.status == TcpDeliveryStatus::NoProgress) {
+        if (delivered.status == TcpDeliveryStatus::InvalidResult || delivered.status == TcpDeliveryStatus::Closed ||
+            delivered.status == TcpDeliveryStatus::Error || delivered.status == TcpDeliveryStatus::NoProgress) {
             result.error = TcpHandshakeError::InvalidSession;
         }
         result.response = BuildAck(pcb, now_ms);
@@ -1114,8 +1061,7 @@ TcpHandshakeResult TcpHandshakeEngine::OnSessionWritable(
     return result;
 }
 
-bool TcpHandshakeEngine::OnSessionClosed(
-    FlowId flow_id, std::uint64_t generation, SessionError error) noexcept {
+bool TcpHandshakeEngine::OnSessionClosed(FlowId flow_id, std::uint64_t generation, SessionError error) noexcept {
     for (std::size_t i = 0; i < pcbs_.size(); ++i) {
         if (pcbs_[i].flow_id == flow_id && pcbs_[i].generation == generation) {
             // Fix 5: In closing/TIME-WAIT states, only clear session binding.
@@ -1124,11 +1070,8 @@ bool TcpHandshakeEngine::OnSessionClosed(
             const TcpState state = pcbs_[i].state;
             pcbs_[i].session = nullptr;
             pcbs_[i].session_bound = false;
-            if (state == TcpState::TimeWait ||
-                state == TcpState::FinWait1 ||
-                state == TcpState::FinWait2 ||
-                state == TcpState::Closing ||
-                state == TcpState::LastAck) {
+            if (state == TcpState::TimeWait || state == TcpState::FinWait1 || state == TcpState::FinWait2 ||
+                state == TcpState::Closing || state == TcpState::LastAck) {
                 return true;
             }
             if (error == SessionError::None || error == SessionError::RemoteClosed) {
@@ -1142,14 +1085,12 @@ bool TcpHandshakeEngine::OnSessionClosed(
     return false;
 }
 
-void TcpHandshakeEngine::PumpSessionDeliveries(
-    std::uint64_t now_ms, std::size_t pcb_budget) noexcept {
+void TcpHandshakeEngine::PumpSessionDeliveries(std::uint64_t now_ms, std::size_t pcb_budget) noexcept {
     std::size_t visited = 0;
-    for (Pcb& pcb : pcbs_) {
-        if (visited >= pcb_budget) break;
-        if (!pcb.delivery_pending ||
-            pcb.state == TcpState::SynReceived ||
-            pcb.state == TcpState::TimeWait ||
+    for (Pcb &pcb : pcbs_) {
+        if (visited >= pcb_budget)
+            break;
+        if (!pcb.delivery_pending || pcb.state == TcpState::SynReceived || pcb.state == TcpState::TimeWait ||
             pcb.session == nullptr || !pcb.receive || pcb.receive->Blocked()) {
             continue;
         }
@@ -1161,8 +1102,8 @@ void TcpHandshakeEngine::PumpSessionDeliveries(
     }
 }
 
-bool TcpHandshakeEngine::PopPendingResponse(TcpResponse& out) noexcept {
-    for (Pcb& pcb : pcbs_) {
+bool TcpHandshakeEngine::PopPendingResponse(TcpResponse &out) noexcept {
+    for (Pcb &pcb : pcbs_) {
         if (pcb.pending_ack_valid) {
             out = pcb.pending_ack;
             pcb.pending_ack = TcpResponse{};
@@ -1170,11 +1111,11 @@ bool TcpHandshakeEngine::PopPendingResponse(TcpResponse& out) noexcept {
             return true;
         }
     }
-    if (pending_responses_.empty()) return false;
+    if (pending_responses_.empty())
+        return false;
     out = pending_responses_.front();
     if (pending_responses_.size() > 1) {
-        std::move(pending_responses_.begin() + 1,
-                  pending_responses_.end(), pending_responses_.begin());
+        std::move(pending_responses_.begin() + 1, pending_responses_.end(), pending_responses_.begin());
     }
     pending_responses_.pop_back();
     return true;
@@ -1182,56 +1123,60 @@ bool TcpHandshakeEngine::PopPendingResponse(TcpResponse& out) noexcept {
 
 std::size_t TcpHandshakeEngine::PendingResponseCount() const noexcept {
     std::size_t count = pending_responses_.size();
-    for (const Pcb& pcb : pcbs_) {
-        if (pcb.pending_ack_valid) ++count;
+    for (const Pcb &pcb : pcbs_) {
+        if (pcb.pending_ack_valid)
+            ++count;
     }
     return count;
 }
 
 std::size_t TcpHandshakeEngine::EstablishedCount() const noexcept {
     std::size_t count = 0;
-    for (const Pcb& pcb : pcbs_) {
-        if (pcb.state == TcpState::Established) ++count;
+    for (const Pcb &pcb : pcbs_) {
+        if (pcb.state == TcpState::Established)
+            ++count;
     }
     return count;
 }
 
 void TcpHandshakeEngine::Shutdown() noexcept {
-    if (shutdown_) return;
+    if (shutdown_)
+        return;
     shutdown_ = true;
-    if (callback_gate_) callback_gate_->Deactivate();
+    if (callback_gate_)
+        callback_gate_->Deactivate();
     // Emit Closed for any connection that is still alive (ESTABLISHED,
     // CLOSE-WAIT, etc.) so consumers are notified before the PCB is
     // destroyed.  TIME-WAIT entries are evicted silently.
-    for (const Pcb& pcb : pcbs_) {
+    for (const Pcb &pcb : pcbs_) {
         if (pcb.state != TcpState::TimeWait) {
             EmitFlowEvent(pcb.flow_id, FlowEventType::Closed);
         }
     }
-    while (!pcbs_.empty()) RemoveAt(pcbs_.size() - 1);
+    while (!pcbs_.empty())
+        RemoveAt(pcbs_.size() - 1);
     pending_responses_.clear();
 }
 
-std::size_t TcpHandshakeEngine::EnqueueSendData(FlowId flow_id,
-    const std::uint8_t* data, std::size_t length) noexcept {
-    if (data == nullptr || length == 0) return 0;
-    for (Pcb& pcb : pcbs_) {
-        if (pcb.flow_id == flow_id &&
-            (pcb.state == TcpState::Established ||
-             pcb.state == TcpState::CloseWait) && pcb.send) {
+std::size_t TcpHandshakeEngine::EnqueueSendData(FlowId flow_id, const std::uint8_t *data, std::size_t length) noexcept {
+    if (data == nullptr || length == 0)
+        return 0;
+    for (Pcb &pcb : pcbs_) {
+        if (pcb.flow_id == flow_id && (pcb.state == TcpState::Established || pcb.state == TcpState::CloseWait) &&
+            pcb.send) {
             return pcb.send->Enqueue(data, length);
         }
     }
     return 0;
 }
 
-bool TcpHandshakeEngine::EnqueueRemoteData(FlowId flow_id,
-    std::uint64_t generation, BufferLease& lease) noexcept {
-    if (!lease) return true;
-    for (Pcb& pcb : pcbs_) {
-        if (pcb.flow_id != flow_id || pcb.generation != generation) continue;
-        if ((pcb.state != TcpState::Established && pcb.state != TcpState::CloseWait) ||
-            !pcb.send) {
+bool TcpHandshakeEngine::EnqueueRemoteData(FlowId flow_id, std::uint64_t generation, BufferLease &lease) noexcept {
+    if (!lease)
+        return true;
+    for (Pcb &pcb : pcbs_) {
+        if (pcb.flow_id != flow_id || pcb.generation != generation)
+            continue;
+        if ((pcb.state != TcpState::Established && pcb.state != TcpState::CloseWait) || !pcb.send) {
             lease.Reset();
             return true;
         }
@@ -1251,16 +1196,13 @@ bool TcpHandshakeEngine::EnqueueRemoteData(FlowId flow_id,
     return true;
 }
 
-void TcpHandshakeEngine::ResumeSessionReceives(
-    std::size_t remote_backlog, std::size_t remote_low_watermark) noexcept {
+void TcpHandshakeEngine::ResumeSessionReceives(std::size_t remote_backlog, std::size_t remote_low_watermark) noexcept {
     if (remote_low_watermark == 0 || remote_backlog >= remote_low_watermark) {
         return;
     }
-    const std::size_t send_low_watermark =
-        std::max<std::size_t>(1, config_.send_queue_limit / 2);
-    for (Pcb& pcb : pcbs_) {
-        if (!pcb.session || !pcb.send ||
-            pcb.send->UnsntBytes() >= send_low_watermark) {
+    const std::size_t send_low_watermark = std::max<std::size_t>(1, config_.send_queue_limit / 2);
+    for (Pcb &pcb : pcbs_) {
+        if (!pcb.session || !pcb.send || pcb.send->UnsntBytes() >= send_low_watermark) {
             continue;
         }
         try {
@@ -1271,26 +1213,22 @@ void TcpHandshakeEngine::ResumeSessionReceives(
     }
 }
 
-void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
-    std::size_t pcb_budget, PktBufferPool& pool,
-    std::vector<BufferLease>& tx_leases, std::size_t max_segments) noexcept {
+void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms, std::size_t pcb_budget, PktBufferPool &pool,
+                                       std::vector<BufferLease> &tx_leases, std::size_t max_segments) noexcept {
     std::size_t visited = 0, built = 0;
     // Fix 6: Use index-based iteration so we can RemoveAt stranded PCBs
     //         whose send buffer is closed (FIN retransmission exhausted).
     std::size_t i = 0;
     while (i < pcbs_.size() && visited < pcb_budget && built < max_segments) {
-        Pcb& pcb = pcbs_[i];
-        if (pcb.state == TcpState::SynReceived ||
-            pcb.state == TcpState::TimeWait || !pcb.send) {
+        Pcb &pcb = pcbs_[i];
+        if (pcb.state == TcpState::SynReceived || pcb.state == TcpState::TimeWait || !pcb.send) {
             ++i;
             continue;
         }
         // Fix 6: If send buffer is exhausted in a closing state, the
         //         connection is dead — remove the PCB.
         if (pcb.send->IsClosed()) {
-            if (pcb.state == TcpState::FinWait1 ||
-                pcb.state == TcpState::FinWait2 ||
-                pcb.state == TcpState::Closing ||
+            if (pcb.state == TcpState::FinWait1 || pcb.state == TcpState::FinWait2 || pcb.state == TcpState::Closing ||
                 pcb.state == TcpState::LastAck) {
                 const FlowId fid = pcb.flow_id;
                 RemoveAt(i);
@@ -1303,13 +1241,19 @@ void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
         }
         ++visited;
         const std::uint32_t spw = pcb.options.window_scale
-            ? static_cast<std::uint32_t>(pcb.peer_window)
-                << pcb.options.send_window_scale
-            : static_cast<std::uint32_t>(pcb.peer_window);
+                                      ? static_cast<std::uint32_t>(pcb.peer_window) << pcb.options.send_window_scale
+                                      : static_cast<std::uint32_t>(pcb.peer_window);
         TcpSendNextResult next = pcb.send->NextSegment(spw, now_ms);
-        if (!next.has_segment) { ++i; continue; }
+        if (!next.has_segment) {
+            ++i;
+            continue;
+        }
         BufferLease tx = pool.Allocate();
-        if (!tx) { pcb.send->ResetPending(); ++i; continue; }
+        if (!tx) {
+            pcb.send->ResetPending();
+            ++i;
+            continue;
+        }
         TcpResponse resp;
         resp.valid = true;
         resp.flow = ReverseFlow(pcb.incoming_flow);
@@ -1320,7 +1264,8 @@ void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
             // RFC 3168 §6.1.2: after negotiation, data segments (including
             // retransmissions and FIN) are ECT(0); an ECE-signalled reduction
             // is acknowledged with CWR on the next segment.
-            if (next.payload_length != 0 || next.is_fin) resp.ip_ecn = 2;
+            if (next.payload_length != 0 || next.is_fin)
+                resp.ip_ecn = 2;
             if (next.set_cwr) {
                 resp.flags = static_cast<std::uint8_t>(resp.flags | TcpFlag::Cwr);
             }
@@ -1331,17 +1276,15 @@ void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
         resp.payload = next.payload;
         resp.payload_length = next.payload_length;
         if (pcb.options.sack_permitted && pcb.receive)
-            resp.sack_blocks = pcb.receive->SackBlocks(
-                pcb.options.timestamps ? 3 : 4);
-        const std::uint8_t rcv_scale = pcb.options.window_scale
-            ? pcb.options.receive_window_scale : 0;
+            resp.sack_blocks = pcb.receive->SackBlocks(pcb.options.timestamps ? 3 : 4);
+        const std::uint8_t rcv_scale = pcb.options.window_scale ? pcb.options.receive_window_scale : 0;
         const std::size_t avail = pcb.receive ? pcb.receive->AdvertisedWindow() : 0;
-        resp.window = WireWindow(static_cast<std::uint32_t>(
-            std::min<std::size_t>(avail, UINT32_MAX)), rcv_scale);
-        const TcpOutputResult out = BuildTcpControlPacket(
-            resp, tx.Data(), tx.Capacity());
+        resp.window = WireWindow(static_cast<std::uint32_t>(std::min<std::size_t>(avail, UINT32_MAX)), rcv_scale);
+        const TcpOutputResult out = BuildTcpControlPacket(resp, tx.Data(), tx.Capacity());
         if (out.error != TcpOutputError::None) {
-            pcb.send->ResetPending(); ++i; continue;
+            pcb.send->ResetPending();
+            ++i;
+            continue;
         }
         tx.Resize(out.packet_length);
         // Owner lease must be created before OnSent, because OnSent
@@ -1349,39 +1292,49 @@ void TcpHandshakeEngine::PumpSendPaths(std::uint64_t now_ms,
         BufferRef owner;
         if (!next.is_retransmission && next.payload_length > 0) {
             BufferLease ol = pool.Allocate();
-            if (!ol) { pcb.send->ResetPending(); ++i; continue; }
+            if (!ol) {
+                pcb.send->ResetPending();
+                ++i;
+                continue;
+            }
             std::memcpy(ol.Data(), next.payload, next.payload_length);
             ol.Resize(next.payload_length);
             owner = pool.Retain(std::move(ol));
         }
         pcb.send->OnSent(std::move(owner), 0, now_ms);
-        try { tx_leases.push_back(std::move(tx)); ++built; }
-        catch (...) { break; }
+        try {
+            tx_leases.push_back(std::move(tx));
+            ++built;
+        } catch (...) {
+            break;
+        }
         ++i;
     }
 }
 
-void TcpHandshakeEngine::CloseFlow(FlowId flow_id,
-                                    std::uint64_t generation) noexcept {
+void TcpHandshakeEngine::CloseFlow(FlowId flow_id, std::uint64_t generation) noexcept {
     for (std::size_t i = 0; i < pcbs_.size(); ++i) {
-        Pcb& pcb = pcbs_[i];
-        if (pcb.flow_id != flow_id || pcb.generation != generation) continue;
+        Pcb &pcb = pcbs_[i];
+        if (pcb.flow_id != flow_id || pcb.generation != generation)
+            continue;
         if (pcb.state == TcpState::Established) {
             pcb.state = TcpState::FinWait1;
-            if (pcb.send) pcb.send->RequestFin();
+            if (pcb.send)
+                pcb.send->RequestFin();
         } else if (pcb.state == TcpState::CloseWait) {
             pcb.state = TcpState::LastAck;
-            if (pcb.send) pcb.send->RequestFin();
+            if (pcb.send)
+                pcb.send->RequestFin();
         }
         return;
     }
 }
 
-void TcpHandshakeEngine::AbortFlow(FlowId flow_id,
-                                    std::uint64_t generation) noexcept {
+void TcpHandshakeEngine::AbortFlow(FlowId flow_id, std::uint64_t generation) noexcept {
     for (std::size_t i = 0; i < pcbs_.size(); ++i) {
-        Pcb& pcb = pcbs_[i];
-        if (pcb.flow_id != flow_id || pcb.generation != generation) continue;
+        Pcb &pcb = pcbs_[i];
+        if (pcb.flow_id != flow_id || pcb.generation != generation)
+            continue;
         TcpResponse rst;
         rst.valid = true;
         rst.flow = ReverseFlow(pcb.incoming_flow);
@@ -1397,9 +1350,9 @@ void TcpHandshakeEngine::AbortFlow(FlowId flow_id,
     }
 }
 
-bool TcpHandshakeEngine::ScheduleTimeWait(std::size_t index,
-                                           std::uint64_t now_ms) noexcept {
-    if (index >= pcbs_.size()) return false;
+bool TcpHandshakeEngine::ScheduleTimeWait(std::size_t index, std::uint64_t now_ms) noexcept {
+    if (index >= pcbs_.size())
+        return false;
     // Capture identity before any eviction; RemoveAt uses swap-pop so the
     // PCB at @p index may be relocated.
     const FlowKey target_flow = pcbs_[index].incoming_flow;
@@ -1407,16 +1360,16 @@ bool TcpHandshakeEngine::ScheduleTimeWait(std::size_t index,
 
     // Enforce TIME-WAIT capacity via oldest-deadline eviction.
     std::size_t tw_count = 0;
-    for (const Pcb& p : pcbs_) {
-        if (p.state == TcpState::TimeWait) ++tw_count;
+    for (const Pcb &p : pcbs_) {
+        if (p.state == TcpState::TimeWait)
+            ++tw_count;
     }
     if (tw_count >= config_.max_timewait_entries) {
         // Find the oldest TIME-WAIT entry.
         std::size_t oldest = kNotFound;
         std::uint64_t oldest_deadline = std::numeric_limits<std::uint64_t>::max();
         for (std::size_t i = 0; i < pcbs_.size(); ++i) {
-            if (pcbs_[i].state == TcpState::TimeWait &&
-                pcbs_[i].timewait_deadline_ms < oldest_deadline) {
+            if (pcbs_[i].state == TcpState::TimeWait && pcbs_[i].timewait_deadline_ms < oldest_deadline) {
                 oldest_deadline = pcbs_[i].timewait_deadline_ms;
                 oldest = i;
             }
@@ -1427,27 +1380,28 @@ bool TcpHandshakeEngine::ScheduleTimeWait(std::size_t index,
             EmitFlowEvent(evicted_fid, FlowEventType::Closed);
             // Re-find by identity; swap-pop may have moved our target.
             index = FindIndex(target_flow);
-            if (index == kNotFound) return false;
-            if (pcbs_[index].generation != target_generation) return false;
+            if (index == kNotFound)
+                return false;
+            if (pcbs_[index].generation != target_generation)
+                return false;
         }
     }
-    Pcb& pcb = pcbs_[index];
+    Pcb &pcb = pcbs_[index];
     pcb.state = TcpState::TimeWait;
-    pcb.timewait_deadline_ms =
-        SaturatingAdd(now_ms, static_cast<std::uint64_t>(config_.timewait_ms));
+    pcb.timewait_deadline_ms = SaturatingAdd(now_ms, static_cast<std::uint64_t>(config_.timewait_ms));
     const FlowKey flow = pcb.incoming_flow;
     const std::uint64_t generation = pcb.generation;
     const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
     try {
-        pcb.timewait_timer = timers_.Schedule(
-            pcb.timewait_deadline_ms,
-            [weak_gate, this, flow, generation] {
-                const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
-                if (!gate) return;
-                gate->TryRun([this, flow, generation] {
-                    if (!shutdown_) OnTimeWaitExpired(flow, generation);
-                });
+        pcb.timewait_timer = timers_.Schedule(pcb.timewait_deadline_ms, [weak_gate, this, flow, generation] {
+            const std::shared_ptr<CallbackGate> gate = weak_gate.lock();
+            if (!gate)
+                return;
+            gate->TryRun([this, flow, generation] {
+                if (!shutdown_)
+                    OnTimeWaitExpired(flow, generation);
             });
+        });
         return true;
     } catch (...) {
         pcb.timewait_timer = TimerId{};
@@ -1455,12 +1409,13 @@ bool TcpHandshakeEngine::ScheduleTimeWait(std::size_t index,
     }
 }
 
-void TcpHandshakeEngine::OnTimeWaitExpired(
-    const FlowKey& incoming_flow, std::uint64_t generation) noexcept {
+void TcpHandshakeEngine::OnTimeWaitExpired(const FlowKey &incoming_flow, std::uint64_t generation) noexcept {
     const std::size_t index = FindIndex(incoming_flow);
-    if (index == kNotFound) return;
-    Pcb& pcb = pcbs_[index];
-    if (pcb.generation != generation || pcb.state != TcpState::TimeWait) return;
+    if (index == kNotFound)
+        return;
+    Pcb &pcb = pcbs_[index];
+    if (pcb.generation != generation || pcb.state != TcpState::TimeWait)
+        return;
     const FlowId fid = pcb.flow_id;
     RemoveAt(index);
     EmitFlowEvent(fid, FlowEventType::Closed);

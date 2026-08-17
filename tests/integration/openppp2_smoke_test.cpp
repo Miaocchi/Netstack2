@@ -49,7 +49,7 @@ using namespace tcpip2;
 // ---------------------------------------------------------------------------
 
 class FakeSession final : public TcpSession {
-public:
+  public:
     FakeSession() : TcpSession() {}
 
     SendResult TrySend(BufferView data) override {
@@ -85,7 +85,7 @@ public:
         return abort_called_;
     }
 
-private:
+  private:
     mutable std::mutex delivery_mutex_;
     std::vector<std::uint8_t> delivered_;
 
@@ -99,8 +99,8 @@ private:
 // ---------------------------------------------------------------------------
 
 class FakeSessionFactory final : public ISessionFactory {
-public:
-    SessionOpenResult OpenTcp(const TcpOpenRequest& request) override {
+  public:
+    SessionOpenResult OpenTcp(const TcpOpenRequest &request) override {
         std::lock_guard<std::mutex> lock(mutex_);
         ++open_tcp_count_;
         last_source_ = request.source;
@@ -112,9 +112,7 @@ public:
         return result;
     }
 
-    DatagramOpenResult OpenUdp(const UdpOpenRequest&) override {
-        return {};
-    }
+    DatagramOpenResult OpenUdp(const UdpOpenRequest &) override { return {}; }
 
     int OpenTcpCount() const {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -131,12 +129,12 @@ public:
         return last_destination_;
     }
 
-    FakeSession* LastSession() const {
+    FakeSession *LastSession() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return created_.empty() ? nullptr : created_.back().get();
     }
 
-private:
+  private:
     mutable std::mutex mutex_;
     int open_tcp_count_ = 0;
     IpEndpoint last_source_;
@@ -149,13 +147,13 @@ private:
 // ---------------------------------------------------------------------------
 
 class RecordingEventSink final : public IEventSink {
-public:
-    void OnFlowEvent(const FlowEvent& event) noexcept override {
+  public:
+    void OnFlowEvent(const FlowEvent &event) noexcept override {
         std::lock_guard<std::mutex> lock(mutex_);
         flow_events_.push_back({event.flow_id, event.type});
     }
 
-    void OnMetricSnapshot(const MetricSnapshot& snapshot) noexcept override {
+    void OnMetricSnapshot(const MetricSnapshot &snapshot) noexcept override {
         std::lock_guard<std::mutex> lock(mutex_);
         ++metric_count_;
         last_snapshot_ = snapshot;
@@ -181,7 +179,7 @@ public:
         return last_snapshot_;
     }
 
-private:
+  private:
     mutable std::mutex mutex_;
     std::vector<RecordedEvent> flow_events_;
     int metric_count_ = 0;
@@ -196,23 +194,23 @@ namespace {
 
 /// Wait for at least `min_count` egress packets on queue 0.
 /// Returns a snapshot of the egress vector, or an empty vector on timeout.
-std::vector<std::vector<std::uint8_t>> WaitForEgress(NullPacketIo& io,
-                                                      std::size_t min_count,
-                                                      int max_attempts = 200) {
+std::vector<std::vector<std::uint8_t>> WaitForEgress(NullPacketIo &io, std::size_t min_count, int max_attempts = 200) {
     for (int i = 0; i < max_attempts; ++i) {
         auto eg = io.EgressSnapshot(0);
-        if (eg.size() >= min_count) return eg;
+        if (eg.size() >= min_count)
+            return eg;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     return {};
 }
 
 /// Inject a raw packet into queue 0 using the runtime's shard pool.
-bool InjectPacket(NullPacketIo& io, PktBufferPool* pool,
-                  const std::vector<std::uint8_t>& bytes) {
+bool InjectPacket(NullPacketIo &io, PktBufferPool *pool, const std::vector<std::uint8_t> &bytes) {
     BufferLease lease = pool->Allocate();
-    if (!lease) return false;
-    if (bytes.size() > lease.Capacity()) return false;
+    if (!lease)
+        return false;
+    if (bytes.size() > lease.Capacity())
+        return false;
     std::copy(bytes.begin(), bytes.end(), lease.Data());
     lease.Resize(bytes.size());
     return io.Inject(0, std::move(lease));
@@ -248,23 +246,22 @@ TCPIP2_TEST(OpenPpp2SmokeTestFullLifecycle) {
     TCPIP2_EXPECT_TRUE(stack.Start(deps));
     TCPIP2_EXPECT_TRUE(stack.IsRunning());
 
-    Runtime* rt = stack.GetRuntime();
+    Runtime *rt = stack.GetRuntime();
     TCPIP2_EXPECT_TRUE(rt != nullptr);
-    PktBufferPool* pool = rt->ShardPool(0);
+    PktBufferPool *pool = rt->ShardPool(0);
     TCPIP2_EXPECT_TRUE(pool != nullptr);
 
     // Addresses: 10.0.0.1:40000 → 10.0.0.2:80
-    const std::uint32_t client_ip = 0x0A000001;  // 10.0.0.1
-    const std::uint32_t server_ip = 0x0A000002;  // 10.0.0.2
+    const std::uint32_t client_ip = 0x0A000001; // 10.0.0.1
+    const std::uint32_t server_ip = 0x0A000002; // 10.0.0.2
     const std::uint16_t client_port = 40000;
     const std::uint16_t server_port = 80;
     const std::uint32_t client_isn = 1000;
 
     // --- Step 1: SYN ---
     {
-        auto syn = test::PacketBuilder::BuildIpv4Tcp(
-            client_ip, server_ip, client_port, server_port,
-            client_isn, 0, test::TcpFlags::Syn, {});
+        auto syn = test::PacketBuilder::BuildIpv4Tcp(client_ip, server_ip, client_port, server_port, client_isn, 0,
+                                                     test::TcpFlags::Syn, {});
         TCPIP2_EXPECT_TRUE(InjectPacket(io, pool, syn));
     }
 
@@ -284,9 +281,8 @@ TCPIP2_TEST(OpenPpp2SmokeTestFullLifecycle) {
 
     // --- Step 2: ACK to complete handshake ---
     {
-        auto ack = test::PacketBuilder::BuildIpv4Tcp(
-            client_ip, server_ip, client_port, server_port,
-            client_isn + 1, server_isn + 1, test::TcpFlags::Ack, {});
+        auto ack = test::PacketBuilder::BuildIpv4Tcp(client_ip, server_ip, client_port, server_port, client_isn + 1,
+                                                     server_isn + 1, test::TcpFlags::Ack, {});
         TCPIP2_EXPECT_TRUE(InjectPacket(io, pool, ack));
     }
 
@@ -302,7 +298,7 @@ TCPIP2_TEST(OpenPpp2SmokeTestFullLifecycle) {
     {
         auto events = sink.FlowEvents();
         bool found_established = false;
-        for (const auto& e : events) {
+        for (const auto &e : events) {
             if (e.type == FlowEventType::Established) {
                 found_established = true;
                 break;
@@ -314,27 +310,26 @@ TCPIP2_TEST(OpenPpp2SmokeTestFullLifecycle) {
     // --- Step 3: Data segment "hello" ---
     const std::vector<std::uint8_t> payload = {'h', 'e', 'l', 'l', 'o'};
     {
-        auto data = test::PacketBuilder::BuildIpv4Tcp(
-            client_ip, server_ip, client_port, server_port,
-            client_isn + 1, server_isn + 1,
-            test::TcpFlags::Ack | test::TcpFlags::Psh, payload);
+        auto data =
+            test::PacketBuilder::BuildIpv4Tcp(client_ip, server_ip, client_port, server_port, client_isn + 1,
+                                              server_isn + 1, test::TcpFlags::Ack | test::TcpFlags::Psh, payload);
         TCPIP2_EXPECT_TRUE(InjectPacket(io, pool, data));
     }
 
     // Wait for client data to be delivered to the remote session.
     {
-        FakeSession* session = factory.LastSession();
+        FakeSession *session = factory.LastSession();
         TCPIP2_EXPECT_TRUE(session != nullptr);
         std::vector<std::uint8_t> delivered;
         for (int i = 0; i < 100; ++i) {
             delivered = session->Delivered();
-            if (delivered.size() >= payload.size()) break;
+            if (delivered.size() >= payload.size())
+                break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         TCPIP2_EXPECT_EQ(payload.size(), delivered.size());
         if (delivered.size() >= payload.size()) {
-            TCPIP2_EXPECT_TRUE(std::equal(payload.begin(), payload.end(),
-                                          delivered.begin()));
+            TCPIP2_EXPECT_TRUE(std::equal(payload.begin(), payload.end(), delivered.begin()));
         }
     }
 
@@ -343,7 +338,7 @@ TCPIP2_TEST(OpenPpp2SmokeTestFullLifecycle) {
     auto egress_after_client = WaitForEgress(io, egress1.size() + 1);
     TCPIP2_EXPECT_TRUE(egress_after_client.size() > egress1.size());
     {
-        FakeSession* session = factory.LastSession();
+        FakeSession *session = factory.LastSession();
         TCPIP2_EXPECT_TRUE(session != nullptr);
         BufferLease remote_data = pool->Allocate();
         TCPIP2_EXPECT_TRUE(static_cast<bool>(remote_data));
@@ -357,17 +352,15 @@ TCPIP2_TEST(OpenPpp2SmokeTestFullLifecycle) {
     TCPIP2_EXPECT_TRUE(remote_segment.valid);
     TCPIP2_EXPECT_EQ(remote_payload.size(), remote_segment.payload.size());
     if (remote_segment.payload.size() == remote_payload.size()) {
-        TCPIP2_EXPECT_TRUE(std::equal(remote_payload.begin(), remote_payload.end(),
-                                      remote_segment.payload.begin()));
+        TCPIP2_EXPECT_TRUE(std::equal(remote_payload.begin(), remote_payload.end(), remote_segment.payload.begin()));
     }
 
     // --- Step 5: FIN from client ---
     {
-        auto fin = test::PacketBuilder::BuildIpv4Tcp(
-            client_ip, server_ip, client_port, server_port,
-            client_isn + 1 + static_cast<std::uint32_t>(payload.size()),
-            server_isn + 1 + static_cast<std::uint32_t>(remote_payload.size()),
-            test::TcpFlags::Fin | test::TcpFlags::Ack, {});
+        auto fin = test::PacketBuilder::BuildIpv4Tcp(client_ip, server_ip, client_port, server_port,
+                                                     client_isn + 1 + static_cast<std::uint32_t>(payload.size()),
+                                                     server_isn + 1 + static_cast<std::uint32_t>(remote_payload.size()),
+                                                     test::TcpFlags::Fin | test::TcpFlags::Ack, {});
         TCPIP2_EXPECT_TRUE(InjectPacket(io, pool, fin));
     }
 
@@ -392,9 +385,8 @@ TCPIP2_TEST(OpenPpp2SmokeTestFullLifecycle) {
     {
         auto events = sink.FlowEvents();
         bool found_close = false;
-        for (const auto& e : events) {
-            if (e.type == FlowEventType::Closed ||
-                e.type == FlowEventType::Reset) {
+        for (const auto &e : events) {
+            if (e.type == FlowEventType::Closed || e.type == FlowEventType::Reset) {
                 found_close = true;
                 break;
             }
@@ -412,9 +404,8 @@ TCPIP2_TEST(OpenPpp2SmokeTestFullLifecycle) {
     {
         auto events = sink.FlowEvents();
         bool found_close = false;
-        for (const auto& e : events) {
-            if (e.type == FlowEventType::Closed ||
-                e.type == FlowEventType::Reset) {
+        for (const auto &e : events) {
+            if (e.type == FlowEventType::Closed || e.type == FlowEventType::Reset) {
                 found_close = true;
                 break;
             }

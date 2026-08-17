@@ -5,7 +5,7 @@ namespace {
 
 /// The remote datagram arrives on the reverse of the client's flow: it must be
 /// serialized back to the client with source/destination swapped.
-FlowKey ReverseFlow(const FlowKey& flow) noexcept {
+FlowKey ReverseFlow(const FlowKey &flow) noexcept {
     FlowKey reversed;
     reversed.source = flow.destination;
     reversed.destination = flow.source;
@@ -17,25 +17,19 @@ FlowKey ReverseFlow(const FlowKey& flow) noexcept {
 
 } // namespace
 
-UdpFlowTable::UdpFlowTable(const UdpFlowConfig& config,
-                           ISessionFactory* session_factory,
-                           IClock* clock,
+UdpFlowTable::UdpFlowTable(const UdpFlowConfig &config, ISessionFactory *session_factory, IClock *clock,
                            PostMessageFn post_message) noexcept
-    : config_(config),
-      session_factory_(session_factory),
-      clock_(clock != nullptr ? clock : DefaultClock()),
+    : config_(config), session_factory_(session_factory), clock_(clock != nullptr ? clock : DefaultClock()),
       post_message_fn_(std::move(post_message)) {
     flows_.reserve(config_.max_flows);
 }
 
-UdpFlowTable::Dispatch UdpFlowTable::OnClientDatagram(
-    const FlowKey& flow, const std::uint8_t* payload,
-    std::size_t payload_length, std::uint64_t now_ms) noexcept {
-    if (flow.protocol != 17 ||
-        flow.source.family() != flow.destination.family()) {
+UdpFlowTable::Dispatch UdpFlowTable::OnClientDatagram(const FlowKey &flow, const std::uint8_t *payload,
+                                                      std::size_t payload_length, std::uint64_t now_ms) noexcept {
+    if (flow.protocol != 17 || flow.source.family() != flow.destination.family()) {
         return Dispatch::Ignored;
     }
-    Flow* const f = FindOrCreate(flow, now_ms);
+    Flow *const f = FindOrCreate(flow, now_ms);
     if (f == nullptr) {
         return Dispatch::NoCapacity;
     }
@@ -55,9 +49,7 @@ UdpFlowTable::Dispatch UdpFlowTable::OnClientDatagram(
     }
     if (result.status == SendStatus::Accepted) {
         // A datagram session must accept the whole datagram or none of it.
-        return result.accepted_bytes == payload_length
-            ? Dispatch::Accepted
-            : Dispatch::Rejected;
+        return result.accepted_bytes == payload_length ? Dispatch::Accepted : Dispatch::Rejected;
     }
     if (result.status == SendStatus::WouldBlock) {
         return Dispatch::WouldBlock;
@@ -67,8 +59,7 @@ UdpFlowTable::Dispatch UdpFlowTable::OnClientDatagram(
     return Dispatch::Rejected;
 }
 
-UdpFlowTable::Flow* UdpFlowTable::FindOrCreate(const FlowKey& flow,
-                                               std::uint64_t now_ms) {
+UdpFlowTable::Flow *UdpFlowTable::FindOrCreate(const FlowKey &flow, std::uint64_t now_ms) {
     for (std::size_t i = 0; i < flows_.size(); ++i) {
         if (flows_[i].flow == flow) {
             return &flows_[i];
@@ -107,12 +98,13 @@ UdpFlowTable::Flow* UdpFlowTable::FindOrCreate(const FlowKey& flow,
             opened = DatagramOpenResult{};
         }
         if (opened.handle != nullptr && opened.error == SessionError::None) {
-            f.session = static_cast<IDatagramSession*>(opened.handle);
+            f.session = static_cast<IDatagramSession *>(opened.handle);
             f.session_bound = true;
 
             const std::uint64_t flow_id = f.flow_id;
-            f.session->SetDataCallback([this, flow_id](BufferLease& lease) {
-                if (!lease || shutdown_) return ReceiveStatus::Closed;
+            f.session->SetDataCallback([this, flow_id](BufferLease &lease) {
+                if (!lease || shutdown_)
+                    return ReceiveStatus::Closed;
                 ShardMessage msg;
                 msg.type = ShardMessageType::kUdpSessionData;
                 msg.flow_id = FlowId{flow_id};
@@ -122,11 +114,11 @@ UdpFlowTable::Flow* UdpFlowTable::FindOrCreate(const FlowKey& flow,
                 }
                 // Post failed — restore the lease so the adapter can retry.
                 lease = std::move(msg.data);
-                return shutdown_ ? ReceiveStatus::Closed
-                                 : ReceiveStatus::WouldBlock;
+                return shutdown_ ? ReceiveStatus::Closed : ReceiveStatus::WouldBlock;
             });
             f.session->SetClosedCallback([this, flow_id](SessionError) {
-                if (shutdown_) return;
+                if (shutdown_)
+                    return;
                 ShardMessage msg;
                 msg.type = ShardMessageType::kUdpSessionClosed;
                 msg.flow_id = FlowId{flow_id};
@@ -149,7 +141,7 @@ void UdpFlowTable::Evict(std::size_t index) {
     flow_count_.fetch_sub(1, std::memory_order_relaxed);
 }
 
-void UdpFlowTable::UnbindSession(Flow& flow) noexcept {
+void UdpFlowTable::UnbindSession(Flow &flow) noexcept {
     if (flow.session_bound && flow.session != nullptr) {
         // SetDataCallback(nullptr) must quiesce any in-flight invocation.
         flow.session->SetDataCallback(nullptr);
@@ -158,20 +150,18 @@ void UdpFlowTable::UnbindSession(Flow& flow) noexcept {
     }
 }
 
-ReceiveStatus UdpFlowTable::OnRemoteData(std::uint64_t flow_id,
-                                         BufferLease& lease) noexcept {
+ReceiveStatus UdpFlowTable::OnRemoteData(std::uint64_t flow_id, BufferLease &lease) noexcept {
     for (std::size_t i = 0; i < flows_.size(); ++i) {
         if (flows_[i].flow_id != flow_id) {
             continue;
         }
-        Flow& flow = flows_[i];
+        Flow &flow = flows_[i];
         flow.last_activity_ms = clock_->NowMs();
         ++flow.remote_datagrams;
         if (!lease || !emitter_) {
             return ReceiveStatus::Accepted;
         }
-        return emitter_(ReverseFlow(flow.flow), lease) ? ReceiveStatus::Accepted
-                                                       : ReceiveStatus::WouldBlock;
+        return emitter_(ReverseFlow(flow.flow), lease) ? ReceiveStatus::Accepted : ReceiveStatus::WouldBlock;
     }
     // Flow was evicted between the adapter posting and shard processing.
     return ReceiveStatus::Closed;
@@ -197,8 +187,8 @@ void UdpFlowTable::PurgeExpired(std::uint64_t now_ms) noexcept {
     }
 }
 
-bool UdpFlowTable::Find(const FlowKey& flow, UdpFlowSnapshot& out) const noexcept {
-    for (const Flow& f : flows_) {
+bool UdpFlowTable::Find(const FlowKey &flow, UdpFlowSnapshot &out) const noexcept {
+    for (const Flow &f : flows_) {
         if (f.flow == flow) {
             out.flow = f.flow;
             out.flow_id = f.flow_id;
@@ -212,8 +202,8 @@ bool UdpFlowTable::Find(const FlowKey& flow, UdpFlowSnapshot& out) const noexcep
     return false;
 }
 
-bool UdpFlowTable::FindById(std::uint64_t flow_id, UdpFlowSnapshot& out) const noexcept {
-    for (const Flow& f : flows_) {
+bool UdpFlowTable::FindById(std::uint64_t flow_id, UdpFlowSnapshot &out) const noexcept {
+    for (const Flow &f : flows_) {
         if (f.flow_id == flow_id) {
             out.flow = f.flow;
             out.flow_id = f.flow_id;
@@ -229,7 +219,7 @@ bool UdpFlowTable::FindById(std::uint64_t flow_id, UdpFlowSnapshot& out) const n
 
 void UdpFlowTable::Shutdown() noexcept {
     shutdown_ = true;
-    for (Flow& f : flows_) {
+    for (Flow &f : flows_) {
         UnbindSession(f);
     }
     flows_.clear();

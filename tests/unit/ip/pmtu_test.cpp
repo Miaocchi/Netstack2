@@ -13,10 +13,7 @@ namespace {
 static const std::uint8_t kIpv4Addr[4] = {0x0A, 0x00, 0x00, 0x02};
 
 /// IPv6 address 2001:db8::1.
-static const std::uint8_t kIpv6Addr[16] = {
-    0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0x01
-};
+static const std::uint8_t kIpv6Addr[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01};
 
 } // namespace
 

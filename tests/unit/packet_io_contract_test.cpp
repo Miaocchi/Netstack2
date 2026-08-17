@@ -97,7 +97,7 @@ TCPIP2_TEST(SendBatchConsumesLeasesAndCapturesEgress) {
     TCPIP2_EXPECT_TRUE(err == IoError::None);
     TCPIP2_EXPECT_EQ(std::size_t{0}, pool.OutstandingCount());
 
-    const std::vector<std::vector<std::uint8_t>>& eg = io.Egress(0);
+    const std::vector<std::vector<std::uint8_t>> &eg = io.Egress(0);
     TCPIP2_EXPECT_EQ(std::size_t{2}, eg.size());
     TCPIP2_EXPECT_EQ(std::size_t{2}, eg[0].size());
     TCPIP2_EXPECT_EQ(std::uint8_t{0xCA}, eg[0][0]);
@@ -193,8 +193,8 @@ TCPIP2_TEST(InjectDoesNotWakeWhenBacklogNotEmpty) {
 
     BufferLease l1 = pool.Allocate();
     BufferLease l2 = pool.Allocate();
-    io.Inject(0, std::move(l1));  // empty -> non-empty: wake
-    io.Inject(0, std::move(l2));  // already non-empty: no wake
+    io.Inject(0, std::move(l1)); // empty -> non-empty: wake
+    io.Inject(0, std::move(l2)); // already non-empty: no wake
     TCPIP2_EXPECT_EQ(1, wake_count);
     TCPIP2_EXPECT_EQ(std::size_t{2}, pool.OutstandingCount());
 
@@ -237,7 +237,8 @@ TCPIP2_TEST(WakeHandlerCanCallRecvWithoutDeadlock) {
         BufferLease out[1];
         IoError err = IoError::Internal;
         received = q->RecvBatch(out, 1, err);
-        if (received > 0) out[0].Reset();
+        if (received > 0)
+            out[0].Reset();
     });
 
     BufferLease l = pool.Allocate();

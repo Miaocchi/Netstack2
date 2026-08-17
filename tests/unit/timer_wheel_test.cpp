@@ -49,9 +49,12 @@ TCPIP2_TEST(FiresAllDueInSingleAdvance) {
     bool has7 = false;
     bool has10 = false;
     for (std::uint64_t v : order) {
-        if (v == 5) has5 = true;
-        if (v == 7) has7 = true;
-        if (v == 10) has10 = true;
+        if (v == 5)
+            has5 = true;
+        if (v == 7)
+            has7 = true;
+        if (v == 10)
+            has10 = true;
     }
     TCPIP2_EXPECT_TRUE(has5 && has7 && has10);
 }
@@ -119,7 +122,7 @@ TCPIP2_TEST(TerminalCursorRejectsNewTimer) {
     bool threw = false;
     try {
         wheel.Schedule(std::numeric_limits<std::uint64_t>::max(), [] {});
-    } catch (const std::overflow_error&) {
+    } catch (const std::overflow_error &) {
         threw = true;
     }
     TCPIP2_EXPECT_TRUE(threw);

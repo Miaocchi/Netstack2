@@ -17,9 +17,8 @@ namespace tcpip2 {
 
 namespace {
 
-std::uint16_t ReadU16(const std::uint8_t* data) noexcept {
-    return static_cast<std::uint16_t>(
-        (static_cast<std::uint16_t>(data[0]) << 8) | data[1]);
+std::uint16_t ReadU16(const std::uint8_t *data) noexcept {
+    return static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[0]) << 8) | data[1]);
 }
 
 void CopyIpv4Mapped(const std::uint8_t input[4], std::uint8_t output[16]) noexcept {
@@ -29,7 +28,7 @@ void CopyIpv4Mapped(const std::uint8_t input[4], std::uint8_t output[16]) noexce
     std::memcpy(output + 12, input, 4);
 }
 
-std::size_t FragmentHash(const FragmentKey& key) noexcept {
+std::size_t FragmentHash(const FragmentKey &key) noexcept {
     std::uint64_t hash = 0xcbf29ce484222325ULL;
     const std::uint64_t prime = 0x100000001b3ULL;
     const auto add = [&hash](std::uint8_t byte) noexcept {
@@ -42,18 +41,19 @@ std::size_t FragmentHash(const FragmentKey& key) noexcept {
         const std::size_t shift = (sizeof(key.identification) - 1 - i) * 8;
         add(static_cast<std::uint8_t>(key.identification >> shift));
     }
-    for (std::uint8_t byte : key.src_ip) add(byte);
-    for (std::uint8_t byte : key.dst_ip) add(byte);
+    for (std::uint8_t byte : key.src_ip)
+        add(byte);
+    for (std::uint8_t byte : key.dst_ip)
+        add(byte);
     return static_cast<std::size_t>(hash);
 }
 
-PacketClassification ClassifyTransport(std::uint8_t protocol, const IpAddress& source,
-                                       const IpAddress& destination,
-                                       const std::uint8_t* transport,
-                                       std::size_t transport_length,
-                                       const PacketDispatcher& dispatcher) noexcept {
+PacketClassification ClassifyTransport(std::uint8_t protocol, const IpAddress &source, const IpAddress &destination,
+                                       const std::uint8_t *transport, std::size_t transport_length,
+                                       const PacketDispatcher &dispatcher) noexcept {
     PacketClassification result;
-    if (protocol != 6 && protocol != 17) return result;
+    if (protocol != 6 && protocol != 17)
+        return result;
     if (transport == nullptr || transport_length < 4) {
         result.error = PacketClassificationError::TruncatedTransport;
         return result;
@@ -71,8 +71,7 @@ PacketClassification ClassifyTransport(std::uint8_t protocol, const IpAddress& s
 
 } // namespace
 
-PacketClassification PacketDispatcher::ClassifyPacket(const std::uint8_t* packet,
-                                                       std::size_t length) const noexcept {
+PacketClassification PacketDispatcher::ClassifyPacket(const std::uint8_t *packet, std::size_t length) const noexcept {
     PacketClassification result;
     if (packet == nullptr || length == 0) {
         result.error = PacketClassificationError::Empty;
@@ -87,7 +86,8 @@ PacketClassification PacketDispatcher::ClassifyPacket(const std::uint8_t* packet
             return result;
         }
         if (ip.header.fragment_offset != 0 || (ip.header.flags & 0x01u) != 0) {
-            if (ip.header.protocol != 6 && ip.header.protocol != 17) return result;
+            if (ip.header.protocol != 6 && ip.header.protocol != 17)
+                return result;
             result.packet_class = PacketClass::kFragment;
             result.fragment.ip_version = 4;
             result.fragment.protocol = ip.header.protocol;
@@ -97,12 +97,11 @@ PacketClassification PacketDispatcher::ClassifyPacket(const std::uint8_t* packet
             result.owner_shard = FragmentShard(result.fragment);
             return result;
         }
-        return ClassifyTransport(ip.header.protocol,
-                                 IpAddress::Ipv4(ip.header.src_ip[0], ip.header.src_ip[1],
-                                                 ip.header.src_ip[2], ip.header.src_ip[3]),
-                                 IpAddress::Ipv4(ip.header.dst_ip[0], ip.header.dst_ip[1],
-                                                 ip.header.dst_ip[2], ip.header.dst_ip[3]),
-                                 ip.payload, ip.header.payload_length, *this);
+        return ClassifyTransport(
+            ip.header.protocol,
+            IpAddress::Ipv4(ip.header.src_ip[0], ip.header.src_ip[1], ip.header.src_ip[2], ip.header.src_ip[3]),
+            IpAddress::Ipv4(ip.header.dst_ip[0], ip.header.dst_ip[1], ip.header.dst_ip[2], ip.header.dst_ip[3]),
+            ip.payload, ip.header.payload_length, *this);
     }
     if (version == 6) {
         const Ipv6ParseResult ip = ParseIpv6(packet, length);
@@ -111,7 +110,8 @@ PacketClassification PacketDispatcher::ClassifyPacket(const std::uint8_t* packet
             return result;
         }
         if (ip.fragment_header_present) {
-            if (ip.final_next_header != 6 && ip.final_next_header != 17) return result;
+            if (ip.final_next_header != 6 && ip.final_next_header != 17)
+                return result;
             result.packet_class = PacketClass::kFragment;
             result.fragment.ip_version = 6;
             result.fragment.protocol = ip.final_next_header;
@@ -122,29 +122,27 @@ PacketClassification PacketDispatcher::ClassifyPacket(const std::uint8_t* packet
             return result;
         }
         return ClassifyTransport(ip.final_next_header, IpAddress::Ipv6(ip.header.src_ip),
-                                 IpAddress::Ipv6(ip.header.dst_ip), ip.payload,
-                                 ip.payload_length, *this);
+                                 IpAddress::Ipv6(ip.header.dst_ip), ip.payload, ip.payload_length, *this);
     }
 
     result.error = PacketClassificationError::UnsupportedIpVersion;
     return result;
 }
 
-DispatchDecision PacketDispatcher::Dispatch(std::size_t source_shard,
-                                            const std::uint8_t* packet,
+DispatchDecision PacketDispatcher::Dispatch(std::size_t source_shard, const std::uint8_t *packet,
                                             std::size_t length) const noexcept {
     DispatchDecision decision;
     decision.classification = ClassifyPacket(packet, length);
-    if (decision.classification.IsRoutable() &&
-        source_shard < shard_count_ &&
+    if (decision.classification.IsRoutable() && source_shard < shard_count_ &&
         decision.classification.owner_shard != source_shard) {
         decision.action = DispatchAction::kRedirect;
     }
     return decision;
 }
 
-std::size_t PacketDispatcher::FragmentShard(const FragmentKey& key) const noexcept {
-    if (shard_count_ == 0) return 0;
+std::size_t PacketDispatcher::FragmentShard(const FragmentKey &key) const noexcept {
+    if (shard_count_ == 0)
+        return 0;
     return FragmentHash(key) % shard_count_;
 }
 

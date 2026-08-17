@@ -18,8 +18,8 @@ namespace tcpip2 {
 
 enum class IcmpUnreachableError {
     None,
-    InvalidOriginal,  ///< null pointer / too short to quote an IP header.
-    BufferTooSmall,   ///< capacity < the built response size.
+    InvalidOriginal, ///< null pointer / too short to quote an IP header.
+    BufferTooSmall,  ///< capacity < the built response size.
 };
 
 struct IcmpUnreachableResult {
@@ -39,12 +39,8 @@ struct IcmpUnreachableResult {
  * @param capacity      bytes available at @p output.
  * @param hop_limit     IPv4 TTL for the reply.
  */
-IcmpUnreachableResult BuildIcmpv4Unreachable(const std::uint8_t* original,
-                                             std::size_t original_len,
-                                             std::uint8_t code,
-                                             std::uint16_t mtu,
-                                             std::uint8_t* output,
-                                             std::size_t capacity,
+IcmpUnreachableResult BuildIcmpv4Unreachable(const std::uint8_t *original, std::size_t original_len, std::uint8_t code,
+                                             std::uint16_t mtu, std::uint8_t *output, std::size_t capacity,
                                              std::uint8_t hop_limit = 64) noexcept;
 
 /**
@@ -57,11 +53,8 @@ IcmpUnreachableResult BuildIcmpv4Unreachable(const std::uint8_t* original,
  * @param capacity      bytes available at @p output.
  * @param hop_limit     IPv6 hop limit for the reply.
  */
-IcmpUnreachableResult BuildIcmpv6Unreachable(const std::uint8_t* original,
-                                             std::size_t original_len,
-                                             std::uint8_t code,
-                                             std::uint8_t* output,
-                                             std::size_t capacity,
+IcmpUnreachableResult BuildIcmpv6Unreachable(const std::uint8_t *original, std::size_t original_len, std::uint8_t code,
+                                             std::uint8_t *output, std::size_t capacity,
                                              std::uint8_t hop_limit = 64) noexcept;
 
 /**
@@ -74,11 +67,8 @@ IcmpUnreachableResult BuildIcmpv6Unreachable(const std::uint8_t* original,
  * @param capacity      bytes available at @p output.
  * @param hop_limit     IPv6 hop limit for the reply.
  */
-IcmpUnreachableResult BuildIcmpv6PacketTooBig(const std::uint8_t* original,
-                                              std::size_t original_len,
-                                              std::uint32_t mtu,
-                                              std::uint8_t* output,
-                                              std::size_t capacity,
+IcmpUnreachableResult BuildIcmpv6PacketTooBig(const std::uint8_t *original, std::size_t original_len, std::uint32_t mtu,
+                                              std::uint8_t *output, std::size_t capacity,
                                               std::uint8_t hop_limit = 64) noexcept;
 
 } // namespace tcpip2

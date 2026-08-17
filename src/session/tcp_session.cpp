@@ -12,8 +12,7 @@
 
 namespace tcpip2 {
 
-TcpSession::TcpSession(std::size_t send_queue_limit)
-    : send_queue_limit_(send_queue_limit) {
+TcpSession::TcpSession(std::size_t send_queue_limit) : send_queue_limit_(send_queue_limit) {
     send_queue_.reserve(4096);
 }
 
@@ -24,8 +23,8 @@ SendResult TcpSession::TrySend(BufferView data) {
         return {0, SendStatus::Closed};
     }
 
-    const std::size_t available = (send_queue_.size() >= send_queue_limit_)
-        ? 0 : (send_queue_limit_ - send_queue_.size());
+    const std::size_t available =
+        (send_queue_.size() >= send_queue_limit_) ? 0 : (send_queue_limit_ - send_queue_.size());
 
     if (available == 0) {
         return {0, SendStatus::WouldBlock};
@@ -33,8 +32,7 @@ SendResult TcpSession::TrySend(BufferView data) {
 
     const std::size_t to_copy = std::min(available, data.Size());
     if (to_copy > 0) {
-        send_queue_.insert(send_queue_.end(), data.Data(),
-                           data.Data() + to_copy);
+        send_queue_.insert(send_queue_.end(), data.Data(), data.Data() + to_copy);
     }
     return {to_copy, SendStatus::Accepted};
 }
@@ -44,7 +42,8 @@ void TcpSession::ResumeReceive() {
     DataCallback cb;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (closed_ || !pending_receive_ || !data_callback_) return;
+        if (closed_ || !pending_receive_ || !data_callback_)
+            return;
         pending = std::move(pending_receive_);
         cb = data_callback_;
         ++callbacks_in_flight_;
@@ -72,7 +71,8 @@ void TcpSession::ShutdownWrite() {
         std::lock_guard<std::mutex> lock(mutex_);
         write_shutdown_ = true;
         cb = writable_callback_;
-        if (cb) ++callbacks_in_flight_;
+        if (cb)
+            ++callbacks_in_flight_;
     }
 
     if (cb) {
@@ -97,7 +97,8 @@ void TcpSession::Abort(SessionError error) {
         send_queue_.clear();
         pending = std::move(pending_receive_);
         cb = closed_callback_;
-        if (cb) ++callbacks_in_flight_;
+        if (cb)
+            ++callbacks_in_flight_;
     }
 
     if (cb) {
@@ -116,8 +117,7 @@ void TcpSession::SetWritableCallback(WritableCallback cb) {
     {
         std::unique_lock<std::mutex> lock(mutex_);
         writable_callback_ = std::move(cb);
-        if (writable_callback_ && !closed_ && !write_shutdown_ &&
-            send_queue_.size() < send_queue_limit_) {
+        if (writable_callback_ && !closed_ && !write_shutdown_ && send_queue_.size() < send_queue_limit_) {
             immediate = writable_callback_;
             ++callbacks_in_flight_;
         }
@@ -162,12 +162,15 @@ ReceiveStatus TcpSession::OnDataReceived(BufferLease lease) {
     DataCallback cb;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (closed_ || pending_receive_) return ReceiveStatus::Closed;
+        if (closed_ || pending_receive_)
+            return ReceiveStatus::Closed;
         cb = data_callback_;
-        if (cb) ++callbacks_in_flight_;
+        if (cb)
+            ++callbacks_in_flight_;
     }
 
-    if (!cb) return ReceiveStatus::Closed;
+    if (!cb)
+        return ReceiveStatus::Closed;
 
     ReceiveStatus status = ReceiveStatus::Closed;
     try {
@@ -195,7 +198,8 @@ void TcpSession::OnWritable() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         cb = writable_callback_;
-        if (cb) ++callbacks_in_flight_;
+        if (cb)
+            ++callbacks_in_flight_;
     }
 
     if (cb) {
@@ -218,7 +222,8 @@ void TcpSession::OnClosed(SessionError error) {
         close_error_ = error;
         pending = std::move(pending_receive_);
         cb = closed_callback_;
-        if (cb) ++callbacks_in_flight_;
+        if (cb)
+            ++callbacks_in_flight_;
     }
 
     if (cb) {
@@ -232,8 +237,7 @@ void TcpSession::OnClosed(SessionError error) {
     }
 }
 
-std::size_t TcpSession::DrainSendQueue(std::uint8_t* out,
-                                        std::size_t max) noexcept {
+std::size_t TcpSession::DrainSendQueue(std::uint8_t *out, std::size_t max) noexcept {
     WritableCallback cb;
     std::size_t copied = 0;
     bool was_full = false;
@@ -249,14 +253,14 @@ std::size_t TcpSession::DrainSendQueue(std::uint8_t* out,
         const std::size_t to_copy = std::min(max, send_queue_.size());
         if (to_copy > 0) {
             std::memcpy(out, send_queue_.data(), to_copy);
-            send_queue_.erase(send_queue_.begin(),
-                              send_queue_.begin() + static_cast<std::ptrdiff_t>(to_copy));
+            send_queue_.erase(send_queue_.begin(), send_queue_.begin() + static_cast<std::ptrdiff_t>(to_copy));
         }
         copied = to_copy;
 
         if (was_full && send_queue_.size() < send_queue_limit_) {
             cb = writable_callback_;
-            if (cb) ++callbacks_in_flight_;
+            if (cb)
+                ++callbacks_in_flight_;
         }
     }
 
@@ -295,8 +299,10 @@ bool TcpSession::IsClosed() const noexcept {
 
 void TcpSession::CallbackFinished() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (callbacks_in_flight_ > 0) --callbacks_in_flight_;
-    if (callbacks_in_flight_ == 0) callback_cv_.notify_all();
+    if (callbacks_in_flight_ > 0)
+        --callbacks_in_flight_;
+    if (callbacks_in_flight_ == 0)
+        callback_cv_.notify_all();
 }
 
 } // namespace tcpip2

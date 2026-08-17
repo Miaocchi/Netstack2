@@ -43,99 +43,62 @@ using namespace tcpip2;
 // ---------------------------------------------------------------------------
 
 // Buffer ownership
-static_assert(std::is_move_constructible_v<BufferLease>,
-              "BufferLease must be move constructible (frozen)");
-static_assert(!std::is_copy_constructible_v<BufferLease>,
-              "BufferLease must be move-only (frozen)");
-static_assert(std::is_nothrow_move_constructible_v<BufferLease>,
-              "BufferLease move must be noexcept (frozen)");
-static_assert(std::is_trivially_copyable_v<BufferSlice>,
-              "BufferSlice must be trivially copyable (frozen)");
-static_assert(std::is_copy_constructible_v<BufferRef>,
-              "BufferRef must be copyable (frozen)");
-static_assert(std::is_move_constructible_v<BufferRef>,
-              "BufferRef must be move constructible (frozen)");
-static_assert(std::is_standard_layout_v<PktBuffer>,
-              "PktBuffer must keep standard layout (frozen)");
+static_assert(std::is_move_constructible_v<BufferLease>, "BufferLease must be move constructible (frozen)");
+static_assert(!std::is_copy_constructible_v<BufferLease>, "BufferLease must be move-only (frozen)");
+static_assert(std::is_nothrow_move_constructible_v<BufferLease>, "BufferLease move must be noexcept (frozen)");
+static_assert(std::is_trivially_copyable_v<BufferSlice>, "BufferSlice must be trivially copyable (frozen)");
+static_assert(std::is_copy_constructible_v<BufferRef>, "BufferRef must be copyable (frozen)");
+static_assert(std::is_move_constructible_v<BufferRef>, "BufferRef must be move constructible (frozen)");
+static_assert(std::is_standard_layout_v<PktBuffer>, "PktBuffer must keep standard layout (frozen)");
 
 // Transport session
-static_assert(std::is_trivially_copyable_v<BufferView>,
-              "BufferView must be trivially copyable (frozen)");
-static_assert(std::is_invocable_r_v<ReceiveStatus, DataCallback, BufferLease&>,
+static_assert(std::is_trivially_copyable_v<BufferView>, "BufferView must be trivially copyable (frozen)");
+static_assert(std::is_invocable_r_v<ReceiveStatus, DataCallback, BufferLease &>,
               "DataCallback must return ReceiveStatus and borrow BufferLease");
 
 // Address / Flow
-static_assert(std::is_copy_constructible_v<IpAddress>,
-              "IpAddress must be copyable (frozen)");
-static_assert(std::is_standard_layout_v<IpAddress>,
-              "IpAddress must be standard layout (frozen)");
-static_assert(std::is_copy_constructible_v<FlowKey>,
-              "FlowKey must be copyable (frozen)");
-static_assert(std::is_standard_layout_v<FlowKey>,
-              "FlowKey must be standard layout (frozen)");
+static_assert(std::is_copy_constructible_v<IpAddress>, "IpAddress must be copyable (frozen)");
+static_assert(std::is_standard_layout_v<IpAddress>, "IpAddress must be standard layout (frozen)");
+static_assert(std::is_copy_constructible_v<FlowKey>, "FlowKey must be copyable (frozen)");
+static_assert(std::is_standard_layout_v<FlowKey>, "FlowKey must be standard layout (frozen)");
 
 // Session factory
-static_assert(std::is_trivially_copyable_v<FlowId>,
-              "FlowId must be trivially copyable (frozen)");
-static_assert(std::is_standard_layout_v<FlowId>,
-              "FlowId must be standard layout (frozen)");
-static_assert(std::is_copy_constructible_v<IpEndpoint>,
-              "IpEndpoint must be copyable (frozen)");
-static_assert(std::is_standard_layout_v<IpEndpoint>,
-              "IpEndpoint must be standard layout (frozen)");
-static_assert(std::is_copy_constructible_v<TcpOpenRequest>,
-              "TcpOpenRequest must be copyable (frozen)");
-static_assert(std::is_copy_constructible_v<UdpOpenRequest>,
-              "UdpOpenRequest must be copyable (frozen)");
-static_assert(std::is_copy_constructible_v<SessionOpenResult>,
-              "SessionOpenResult must be copyable (frozen)");
-static_assert(std::is_same_v<decltype(SessionOpenResult{}.session),
-                             std::shared_ptr<ITransportSession>>,
+static_assert(std::is_trivially_copyable_v<FlowId>, "FlowId must be trivially copyable (frozen)");
+static_assert(std::is_standard_layout_v<FlowId>, "FlowId must be standard layout (frozen)");
+static_assert(std::is_copy_constructible_v<IpEndpoint>, "IpEndpoint must be copyable (frozen)");
+static_assert(std::is_standard_layout_v<IpEndpoint>, "IpEndpoint must be standard layout (frozen)");
+static_assert(std::is_copy_constructible_v<TcpOpenRequest>, "TcpOpenRequest must be copyable (frozen)");
+static_assert(std::is_copy_constructible_v<UdpOpenRequest>, "UdpOpenRequest must be copyable (frozen)");
+static_assert(std::is_copy_constructible_v<SessionOpenResult>, "SessionOpenResult must be copyable (frozen)");
+static_assert(std::is_same_v<decltype(SessionOpenResult{}.session), std::shared_ptr<ITransportSession>>,
               "SessionOpenResult must retain a shared transport session");
-static_assert(std::is_copy_constructible_v<DatagramOpenResult>,
-              "DatagramOpenResult must be copyable (frozen)");
+static_assert(std::is_copy_constructible_v<DatagramOpenResult>, "DatagramOpenResult must be copyable (frozen)");
 
 // Capabilities
-static_assert(std::is_copy_constructible_v<PacketIoCapabilities>,
-              "PacketIoCapabilities must be copyable (frozen)");
-static_assert(std::is_standard_layout_v<PacketIoCapabilities>,
-              "PacketIoCapabilities must be standard layout (frozen)");
+static_assert(std::is_copy_constructible_v<PacketIoCapabilities>, "PacketIoCapabilities must be copyable (frozen)");
+static_assert(std::is_standard_layout_v<PacketIoCapabilities>, "PacketIoCapabilities must be standard layout (frozen)");
 
 // Config
-static_assert(std::is_copy_constructible_v<NetstackConfig>,
-              "NetstackConfig must be copyable (frozen)");
+static_assert(std::is_copy_constructible_v<NetstackConfig>, "NetstackConfig must be copyable (frozen)");
 
 // Shutdown
-static_assert(std::is_copy_constructible_v<StopOptions>,
-              "StopOptions must be copyable (v0.3)");
-static_assert(std::is_copy_constructible_v<StopResult>,
-              "StopResult must be copyable (v0.3)");
+static_assert(std::is_copy_constructible_v<StopOptions>, "StopOptions must be copyable (v0.3)");
+static_assert(std::is_copy_constructible_v<StopResult>, "StopResult must be copyable (v0.3)");
 
 // TapPacketIo (concrete backend)
-static_assert(std::is_final_v<TapPacketIo>,
-              "TapPacketIo must be final (frozen)");
-static_assert(!std::is_copy_constructible_v<TapPacketIo>,
-              "TapPacketIo must be non-copyable (frozen)");
+static_assert(std::is_final_v<TapPacketIo>, "TapPacketIo must be final (frozen)");
+static_assert(!std::is_copy_constructible_v<TapPacketIo>, "TapPacketIo must be non-copyable (frozen)");
 
 // Clock / Events (P4-1)
-static_assert(std::is_abstract_v<IClock>,
-              "IClock must be abstract (frozen)");
-static_assert(std::is_final_v<SystemClock>,
-              "SystemClock must be final (frozen)");
-static_assert(std::is_copy_constructible_v<FlowEvent>,
-              "FlowEvent must be copyable (frozen)");
-static_assert(std::is_standard_layout_v<FlowEvent>,
-              "FlowEvent must be standard layout (frozen)");
-static_assert(std::is_copy_constructible_v<MetricSnapshot>,
-              "MetricSnapshot must be copyable (frozen)");
-static_assert(std::is_standard_layout_v<MetricSnapshot>,
-              "MetricSnapshot must be standard layout (frozen)");
-static_assert(std::is_abstract_v<IEventSink>,
-              "IEventSink must be abstract (frozen)");
-static_assert(std::is_copy_constructible_v<RuntimeDependencies>,
-              "RuntimeDependencies must be copyable (frozen)");
-static_assert(std::is_standard_layout_v<RuntimeDependencies>,
-              "RuntimeDependencies must be standard layout (frozen)");
+static_assert(std::is_abstract_v<IClock>, "IClock must be abstract (frozen)");
+static_assert(std::is_final_v<SystemClock>, "SystemClock must be final (frozen)");
+static_assert(std::is_copy_constructible_v<FlowEvent>, "FlowEvent must be copyable (frozen)");
+static_assert(std::is_standard_layout_v<FlowEvent>, "FlowEvent must be standard layout (frozen)");
+static_assert(std::is_copy_constructible_v<MetricSnapshot>, "MetricSnapshot must be copyable (frozen)");
+static_assert(std::is_standard_layout_v<MetricSnapshot>, "MetricSnapshot must be standard layout (frozen)");
+static_assert(std::is_abstract_v<IEventSink>, "IEventSink must be abstract (frozen)");
+static_assert(std::is_copy_constructible_v<RuntimeDependencies>, "RuntimeDependencies must be copyable (frozen)");
+static_assert(std::is_standard_layout_v<RuntimeDependencies>, "RuntimeDependencies must be standard layout (frozen)");
 static_assert(std::is_trivially_copyable_v<RuntimeDependencies>,
               "RuntimeDependencies must be trivially copyable (frozen)");
 
@@ -243,19 +206,19 @@ TCPIP2_TEST(PublicHeadersConsumeCleanly) {
     SystemClock sys_clock;
     TCPIP2_EXPECT_TRUE(sys_clock.NowMs() > 0);
     TCPIP2_EXPECT_TRUE(sys_clock.NowUs() > 0);
-    IClock* default_clock = DefaultClock();
+    IClock *default_clock = DefaultClock();
     TCPIP2_EXPECT_TRUE(default_clock != nullptr);
     TCPIP2_EXPECT_TRUE(default_clock->NowMs() > 0);
 
     // RuntimeDependencies validation
     RuntimeDependencies deps;
-    TCPIP2_EXPECT_FALSE(deps.Validate());  // null packet_io + session_factory
+    TCPIP2_EXPECT_FALSE(deps.Validate()); // null packet_io + session_factory
     deps.packet_io = &io;
-    TCPIP2_EXPECT_FALSE(deps.Validate());  // still missing session_factory
+    TCPIP2_EXPECT_FALSE(deps.Validate()); // still missing session_factory
     deps.session_factory = nullptr;
     TCPIP2_EXPECT_FALSE(deps.Validate());
     deps.clock = &sys_clock;
-    TCPIP2_EXPECT_FALSE(deps.Validate());  // still missing mandatory deps
+    TCPIP2_EXPECT_FALSE(deps.Validate()); // still missing mandatory deps
 
     // FlowEvent / MetricSnapshot default-constructible and copyable
     FlowEvent fe;
@@ -283,10 +246,10 @@ TCPIP2_TEST(PublicHeadersConsumeCleanly) {
     full_deps.packet_io = &io;
     // session_factory remains null — can't construct a real one here,
     // but Validate() requires both packet_io and session_factory
-    TCPIP2_EXPECT_FALSE(full_deps.Validate());  // no session_factory
+    TCPIP2_EXPECT_FALSE(full_deps.Validate()); // no session_factory
     full_deps.clock = &sys_clock;
-    full_deps.event_sink = nullptr;  // optional, null is OK
-    TCPIP2_EXPECT_FALSE(full_deps.Validate());  // still no session_factory
+    full_deps.event_sink = nullptr;            // optional, null is OK
+    TCPIP2_EXPECT_FALSE(full_deps.Validate()); // still no session_factory
 
     // FlowKey canonicalization
     FlowKey fk;
@@ -303,11 +266,11 @@ TCPIP2_TEST(PublicHeadersConsumeCleanly) {
     TapPacketIo tap;
     TCPIP2_EXPECT_FALSE(tap.IsOpen());
     TCPIP2_EXPECT_EQ(std::size_t{0}, tap.QueueCount());
-    tap.Close();  // idempotent on unopened
+    tap.Close(); // idempotent on unopened
 
     // Start(const RuntimeDependencies&) with invalid deps returns false
     Netstack2 stack2(config);
-    TCPIP2_EXPECT_FALSE(stack2.Start(full_deps));  // Validate() fails
+    TCPIP2_EXPECT_FALSE(stack2.Start(full_deps)); // Validate() fails
     TCPIP2_EXPECT_FALSE(stack2.IsRunning());
 
     // Start(const RuntimeDependencies&) with null packet_io returns false

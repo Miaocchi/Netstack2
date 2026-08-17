@@ -37,8 +37,7 @@ struct TcpDeliveryResult {
 /// and a SendStatus indicating whether to continue, block, or stop.
 using DeliverFn = std::function<SendResult(BufferView)>;
 
-TcpDeliveryResult DrainTcpReceiveBuffer(TcpReceiveBuffer& receive,
-                                        const DeliverFn& deliver,
+TcpDeliveryResult DrainTcpReceiveBuffer(TcpReceiveBuffer &receive, const DeliverFn &deliver,
                                         std::size_t call_budget = 16) noexcept;
 
 } // namespace tcpip2

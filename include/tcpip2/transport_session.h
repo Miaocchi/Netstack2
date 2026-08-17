@@ -70,16 +70,16 @@ struct SendResult {
  * The caller retains ownership of the underlying bytes.
  */
 class BufferView final {
-public:
+  public:
     BufferView() noexcept = default;
-    BufferView(const std::uint8_t* data, std::size_t size) noexcept : data_(data), size_(size) {}
+    BufferView(const std::uint8_t *data, std::size_t size) noexcept : data_(data), size_(size) {}
 
-    const std::uint8_t* Data() const noexcept { return data_; }
+    const std::uint8_t *Data() const noexcept { return data_; }
     std::size_t Size() const noexcept { return size_; }
     bool Empty() const noexcept { return size_ == 0; }
 
-private:
-    const std::uint8_t* data_ = nullptr;
+  private:
+    const std::uint8_t *data_ = nullptr;
     std::size_t size_ = 0;
 };
 
@@ -91,11 +91,11 @@ using WritableCallback = std::function<void()>;
  * @p lease intact so the session can retain it and pause remote reads. Closed
  * rejects the lease.
  */
-using DataCallback = std::function<ReceiveStatus(BufferLease&)>;
+using DataCallback = std::function<ReceiveStatus(BufferLease &)>;
 using ClosedCallback = std::function<void(SessionError)>;
 
 class ITransportSession {
-public:
+  public:
     virtual ~ITransportSession() = default;
 
     /**

@@ -28,7 +28,7 @@ namespace tcpip2 {
  * datagrams to the remote.
  */
 class IDatagramSession {
-public:
+  public:
     virtual ~IDatagramSession() = default;
 
     /**

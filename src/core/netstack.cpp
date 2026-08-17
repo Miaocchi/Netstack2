@@ -18,8 +18,7 @@
 
 namespace tcpip2 {
 
-Netstack2::Netstack2(NetstackConfig config) noexcept
-    : config_(config) {}
+Netstack2::Netstack2(NetstackConfig config) noexcept : config_(config) {}
 
 Netstack2::~Netstack2() {
     StopOptions final_drain;
@@ -27,10 +26,12 @@ Netstack2::~Netstack2() {
     Stop(final_drain);
 }
 
-bool Netstack2::Start(IPacketIo* packet_io) noexcept {
+bool Netstack2::Start(IPacketIo *packet_io) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (started_) return runtime_ ? runtime_->IsRunning() : true;
-    if (!config_.Validate()) return false;
+    if (started_)
+        return runtime_ ? runtime_->IsRunning() : true;
+    if (!config_.Validate())
+        return false;
 
     if (packet_io != nullptr) {
         runtime_ = std::unique_ptr<Runtime>(new Runtime());
@@ -44,11 +45,14 @@ bool Netstack2::Start(IPacketIo* packet_io) noexcept {
     return true;
 }
 
-bool Netstack2::Start(const RuntimeDependencies& deps) noexcept {
+bool Netstack2::Start(const RuntimeDependencies &deps) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (started_) return runtime_ ? runtime_->IsRunning() : true;
-    if (!config_.Validate()) return false;
-    if (!deps.Validate()) return false;
+    if (started_)
+        return runtime_ ? runtime_->IsRunning() : true;
+    if (!config_.Validate())
+        return false;
+    if (!deps.Validate())
+        return false;
 
     runtime_ = std::unique_ptr<Runtime>(new Runtime());
     if (!runtime_->Start(config_, deps)) {
@@ -60,11 +64,9 @@ bool Netstack2::Start(const RuntimeDependencies& deps) noexcept {
     return true;
 }
 
-StopResult Netstack2::Stop() noexcept {
-    return Stop(StopOptions{});
-}
+StopResult Netstack2::Stop() noexcept { return Stop(StopOptions{}); }
 
-StopResult Netstack2::Stop(const StopOptions& options) noexcept {
+StopResult Netstack2::Stop(const StopOptions &options) noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     StopResult result;
     if (runtime_) {
@@ -73,7 +75,8 @@ StopResult Netstack2::Stop(const StopOptions& options) noexcept {
             runtime_.reset();
         }
     }
-    if (result.IsComplete()) started_ = false;
+    if (result.IsComplete())
+        started_ = false;
     return result;
 }
 
@@ -82,7 +85,7 @@ bool Netstack2::IsRunning() const noexcept {
     return runtime_ ? runtime_->IsRunning() : started_;
 }
 
-Runtime* Netstack2::GetRuntime() const noexcept {
+Runtime *Netstack2::GetRuntime() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     return runtime_.get();
 }

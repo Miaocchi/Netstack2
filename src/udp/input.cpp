@@ -5,8 +5,7 @@
 
 namespace tcpip2 {
 
-UdpInputResult ParseIpUdpPacket(const std::uint8_t* packet,
-                                std::size_t length) noexcept {
+UdpInputResult ParseIpUdpPacket(const std::uint8_t *packet, std::size_t length) noexcept {
     UdpInputResult result;
     if (packet == nullptr || length == 0) {
         result.error = UdpInputResult::Error::MalformedIp;
@@ -28,27 +27,22 @@ UdpInputResult ParseIpUdpPacket(const std::uint8_t* packet,
             result.error = UdpInputResult::Error::MalformedIp;
             return result;
         }
-        const IpAddress src = IpAddress::Ipv4(
-            ip.header.src_ip[0], ip.header.src_ip[1],
-            ip.header.src_ip[2], ip.header.src_ip[3]);
-        const IpAddress dst = IpAddress::Ipv4(
-            ip.header.dst_ip[0], ip.header.dst_ip[1],
-            ip.header.dst_ip[2], ip.header.dst_ip[3]);
+        const IpAddress src =
+            IpAddress::Ipv4(ip.header.src_ip[0], ip.header.src_ip[1], ip.header.src_ip[2], ip.header.src_ip[3]);
+        const IpAddress dst =
+            IpAddress::Ipv4(ip.header.dst_ip[0], ip.header.dst_ip[1], ip.header.dst_ip[2], ip.header.dst_ip[3]);
 
         // IPv4: validate checksum only if the UDP checksum field is non-zero.
         // We need to peek at the checksum field (byte offset 6-7 in the UDP
         // header) to decide.
         bool validate_checksum = false;
         if (ip.header.payload_length >= 8 && ip.payload != nullptr) {
-            const std::uint16_t udp_checksum =
-                static_cast<std::uint16_t>(
-                    (static_cast<std::uint16_t>(ip.payload[6]) << 8) |
-                    static_cast<std::uint16_t>(ip.payload[7]));
+            const std::uint16_t udp_checksum = static_cast<std::uint16_t>(
+                (static_cast<std::uint16_t>(ip.payload[6]) << 8) | static_cast<std::uint16_t>(ip.payload[7]));
             validate_checksum = (udp_checksum != 0);
         }
 
-        const UdpParseResult udp = ParseUdpDatagram(
-            src, dst, ip.payload, ip.header.payload_length, validate_checksum);
+        const UdpParseResult udp = ParseUdpDatagram(src, dst, ip.payload, ip.header.payload_length, validate_checksum);
         if (udp.error == UdpParseError::BadChecksum) {
             result.error = UdpInputResult::Error::BadChecksum;
             return result;
@@ -77,8 +71,7 @@ UdpInputResult ParseIpUdpPacket(const std::uint8_t* packet,
         const IpAddress dst = IpAddress::Ipv6(ip.header.dst_ip);
 
         // IPv6: checksum is always mandatory.
-        const UdpParseResult udp = ParseUdpDatagram(
-            src, dst, ip.payload, ip.payload_length, true);
+        const UdpParseResult udp = ParseUdpDatagram(src, dst, ip.payload, ip.payload_length, true);
         if (udp.error == UdpParseError::BadChecksum) {
             result.error = UdpInputResult::Error::BadChecksum;
             return result;

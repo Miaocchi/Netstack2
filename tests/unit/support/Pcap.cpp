@@ -13,12 +13,12 @@ namespace test {
 
 namespace {
 
-void AppendLe16(std::vector<std::uint8_t>& out, std::uint16_t v) {
+void AppendLe16(std::vector<std::uint8_t> &out, std::uint16_t v) {
     out.push_back(static_cast<std::uint8_t>(v & 0xFFu));
     out.push_back(static_cast<std::uint8_t>((v >> 8) & 0xFFu));
 }
 
-void AppendLe32(std::vector<std::uint8_t>& out, std::uint32_t v) {
+void AppendLe32(std::vector<std::uint8_t> &out, std::uint32_t v) {
     out.push_back(static_cast<std::uint8_t>(v & 0xFFu));
     out.push_back(static_cast<std::uint8_t>((v >> 8) & 0xFFu));
     out.push_back(static_cast<std::uint8_t>((v >> 16) & 0xFFu));
@@ -27,7 +27,7 @@ void AppendLe32(std::vector<std::uint8_t>& out, std::uint32_t v) {
 
 } // namespace
 
-void PcapWriter::Append(std::uint64_t ts_usec, const std::vector<std::uint8_t>& packet) {
+void PcapWriter::Append(std::uint64_t ts_usec, const std::vector<std::uint8_t> &packet) {
     if (bytes_.empty()) {
         // pcap global header, little-endian.
         AppendLe32(bytes_, 0xa1b2c3d4u); // magic

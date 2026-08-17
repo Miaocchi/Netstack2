@@ -29,7 +29,7 @@ namespace tcpip2 {
  *     required for SystemClock, but implementations may add their own).
  */
 class IClock {
-public:
+  public:
     virtual ~IClock() = default;
 
     /** Monotonic time in milliseconds. */
@@ -45,7 +45,7 @@ public:
  * This class has no mutable state and is safe to share across threads.
  */
 class SystemClock final : public IClock {
-public:
+  public:
     std::uint64_t NowMs() const noexcept override;
     std::uint64_t NowUs() const noexcept override;
 };
@@ -56,6 +56,6 @@ public:
  * This is the default clock used when RuntimeDependencies::clock is nullptr.
  * The pointer is valid for the lifetime of the process.
  */
-IClock* DefaultClock() noexcept;
+IClock *DefaultClock() noexcept;
 
 } // namespace tcpip2

@@ -39,7 +39,7 @@ using namespace tcpip2;
 // ---------------------------------------------------------------------------
 
 class OpenPppPacketIo final : public IPacketIo {
-public:
+  public:
     struct Config {
         /** Route mark applied to packets egressing the tunnel. */
         std::uint32_t route_mark = 0;
@@ -59,10 +59,10 @@ public:
 
     ~OpenPppPacketIo() override = default;
 
-    OpenPppPacketIo(const OpenPppPacketIo&) = delete;
-    OpenPppPacketIo& operator=(const OpenPppPacketIo&) = delete;
+    OpenPppPacketIo(const OpenPppPacketIo &) = delete;
+    OpenPppPacketIo &operator=(const OpenPppPacketIo &) = delete;
 
-    void SetConfig(const Config& config) noexcept {
+    void SetConfig(const Config &config) noexcept {
         config_ = config;
         caps_.mtu = config.pmtu;
         caps_.queue_count = config.queue_count;
@@ -70,55 +70,46 @@ public:
 
     // IPacketIo overrides
 
-    std::size_t QueueCount() const noexcept override {
-        return config_.queue_count;
-    }
+    std::size_t QueueCount() const noexcept override { return config_.queue_count; }
 
     std::unique_ptr<IPacketQueue> OpenQueue(std::size_t queue_id) override {
-        if (queue_id >= config_.queue_count) return nullptr;
+        if (queue_id >= config_.queue_count)
+            return nullptr;
         return std::make_unique<OpenPppQueue>(queue_id);
     }
 
-    PacketIoCapabilities Capabilities() const noexcept override {
-        return caps_;
-    }
+    PacketIoCapabilities Capabilities() const noexcept override { return caps_; }
 
-private:
+  private:
     class OpenPppQueue final : public IPacketQueue {
-    public:
+      public:
         explicit OpenPppQueue(std::size_t queue_id) noexcept : queue_id_(queue_id) {}
 
         ~OpenPppQueue() override = default;
 
-        std::size_t RecvBatch(BufferLease /*out*/[], std::size_t /*capacity*/,
-                              IoError& error) noexcept override {
+        std::size_t RecvBatch(BufferLease /*out*/[], std::size_t /*capacity*/, IoError &error) noexcept override {
             error = IoError::WouldBlock;
             return 0;
         }
 
-        std::size_t SendBatch(BufferLease /*packets*/[], std::size_t count,
-                              IoError& error) noexcept override {
+        std::size_t SendBatch(BufferLease /*packets*/[], std::size_t count, IoError &error) noexcept override {
             error = IoError::None;
             return count;
         }
 
         std::size_t QueueId() const noexcept override { return queue_id_; }
 
-        void SetBufferPool(PktBufferPool* pool) noexcept override {
-            pool_ = pool;
-        }
+        void SetBufferPool(PktBufferPool *pool) noexcept override { pool_ = pool; }
 
         void StopRx() noexcept override {}
         IoError DrainTx(std::uint64_t) noexcept override { return IoError::None; }
         std::size_t OutstandingTx() const noexcept override { return 0; }
 
-        void SetRecvHandler(std::function<void()> wake) override {
-            wake_ = std::move(wake);
-        }
+        void SetRecvHandler(std::function<void()> wake) override { wake_ = std::move(wake); }
 
-    private:
+      private:
         std::size_t queue_id_;
-        PktBufferPool* pool_ = nullptr;
+        PktBufferPool *pool_ = nullptr;
         std::function<void()> wake_;
     };
 
@@ -131,7 +122,7 @@ private:
 // ---------------------------------------------------------------------------
 
 class OpenPppSessionFactory final : public ISessionFactory {
-public:
+  public:
     struct Config {
         std::uint32_t route_mark = 0;
         std::uint32_t fake_ip_base = 0;
@@ -142,22 +133,21 @@ public:
 
     OpenPppSessionFactory() = default;
 
-    explicit OpenPppSessionFactory(const Config& config) noexcept
-        : config_(config) {}
+    explicit OpenPppSessionFactory(const Config &config) noexcept : config_(config) {}
 
     ~OpenPppSessionFactory() override = default;
 
-    SessionOpenResult OpenTcp(const TcpOpenRequest& /*request*/) override {
+    SessionOpenResult OpenTcp(const TcpOpenRequest & /*request*/) override {
         // Stub: real adapter creates a transport session here.
         return SessionOpenResult{};
     }
 
-    DatagramOpenResult OpenUdp(const UdpOpenRequest& /*request*/) override {
+    DatagramOpenResult OpenUdp(const UdpOpenRequest & /*request*/) override {
         // Stub: real adapter creates a datagram channel here.
         return DatagramOpenResult{};
     }
 
-private:
+  private:
     Config config_;
 };
 
@@ -169,8 +159,8 @@ TCPIP2_TEST(OpenPppAdapterCompiles) {
     // Configure the packet I/O backend with route/fake-IP/DNS/QUIC/PMTU metadata.
     OpenPppPacketIo::Config io_config;
     io_config.route_mark = 100;
-    io_config.fake_ip_base = 0x0A000000;  // 10.0.0.0
-    io_config.dns_servers.push_back(0x08080808);  // 8.8.8.8
+    io_config.fake_ip_base = 0x0A000000;         // 10.0.0.0
+    io_config.dns_servers.push_back(0x08080808); // 8.8.8.8
     io_config.quic_policy = 1;
     io_config.pmtu = 1400;
     io_config.queue_count = 2;
@@ -187,7 +177,7 @@ TCPIP2_TEST(OpenPppAdapterCompiles) {
     // Open queues and verify basic wiring.
     auto q0 = io.OpenQueue(0);
     auto q1 = io.OpenQueue(1);
-    auto q2 = io.OpenQueue(2);  // out of range
+    auto q2 = io.OpenQueue(2); // out of range
     TCPIP2_EXPECT_TRUE(q0 != nullptr);
     TCPIP2_EXPECT_TRUE(q1 != nullptr);
     TCPIP2_EXPECT_TRUE(q2 == nullptr);

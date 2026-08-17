@@ -3,25 +3,21 @@
 namespace tcpip2 {
 namespace {
 
-std::uint16_t Read16(const std::uint8_t* data) noexcept {
-    return static_cast<std::uint16_t>(
-        (static_cast<std::uint16_t>(data[0]) << 8) |
-        static_cast<std::uint16_t>(data[1]));
+std::uint16_t Read16(const std::uint8_t *data) noexcept {
+    return static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[0]) << 8) | static_cast<std::uint16_t>(data[1]));
 }
 
-std::uint32_t Read32(const std::uint8_t* data) noexcept {
-    return (static_cast<std::uint32_t>(data[0]) << 24) |
-           (static_cast<std::uint32_t>(data[1]) << 16) |
-           (static_cast<std::uint32_t>(data[2]) << 8) |
-           static_cast<std::uint32_t>(data[3]);
+std::uint32_t Read32(const std::uint8_t *data) noexcept {
+    return (static_cast<std::uint32_t>(data[0]) << 24) | (static_cast<std::uint32_t>(data[1]) << 16) |
+           (static_cast<std::uint32_t>(data[2]) << 8) | static_cast<std::uint32_t>(data[3]);
 }
 
 } // namespace
 
-TcpOptionParseResult ParseTcpSynOptions(const std::uint8_t* data,
-                                        std::size_t length) noexcept {
+TcpOptionParseResult ParseTcpSynOptions(const std::uint8_t *data, std::size_t length) noexcept {
     TcpOptionParseResult result;
-    if (length == 0) return result;
+    if (length == 0)
+        return result;
     if (data == nullptr) {
         result.error = TcpOptionError::NullData;
         return result;
@@ -34,7 +30,8 @@ TcpOptionParseResult ParseTcpSynOptions(const std::uint8_t* data,
     std::size_t offset = 0;
     while (offset < length) {
         const std::uint8_t kind = data[offset];
-        if (kind == 0) break;
+        if (kind == 0)
+            break;
         if (kind == 1) {
             ++offset;
             continue;
@@ -81,8 +78,7 @@ TcpOptionParseResult ParseTcpSynOptions(const std::uint8_t* data,
                 return result;
             }
             result.options.window_scale_present = true;
-            result.options.window_scale = data[offset + 2] > 14
-                ? std::uint8_t{14} : data[offset + 2];
+            result.options.window_scale = data[offset + 2] > 14 ? std::uint8_t{14} : data[offset + 2];
             break;
         case 4:
             if (option_length != 2) {
@@ -117,28 +113,32 @@ TcpOptionParseResult ParseTcpSynOptions(const std::uint8_t* data,
     return result;
 }
 
-TcpSackBlockList ParseTcpSackBlocks(const std::uint8_t* data,
-                                     std::size_t length) noexcept {
+TcpSackBlockList ParseTcpSackBlocks(const std::uint8_t *data, std::size_t length) noexcept {
     TcpSackBlockList result;
-    if (length == 0 || data == nullptr) return result;
+    if (length == 0 || data == nullptr)
+        return result;
 
     std::size_t offset = 0;
     while (offset < length) {
         const std::uint8_t kind = data[offset];
-        if (kind == 0) break;
+        if (kind == 0)
+            break;
         if (kind == 1) {
             ++offset;
             continue;
         }
-        if (length - offset < 2) break;
+        if (length - offset < 2)
+            break;
         const std::size_t option_length = data[offset + 1];
-        if (option_length < 2 || option_length > length - offset) break;
+        if (option_length < 2 || option_length > length - offset)
+            break;
 
         if (kind == 5) {
-            if (option_length < 2 || (option_length - 2) % 8 != 0) break;
+            if (option_length < 2 || (option_length - 2) % 8 != 0)
+                break;
             const std::size_t num_blocks = (option_length - 2) / 8;
             for (std::size_t i = 0; i < num_blocks && result.count < 4; ++i) {
-                const std::uint8_t* block_data = data + offset + 2 + i * 8;
+                const std::uint8_t *block_data = data + offset + 2 + i * 8;
                 TcpSackBlock block;
                 block.left_edge = Read32(block_data);
                 block.right_edge = Read32(block_data + 4);

@@ -31,22 +31,22 @@ TCPIP2_TEST(ChecksumSelfVerifying) {
     // Build a simple 20-byte IPv4-like header with a valid checksum.
     // First compute checksum, place it, then verify it reads as 0.
     std::uint8_t hdr[20] = {};
-    hdr[0] = 0x45;  // version 4, IHL 5
+    hdr[0] = 0x45; // version 4, IHL 5
     hdr[1] = 0x00;
-    hdr[2] = 0x00;  // total length = 20
+    hdr[2] = 0x00; // total length = 20
     hdr[3] = 0x14;
-    hdr[4] = 0x00;  // identification
+    hdr[4] = 0x00; // identification
     hdr[5] = 0x01;
-    hdr[6] = 0x00;  // flags/frag
+    hdr[6] = 0x00; // flags/frag
     hdr[7] = 0x00;
-    hdr[8] = 0x40;  // TTL = 64
-    hdr[9] = 0x06;  // protocol = TCP
+    hdr[8] = 0x40; // TTL = 64
+    hdr[9] = 0x06; // protocol = TCP
     // checksum at [10..11] = 0 for now
-    hdr[12] = 0x0A;  // src 10.0.0.1
+    hdr[12] = 0x0A; // src 10.0.0.1
     hdr[13] = 0x00;
     hdr[14] = 0x00;
     hdr[15] = 0x01;
-    hdr[16] = 0x0A;  // dst 10.0.0.2
+    hdr[16] = 0x0A; // dst 10.0.0.2
     hdr[17] = 0x00;
     hdr[18] = 0x00;
     hdr[19] = 0x02;
@@ -103,10 +103,10 @@ TCPIP2_TEST(Ipv4PseudoHeaderChecksumVerifies) {
 
     // Minimal TCP SYN: 20 bytes, src_port=1234, dst_port=80
     std::uint8_t tcp[20] = {};
-    tcp[0] = 0x04;  // src port high
-    tcp[1] = 0xD2;  // src port low (1234)
-    tcp[2] = 0x00;  // dst port high
-    tcp[3] = 0x50;  // dst port low (80)
+    tcp[0] = 0x04; // src port high
+    tcp[1] = 0xD2; // src port low (1234)
+    tcp[2] = 0x00; // dst port high
+    tcp[3] = 0x50; // dst port low (80)
     // seq = 0
     // ack = 0
     tcp[12] = 0x50; // data offset 5
@@ -151,9 +151,9 @@ TCPIP2_TEST(Ipv6PseudoHeaderSeedKnownValue) {
 TCPIP2_TEST(Ipv6PseudoHeaderChecksumVerifies) {
     // Build a minimal TCP segment and verify checksum using IPv6 pseudo-header.
     std::uint8_t tcp[20] = {};
-    tcp[0] = 0x04;  // src port 1234
+    tcp[0] = 0x04; // src port 1234
     tcp[1] = 0xD2;
-    tcp[2] = 0x00;  // dst port 80
+    tcp[2] = 0x00; // dst port 80
     tcp[3] = 0x50;
     tcp[12] = 0x50; // data offset 5
     tcp[13] = 0x02; // SYN

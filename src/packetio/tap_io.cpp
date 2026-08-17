@@ -45,11 +45,10 @@ namespace tcpip2 {
 namespace {
 
 class TapQueue final : public IPacketQueue {
-public:
-    TapQueue(int fd, std::size_t queue_id) noexcept
-        : fd_(fd), queue_id_(queue_id) {}
+  public:
+    TapQueue(int fd, std::size_t queue_id) noexcept : fd_(fd), queue_id_(queue_id) {}
 
-    std::size_t RecvBatch(BufferLease out[], std::size_t capacity, IoError& error) noexcept override {
+    std::size_t RecvBatch(BufferLease out[], std::size_t capacity, IoError &error) noexcept override {
         if (capacity == 0) {
             error = IoError::None;
             return 0;
@@ -71,9 +70,11 @@ public:
             ssize_t n = 0;
             for (;;) {
                 n = ::read(fd_, lease.Data(), lease.Capacity());
-                if (n >= 0) break;
+                if (n >= 0)
+                    break;
                 if (errno == EINTR) {
-                    if (++retries > 3) break;
+                    if (++retries > 3)
+                        break;
                     continue;
                 }
                 break;
@@ -94,7 +95,7 @@ public:
         return taken;
     }
 
-    std::size_t SendBatch(BufferLease packets[], std::size_t count, IoError& error) noexcept override {
+    std::size_t SendBatch(BufferLease packets[], std::size_t count, IoError &error) noexcept override {
         if (count == 0) {
             error = IoError::None;
             return 0;
@@ -118,9 +119,11 @@ public:
             ssize_t n = 0;
             for (;;) {
                 n = ::write(fd_, packets[i].Data(), size);
-                if (n >= 0) break;
+                if (n >= 0)
+                    break;
                 if (errno == EINTR) {
-                    if (++retries > 3) break;
+                    if (++retries > 3)
+                        break;
                     continue;
                 }
                 break;
@@ -149,18 +152,14 @@ public:
 
     std::size_t QueueId() const noexcept override { return queue_id_; }
 
-    void SetBufferPool(PktBufferPool* pool) noexcept override {
-        pool_ = pool;
-    }
+    void SetBufferPool(PktBufferPool *pool) noexcept override { pool_ = pool; }
 
     void StopRx() noexcept override {
         recv_handler_ = nullptr;
         rx_stopped_.store(true, std::memory_order_release);
     }
 
-    IoError DrainTx(std::uint64_t /*deadline_ms*/) noexcept override {
-        return IoError::None;
-    }
+    IoError DrainTx(std::uint64_t /*deadline_ms*/) noexcept override { return IoError::None; }
 
     std::size_t OutstandingTx() const noexcept override { return 0; }
 
@@ -171,17 +170,17 @@ public:
         recv_handler_ = std::move(wake);
     }
 
-private:
+  private:
     int fd_;
     std::size_t queue_id_;
-    PktBufferPool* pool_ = nullptr;
+    PktBufferPool *pool_ = nullptr;
     std::function<void()> recv_handler_;
     std::atomic<bool> rx_stopped_{false};
 };
 
 } // namespace
 
-int TapPacketIo::OpenOneQueue(std::size_t /*queue_id*/, const Config& config) noexcept {
+int TapPacketIo::OpenOneQueue(std::size_t /*queue_id*/, const Config &config) noexcept {
     const int fd = ::open("/dev/net/tun", O_RDWR | O_CLOEXEC);
     if (fd < 0) {
         return -1;
@@ -224,7 +223,7 @@ int TapPacketIo::OpenOneQueue(std::size_t /*queue_id*/, const Config& config) no
     return fd;
 }
 
-bool TapPacketIo::Open(const Config& config) noexcept {
+bool TapPacketIo::Open(const Config &config) noexcept {
     if (opened_) {
         return false;
     }
@@ -267,9 +266,7 @@ std::unique_ptr<IPacketQueue> TapPacketIo::OpenQueue(std::size_t queue_id) {
     return std::unique_ptr<IPacketQueue>(new TapQueue(fds_[queue_id], queue_id));
 }
 
-bool TapPacketIo::IsOpen() const noexcept {
-    return opened_;
-}
+bool TapPacketIo::IsOpen() const noexcept { return opened_; }
 
 void TapPacketIo::Close() noexcept {
     if (!opened_) {
@@ -282,8 +279,6 @@ void TapPacketIo::Close() noexcept {
     opened_ = false;
 }
 
-TapPacketIo::~TapPacketIo() {
-    Close();
-}
+TapPacketIo::~TapPacketIo() { Close(); }
 
 } // namespace tcpip2

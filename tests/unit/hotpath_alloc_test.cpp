@@ -35,55 +35,57 @@
 namespace {
 std::atomic<std::size_t> g_allocation_count{0};
 
-std::size_t AllocCount() noexcept {
-    return g_allocation_count.load(std::memory_order_relaxed);
-}
+std::size_t AllocCount() noexcept { return g_allocation_count.load(std::memory_order_relaxed); }
 } // namespace
 
-void* operator new(std::size_t size) {
+void *operator new(std::size_t size) {
     g_allocation_count.fetch_add(1, std::memory_order_relaxed);
-    if (void* p = std::malloc(size)) return p;
+    if (void *p = std::malloc(size))
+        return p;
     throw std::bad_alloc();
 }
-void* operator new[](std::size_t size) {
+void *operator new[](std::size_t size) {
     g_allocation_count.fetch_add(1, std::memory_order_relaxed);
-    if (void* p = std::malloc(size)) return p;
+    if (void *p = std::malloc(size))
+        return p;
     throw std::bad_alloc();
 }
-void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+void *operator new(std::size_t size, const std::nothrow_t &) noexcept {
     g_allocation_count.fetch_add(1, std::memory_order_relaxed);
     return std::malloc(size);
 }
-void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+void *operator new[](std::size_t size, const std::nothrow_t &) noexcept {
     g_allocation_count.fetch_add(1, std::memory_order_relaxed);
     return std::malloc(size);
 }
-void* operator new(std::size_t size, std::align_val_t align) {
+void *operator new(std::size_t size, std::align_val_t align) {
     g_allocation_count.fetch_add(1, std::memory_order_relaxed);
-    if (void* p = std::aligned_alloc(static_cast<std::size_t>(align), size)) return p;
+    if (void *p = std::aligned_alloc(static_cast<std::size_t>(align), size))
+        return p;
     throw std::bad_alloc();
 }
-void* operator new[](std::size_t size, std::align_val_t align) {
+void *operator new[](std::size_t size, std::align_val_t align) {
     g_allocation_count.fetch_add(1, std::memory_order_relaxed);
-    if (void* p = std::aligned_alloc(static_cast<std::size_t>(align), size)) return p;
+    if (void *p = std::aligned_alloc(static_cast<std::size_t>(align), size))
+        return p;
     throw std::bad_alloc();
 }
-void* operator new(std::size_t size, std::align_val_t align, const std::nothrow_t&) noexcept {
+void *operator new(std::size_t size, std::align_val_t align, const std::nothrow_t &) noexcept {
     g_allocation_count.fetch_add(1, std::memory_order_relaxed);
     return std::aligned_alloc(static_cast<std::size_t>(align), size);
 }
-void* operator new[](std::size_t size, std::align_val_t align, const std::nothrow_t&) noexcept {
+void *operator new[](std::size_t size, std::align_val_t align, const std::nothrow_t &) noexcept {
     g_allocation_count.fetch_add(1, std::memory_order_relaxed);
     return std::aligned_alloc(static_cast<std::size_t>(align), size);
 }
-void operator delete(void* p) noexcept { std::free(p); }
-void operator delete[](void* p) noexcept { std::free(p); }
-void operator delete(void* p, std::size_t) noexcept { std::free(p); }
-void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
-void operator delete(void* p, std::align_val_t) noexcept { std::free(p); }
-void operator delete[](void* p, std::align_val_t) noexcept { std::free(p); }
-void operator delete(void* p, std::size_t, std::align_val_t) noexcept { std::free(p); }
-void operator delete[](void* p, std::size_t, std::align_val_t) noexcept { std::free(p); }
+void operator delete(void *p) noexcept { std::free(p); }
+void operator delete[](void *p) noexcept { std::free(p); }
+void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void *p, std::size_t) noexcept { std::free(p); }
+void operator delete(void *p, std::align_val_t) noexcept { std::free(p); }
+void operator delete[](void *p, std::align_val_t) noexcept { std::free(p); }
+void operator delete(void *p, std::size_t, std::align_val_t) noexcept { std::free(p); }
+void operator delete[](void *p, std::size_t, std::align_val_t) noexcept { std::free(p); }
 
 // ---------------------------------------------------------------------------
 // Test fixture.
@@ -97,9 +99,8 @@ using namespace tcpip2;
 /// measured loop (the pool only reuses slots once warm). Capacity must exceed
 /// the peak number of leases held in the scheduler at once.
 class LeaseRing {
-public:
-    explicit LeaseRing(std::size_t capacity = 1024)
-        : pool_(capacity, 2048) {
+  public:
+    explicit LeaseRing(std::size_t capacity = 1024) : pool_(capacity, 2048) {
         free_.reserve(capacity);
         for (std::size_t i = 0; i < capacity; ++i) {
             BufferLease lease = pool_.Allocate();
@@ -115,9 +116,9 @@ public:
         return lease;
     }
 
-    void Give(BufferLease&& lease) noexcept { free_.push_back(std::move(lease)); }
+    void Give(BufferLease &&lease) noexcept { free_.push_back(std::move(lease)); }
 
-private:
+  private:
     PktBufferPool pool_;
     std::vector<BufferLease> free_;
 };
@@ -132,7 +133,7 @@ TCPIP2_TEST(FqCoDelSteadyStateHotPathNoHeapAllocation) {
     config.quantum = 128;
     config.target_ms = 100000;
     config.interval_ms = 100000;
-    LeaseRing leases;  // pool must outlive the scheduler (held leases)
+    LeaseRing leases; // pool must outlive the scheduler (held leases)
     FqCoDelScheduler sched(config);
 
     // Warm up a single flow to a depth below the ring's next power-of-two
@@ -156,7 +157,8 @@ TCPIP2_TEST(FqCoDelSteadyStateHotPathNoHeapAllocation) {
         TCPIP2_EXPECT_TRUE(sched.Enqueue(leases.Take(), kFlow, now));
         auto pkt = sched.Dequeue(now + 1);
         TCPIP2_EXPECT_TRUE(pkt.has_value());
-        if (pkt) leases.Give(std::move(pkt->lease));
+        if (pkt)
+            leases.Give(std::move(pkt->lease));
         now += 2;
     }
     TCPIP2_EXPECT_EQ(AllocCount() - before, std::size_t{0});
@@ -167,7 +169,7 @@ TCPIP2_TEST(FlowReactivationReusesCapacity) {
     config.quantum = 128;
     config.target_ms = 100000;
     config.interval_ms = 100000;
-    LeaseRing leases;  // pool must outlive the scheduler (held leases)
+    LeaseRing leases; // pool must outlive the scheduler (held leases)
     FqCoDelScheduler sched(config);
 
     // Warm a single flow to depth 100 (capacity 128).
@@ -180,7 +182,8 @@ TCPIP2_TEST(FlowReactivationReusesCapacity) {
     for (std::uint32_t d = 0; d < kWarmDepth; ++d) {
         auto pkt = sched.Dequeue(1);
         TCPIP2_EXPECT_TRUE(pkt.has_value());
-        if (pkt) leases.Give(std::move(pkt->lease));
+        if (pkt)
+            leases.Give(std::move(pkt->lease));
     }
     TCPIP2_EXPECT_TRUE(sched.Empty());
 

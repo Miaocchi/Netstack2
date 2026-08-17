@@ -21,9 +21,9 @@ namespace tcpip2 {
 
 enum class UdpOutputError {
     None,
-    InvalidFlow,       ///< mismatched or non-UDP flow, null output.
-    BufferTooSmall,    ///< capacity < IPv4/IPv6 header + UDP header + payload.
-    PayloadTooLarge,   ///< payload would overflow the UDP length field.
+    InvalidFlow,     ///< mismatched or non-UDP flow, null output.
+    BufferTooSmall,  ///< capacity < IPv4/IPv6 header + UDP header + payload.
+    PayloadTooLarge, ///< payload would overflow the UDP length field.
 };
 
 struct UdpOutputResult {
@@ -43,12 +43,8 @@ struct UdpOutputResult {
  * @param ipv4_id      IPv4 identification field (for DF=0 fragment interop).
  * @param hop_limit    IPv4 TTL / IPv6 hop limit.
  */
-UdpOutputResult BuildUdpPacket(const FlowKey& flow,
-                               const std::uint8_t* payload,
-                               std::size_t payload_length,
-                               std::uint8_t* output,
-                               std::size_t capacity,
-                               std::uint16_t ipv4_id = 0,
+UdpOutputResult BuildUdpPacket(const FlowKey &flow, const std::uint8_t *payload, std::size_t payload_length,
+                               std::uint8_t *output, std::size_t capacity, std::uint16_t ipv4_id = 0,
                                std::uint8_t hop_limit = 64) noexcept;
 
 } // namespace tcpip2

@@ -3,7 +3,7 @@
 
 namespace tcpip2 {
 
-Ipv4ParseResult ParseIpv4(const std::uint8_t* data, std::size_t len) noexcept {
+Ipv4ParseResult ParseIpv4(const std::uint8_t *data, std::size_t len) noexcept {
     Ipv4ParseResult result;
 
     // Need at least 20 bytes for the fixed IPv4 header.

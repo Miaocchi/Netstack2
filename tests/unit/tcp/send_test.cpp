@@ -15,20 +15,17 @@ using namespace tcpip2;
 namespace {
 
 /// Helper: create a TcpSendBuffer with small limits suitable for unit tests.
-std::unique_ptr<TcpSendBuffer> MakeSendBuffer(
-    std::uint32_t initial_seq = 1000,
-    std::uint16_t mss = 1460,
-    std::size_t queue_limit = 64 * 1024,
-    std::size_t retransmit_limit = 64 * 1024) {
-    return std::make_unique<TcpSendBuffer>(
-        initial_seq, mss, 0, queue_limit, retransmit_limit,
-        1000,   // initial_rto_ms
-        200,    // min_rto_ms
-        60000,  // max_rto_ms
-        500,    // persist_base_ms
-        60000,  // persist_max_ms
-        3,      // max_retransmissions (small for test)
-        3);     // max_persist_probes
+std::unique_ptr<TcpSendBuffer> MakeSendBuffer(std::uint32_t initial_seq = 1000, std::uint16_t mss = 1460,
+                                              std::size_t queue_limit = 64 * 1024,
+                                              std::size_t retransmit_limit = 64 * 1024) {
+    return std::make_unique<TcpSendBuffer>(initial_seq, mss, 0, queue_limit, retransmit_limit,
+                                           1000,  // initial_rto_ms
+                                           200,   // min_rto_ms
+                                           60000, // max_rto_ms
+                                           500,   // persist_base_ms
+                                           60000, // persist_max_ms
+                                           3,     // max_retransmissions (small for test)
+                                           3);    // max_persist_probes
 }
 
 /// Helper: simulate sending a segment by retaining a pool buffer and
@@ -42,32 +39,27 @@ struct SendHelper {
     PktBufferPool pool;
     std::uint64_t now_ms = 100;
 
-    explicit SendHelper(std::size_t slot_count = 8, std::size_t capacity = 2048)
-        : pool(slot_count, capacity) {}
+    explicit SendHelper(std::size_t slot_count = 8, std::size_t capacity = 2048) : pool(slot_count, capacity) {}
 
     /// Send a segment: allocate buffer, copy payload at given offset,
     /// retain, and call OnSent.  The time passed to OnSent is @p now_ms
     /// (defaults to sh.now_ms) so tests can advance the clock between
     /// NextSegment and OnSent without mutating sh.now_ms.
-    void SendSegment(TcpSendBuffer& send, const TcpSendNextResult& seg,
-                     std::size_t payload_offset, std::uint64_t now_ms_override = 0) {
+    void SendSegment(TcpSendBuffer &send, const TcpSendNextResult &seg, std::size_t payload_offset,
+                     std::uint64_t now_ms_override = 0) {
         TCPIP2_EXPECT_TRUE(seg.has_segment);
         BufferLease lease = pool.Allocate();
         TCPIP2_EXPECT_TRUE(static_cast<bool>(lease));
         if (seg.payload_length > 0) {
-            std::memcpy(lease.Data() + payload_offset, seg.payload,
-                        seg.payload_length);
+            std::memcpy(lease.Data() + payload_offset, seg.payload, seg.payload_length);
         }
         lease.Resize(payload_offset + seg.payload_length);
         BufferRef ref = pool.Retain(std::move(lease));
-        send.OnSent(std::move(ref), payload_offset,
-                    now_ms_override != 0 ? now_ms_override : now_ms);
+        send.OnSent(std::move(ref), payload_offset, now_ms_override != 0 ? now_ms_override : now_ms);
     }
 
     /// Send a segment with payload at offset 20 (simulating IP+TCP headers).
-    void SendSegment(TcpSendBuffer& send, const TcpSendNextResult& seg) {
-        SendSegment(send, seg, 20, 0);
-    }
+    void SendSegment(TcpSendBuffer &send, const TcpSendNextResult &seg) { SendSegment(send, seg, 20, 0); }
 };
 
 /// Helper scope: declare sh before send so destruction order is correct.
@@ -77,12 +69,9 @@ struct SendScope {
     SendHelper sh;
     std::unique_ptr<TcpSendBuffer> send;
 
-    explicit SendScope(std::uint32_t initial_seq = 1000,
-                       std::uint16_t mss = 1460,
-                       std::size_t queue_limit = 64 * 1024,
+    explicit SendScope(std::uint32_t initial_seq = 1000, std::uint16_t mss = 1460, std::size_t queue_limit = 64 * 1024,
                        std::size_t retransmit_limit = 64 * 1024)
-        : sh(),
-          send(MakeSendBuffer(initial_seq, mss, queue_limit, retransmit_limit)) {}
+        : sh(), send(MakeSendBuffer(initial_seq, mss, queue_limit, retransmit_limit)) {}
 };
 
 } // namespace
@@ -127,7 +116,7 @@ TCPIP2_TEST(SendEnqueueAndBasicCycle) {
     TCPIP2_EXPECT_EQ(send->RetransmitQueueSize(), std::size_t{0});
     TCPIP2_EXPECT_TRUE(send->AllAcked());
 
-    send.reset();  // Destroy send before pool goes out of scope.
+    send.reset(); // Destroy send before pool goes out of scope.
 }
 
 // ---------------------------------------------------------------------------
@@ -374,7 +363,7 @@ TCPIP2_TEST(SendFinPiggybackOnData) {
     sh.SendSegment(*send, seg);
 
     TCPIP2_EXPECT_TRUE(send->FinSent());
-    TCPIP2_EXPECT_EQ(send->SndNxt(), std::uint32_t{6006});  // 5 data + 1 FIN
+    TCPIP2_EXPECT_EQ(send->SndNxt(), std::uint32_t{6006}); // 5 data + 1 FIN
 
     send.reset();
 }
@@ -432,7 +421,7 @@ TCPIP2_TEST(SendCongestionControlSlowStart) {
 
     // ACK it — slow start should increase cwnd by MSS.
     send->OnAck(10100, 65535, sh.now_ms + 10);
-    TCPIP2_EXPECT_EQ(send->CongestionWindow(), std::uint32_t{300});  // 200 + 100
+    TCPIP2_EXPECT_EQ(send->CongestionWindow(), std::uint32_t{300}); // 200 + 100
 
     send.reset();
 }
@@ -1484,8 +1473,8 @@ TCPIP2_TEST(SackClearedOnPartialAck) {
 
 TCPIP2_TEST(PacingAimdHasNoPacingGate) {
     SendScope s;
-    auto& send = *s.send;
-    auto& sh = s.sh;
+    auto &send = *s.send;
+    auto &sh = s.sh;
 
     // AIMD pacing_rate is always 0 → no pacing gate.
     std::vector<std::uint8_t> data(5000, 0xAB);
@@ -1499,12 +1488,10 @@ TCPIP2_TEST(PacingAimdHasNoPacingGate) {
 TCPIP2_TEST(PacingBbrDelaysSecondSegment) {
     SendScope s(1000, 1000, 64 * 1024, 64 * 1024);
     // Override with BBR controller.
-    s.send = std::make_unique<TcpSendBuffer>(
-        1000, 1000, 0, 64 * 1024, 64 * 1024,
-        1000, 200, 60000, 500, 60000, 3, 3,
-        CongestionAlgorithm::Bbr);
-    auto& send = *s.send;
-    auto& sh = s.sh;
+    s.send = std::make_unique<TcpSendBuffer>(1000, 1000, 0, 64 * 1024, 64 * 1024, 1000, 200, 60000, 500, 60000, 3, 3,
+                                             CongestionAlgorithm::Bbr);
+    auto &send = *s.send;
+    auto &sh = s.sh;
 
     // Manually inject BtlBw and RTprop into the BBR controller by simulating
     // ACKs.  First, send data and ACK it to give BBR measurements.
@@ -1537,12 +1524,10 @@ TCPIP2_TEST(PacingBbrDelaysSecondSegment) {
 
 TCPIP2_TEST(PacingDoesNotBlockRetransmission) {
     SendScope s(1000, 1000, 64 * 1024, 64 * 1024);
-    s.send = std::make_unique<TcpSendBuffer>(
-        1000, 1000, 0, 64 * 1024, 64 * 1024,
-        1000, 200, 60000, 500, 60000, 3, 3,
-        CongestionAlgorithm::Bbr);
-    auto& send = *s.send;
-    auto& sh = s.sh;
+    s.send = std::make_unique<TcpSendBuffer>(1000, 1000, 0, 64 * 1024, 64 * 1024, 1000, 200, 60000, 500, 60000, 3, 3,
+                                             CongestionAlgorithm::Bbr);
+    auto &send = *s.send;
+    auto &sh = s.sh;
 
     // Establish BtlBw by sending and ACKing one segment.
     std::vector<std::uint8_t> data(2000, 0xAB);
@@ -1573,12 +1558,10 @@ TCPIP2_TEST(PacingDoesNotBlockRetransmission) {
 
 TCPIP2_TEST(PacingDoesNotBlockZeroWindowProbe) {
     SendScope s(1000, 1000, 64 * 1024, 64 * 1024);
-    s.send = std::make_unique<TcpSendBuffer>(
-        1000, 1000, 0, 64 * 1024, 64 * 1024,
-        1000, 200, 60000, 500, 60000, 3, 3,
-        CongestionAlgorithm::Bbr);
-    auto& send = *s.send;
-    auto& sh = s.sh;
+    s.send = std::make_unique<TcpSendBuffer>(1000, 1000, 0, 64 * 1024, 64 * 1024, 1000, 200, 60000, 500, 60000, 3, 3,
+                                             CongestionAlgorithm::Bbr);
+    auto &send = *s.send;
+    auto &sh = s.sh;
 
     // Establish BtlBw.
     std::vector<std::uint8_t> data(2000, 0xAB);
@@ -1603,12 +1586,10 @@ TCPIP2_TEST(PacingDoesNotBlockZeroWindowProbe) {
 
 TCPIP2_TEST(PacingGateExpiresAfterDeadline) {
     SendScope s(1000, 1000, 64 * 1024, 64 * 1024);
-    s.send = std::make_unique<TcpSendBuffer>(
-        1000, 1000, 0, 64 * 1024, 64 * 1024,
-        1000, 200, 60000, 500, 60000, 3, 3,
-        CongestionAlgorithm::Bbr);
-    auto& send = *s.send;
-    auto& sh = s.sh;
+    s.send = std::make_unique<TcpSendBuffer>(1000, 1000, 0, 64 * 1024, 64 * 1024, 1000, 200, 60000, 500, 60000, 3, 3,
+                                             CongestionAlgorithm::Bbr);
+    auto &send = *s.send;
+    auto &sh = s.sh;
 
     // Establish BtlBw.
     std::vector<std::uint8_t> data(2000, 0xAB);
@@ -1642,12 +1623,10 @@ TCPIP2_TEST(PacingGateExpiresAfterDeadline) {
 
 TCPIP2_TEST(PacingResetOnClose) {
     SendScope s(1000, 1000, 64 * 1024, 64 * 1024);
-    s.send = std::make_unique<TcpSendBuffer>(
-        1000, 1000, 0, 64 * 1024, 64 * 1024,
-        1000, 200, 60000, 500, 60000, 3, 3,
-        CongestionAlgorithm::Bbr);
-    auto& send = *s.send;
-    auto& sh = s.sh;
+    s.send = std::make_unique<TcpSendBuffer>(1000, 1000, 0, 64 * 1024, 64 * 1024, 1000, 200, 60000, 500, 60000, 3, 3,
+                                             CongestionAlgorithm::Bbr);
+    auto &send = *s.send;
+    auto &sh = s.sh;
 
     // Establish BtlBw and arm pacing gate.
     std::vector<std::uint8_t> data(2000, 0xAB);
@@ -1666,7 +1645,8 @@ TCPIP2_TEST(PacingResetOnClose) {
     for (int i = 0; i < 3 && !send.IsClosed(); ++i) {
         sh.now_ms = send.RetransmitDeadline() + 1;
         auto rt = send.NextSegment(65535, sh.now_ms);
-        if (rt.has_segment) sh.SendSegment(send, rt);
+        if (rt.has_segment)
+            sh.SendSegment(send, rt);
     }
     TCPIP2_EXPECT_TRUE(send.IsClosed());
     TCPIP2_EXPECT_EQ(send.PacingDeadline(), std::uint64_t{0});
@@ -1688,13 +1668,11 @@ TCPIP2_TEST(EcnEceAckReducesCwndAndQueuesCwr) {
     TcpSendNextResult seg = send->NextSegment(65535, sh.now_ms);
     TCPIP2_EXPECT_TRUE(seg.has_segment);
     sh.SendSegment(*send, seg);
-    send->OnAck(seg.sequence + static_cast<std::uint32_t>(seg.payload_length),
-                65535, sh.now_ms + 10, true, false);
+    send->OnAck(seg.sequence + static_cast<std::uint32_t>(seg.payload_length), 65535, sh.now_ms + 10, true, false);
     seg = send->NextSegment(65535, sh.now_ms + 10);
     sh.SendSegment(*send, seg);
-    const auto ack = send->OnAck(
-        seg.sequence + static_cast<std::uint32_t>(seg.payload_length),
-        65535, sh.now_ms + 20, true, false);
+    const auto ack =
+        send->OnAck(seg.sequence + static_cast<std::uint32_t>(seg.payload_length), 65535, sh.now_ms + 20, true, false);
     TCPIP2_EXPECT_TRUE(ack.newly_acked > 0);
     // cwnd grew in slow start to 4*MSS = 5840.
     TCPIP2_EXPECT_EQ(std::uint32_t{5840}, send->CongestionWindow());
@@ -1705,13 +1683,13 @@ TCPIP2_TEST(EcnEceAckReducesCwndAndQueuesCwr) {
     TcpSendNextResult in_flight = send->NextSegment(65535, sh.now_ms + 20);
     TCPIP2_EXPECT_TRUE(in_flight.has_segment);
     sh.SendSegment(*send, in_flight);
-    send->OnAck(in_flight.sequence + static_cast<std::uint32_t>(in_flight.payload_length),
-                65535, sh.now_ms + 30, true, true);
+    send->OnAck(in_flight.sequence + static_cast<std::uint32_t>(in_flight.payload_length), 65535, sh.now_ms + 30, true,
+                true);
     TCPIP2_EXPECT_EQ(std::uint32_t{3650}, send->CongestionWindow());
 
     // A further ECE ACK (duplicate) before CWR is sent must not reduce again.
-    send->OnAck(in_flight.sequence + static_cast<std::uint32_t>(in_flight.payload_length),
-                65535, sh.now_ms + 40, true, true);
+    send->OnAck(in_flight.sequence + static_cast<std::uint32_t>(in_flight.payload_length), 65535, sh.now_ms + 40, true,
+                true);
     TCPIP2_EXPECT_EQ(std::uint32_t{3650}, send->CongestionWindow());
 
     // The next segment carries the CWR acknowledgement.
@@ -1730,8 +1708,7 @@ TCPIP2_TEST(EcnAckWithoutEceNeverQueuesCwr) {
 
     TcpSendNextResult seg = send->NextSegment(65535, sh.now_ms);
     sh.SendSegment(*send, seg);
-    send->OnAck(seg.sequence + static_cast<std::uint32_t>(seg.payload_length),
-                65535, sh.now_ms + 10, true, false);
+    send->OnAck(seg.sequence + static_cast<std::uint32_t>(seg.payload_length), 65535, sh.now_ms + 10, true, false);
 
     TcpSendNextResult seg2 = send->NextSegment(65535, sh.now_ms + 10);
     TCPIP2_EXPECT_TRUE(seg2.has_segment);

@@ -18,7 +18,7 @@ namespace tcpip2 {
 struct UdpInputResult {
     enum class Error {
         None,
-        NotUdp,             // protocol is not UDP
+        NotUdp, // protocol is not UDP
         MalformedIp,
         MalformedUdp,
         BadChecksum,
@@ -28,6 +28,6 @@ struct UdpInputResult {
 };
 
 /// Parse an IP packet (raw bytes) as a UDP datagram.
-UdpInputResult ParseIpUdpPacket(const std::uint8_t* packet, std::size_t length) noexcept;
+UdpInputResult ParseIpUdpPacket(const std::uint8_t *packet, std::size_t length) noexcept;
 
 } // namespace tcpip2

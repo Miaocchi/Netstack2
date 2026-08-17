@@ -9,23 +9,18 @@
 namespace tcpip2 {
 namespace {
 
-void Write16(std::uint8_t* output, std::uint16_t value) noexcept {
+void Write16(std::uint8_t *output, std::uint16_t value) noexcept {
     output[0] = static_cast<std::uint8_t>(value >> 8);
     output[1] = static_cast<std::uint8_t>(value & 0xffu);
 }
 
 } // namespace
 
-UdpOutputResult BuildUdpPacket(const FlowKey& flow,
-                               const std::uint8_t* payload,
-                               std::size_t payload_length,
-                               std::uint8_t* output,
-                               std::size_t capacity,
-                               std::uint16_t ipv4_id,
+UdpOutputResult BuildUdpPacket(const FlowKey &flow, const std::uint8_t *payload, std::size_t payload_length,
+                               std::uint8_t *output, std::size_t capacity, std::uint16_t ipv4_id,
                                std::uint8_t hop_limit) noexcept {
     UdpOutputResult result;
-    if (output == nullptr || flow.protocol != 17 ||
-        flow.source.family() != flow.destination.family()) {
+    if (output == nullptr || flow.protocol != 17 || flow.source.family() != flow.destination.family()) {
         result.error = UdpOutputError::InvalidFlow;
         return result;
     }
@@ -48,7 +43,7 @@ UdpOutputResult BuildUdpPacket(const FlowKey& flow,
     }
 
     std::memset(output, 0, ip_header_length + 8);
-    std::uint8_t* const udp = output + ip_header_length;
+    std::uint8_t *const udp = output + ip_header_length;
     Write16(udp, flow.source_port);
     Write16(udp + 2, flow.destination_port);
     Write16(udp + 4, static_cast<std::uint16_t>(udp_length));
@@ -59,14 +54,12 @@ UdpOutputResult BuildUdpPacket(const FlowKey& flow,
     // UDP checksum: always computed (mandatory for IPv6). 0 -> 0xFFFF.
     std::uint16_t checksum = 0;
     if (flow.source.IsIpv4()) {
-        const std::uint32_t seed = Ipv4PseudoHeaderSeed(
-            flow.source.Bytes(), flow.destination.Bytes(), 17,
-            static_cast<std::uint16_t>(udp_length));
+        const std::uint32_t seed = Ipv4PseudoHeaderSeed(flow.source.Bytes(), flow.destination.Bytes(), 17,
+                                                        static_cast<std::uint16_t>(udp_length));
         checksum = InternetChecksum(udp, static_cast<std::size_t>(udp_length), seed);
     } else {
-        const std::uint32_t seed = Ipv6PseudoHeaderSeed(
-            flow.source.Bytes(), flow.destination.Bytes(), 17,
-            static_cast<std::uint32_t>(udp_length));
+        const std::uint32_t seed = Ipv6PseudoHeaderSeed(flow.source.Bytes(), flow.destination.Bytes(), 17,
+                                                        static_cast<std::uint32_t>(udp_length));
         checksum = InternetChecksum(udp, static_cast<std::size_t>(udp_length), seed);
     }
     Write16(udp + 6, checksum == 0 ? 0xFFFF : checksum);

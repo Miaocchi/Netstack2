@@ -12,9 +12,8 @@ namespace {
 
 /// Build an IPv6 packet with a fixed 40-byte header, optional extension headers,
 /// and a payload of the given length.
-static std::vector<std::uint8_t> BuildIpv6(std::uint8_t first_nh,
-                                             const std::vector<std::uint8_t>& after_fixed,
-                                             std::size_t payload_len) {
+static std::vector<std::uint8_t> BuildIpv6(std::uint8_t first_nh, const std::vector<std::uint8_t> &after_fixed,
+                                           std::size_t payload_len) {
     std::size_t total = 40 + after_fixed.size() + payload_len;
     std::vector<std::uint8_t> pkt(total, 0);
 
@@ -26,7 +25,7 @@ static std::vector<std::uint8_t> BuildIpv6(std::uint8_t first_nh,
     pkt[4] = static_cast<std::uint8_t>((plen >> 8) & 0xFF);
     pkt[5] = static_cast<std::uint8_t>(plen & 0xFF);
     pkt[6] = first_nh;
-    pkt[7] = 64; // hop limit
+    pkt[7] = 64;    // hop limit
     pkt[23] = 0x01; // src = ::1
     pkt[39] = 0x02; // dst = ::2
 
@@ -39,8 +38,7 @@ static std::vector<std::uint8_t> BuildIpv6(std::uint8_t first_nh,
 
 /// Build a generic extension header (non-Fragment).
 /// Size must be a multiple of 8 and >= 8.
-static std::vector<std::uint8_t> BuildExtHeader(std::uint8_t next_nh,
-                                                  std::size_t size_bytes) {
+static std::vector<std::uint8_t> BuildExtHeader(std::uint8_t next_nh, std::size_t size_bytes) {
     std::vector<std::uint8_t> eh(size_bytes, 0);
     eh[0] = next_nh;
     eh[1] = static_cast<std::uint8_t>((size_bytes / 8) - 1);
@@ -51,13 +49,13 @@ static std::vector<std::uint8_t> BuildExtHeader(std::uint8_t next_nh,
 /// The header is always a multiple of 8 bytes, minimum 8.
 /// @param next_nh    next header value in byte[0]
 /// @param options    raw option bytes placed after the 2-byte prefix
-static std::vector<std::uint8_t> BuildHopByHopWithOptions(
-    std::uint8_t next_nh,
-    const std::vector<std::uint8_t>& options) {
+static std::vector<std::uint8_t> BuildHopByHopWithOptions(std::uint8_t next_nh,
+                                                          const std::vector<std::uint8_t> &options) {
     // Total size must be a multiple of 8 and >= 8.
     std::size_t raw = 2 + options.size();
     std::size_t total = ((raw + 7) / 8) * 8;
-    if (total < 8) total = 8;
+    if (total < 8)
+        total = 8;
     std::vector<std::uint8_t> eh(total, 0);
     eh[0] = next_nh;
     eh[1] = static_cast<std::uint8_t>((total / 8) - 1);
@@ -105,14 +103,13 @@ static std::vector<std::uint8_t> BuildRouterAlert(std::uint16_t value) {
 
 /// Build a Routing extension header with the given routing type and segments left.
 /// The body is padded to a multiple of 8 bytes.
-static std::vector<std::uint8_t> BuildRoutingHeader(
-    std::uint8_t next_nh,
-    std::uint8_t routing_type,
-    std::uint8_t segments_left,
-    const std::vector<std::uint8_t>& type_specific) {
+static std::vector<std::uint8_t> BuildRoutingHeader(std::uint8_t next_nh, std::uint8_t routing_type,
+                                                    std::uint8_t segments_left,
+                                                    const std::vector<std::uint8_t> &type_specific) {
     std::size_t raw = 4 + type_specific.size(); // 2 prefix + 2 fixed + type-specific
     std::size_t total = ((raw + 7) / 8) * 8;
-    if (total < 8) total = 8;
+    if (total < 8)
+        total = 8;
     std::vector<std::uint8_t> eh(total, 0);
     eh[0] = next_nh;
     eh[1] = static_cast<std::uint8_t>((total / 8) - 1);
@@ -135,7 +132,7 @@ TCPIP2_TEST(HopByHopWithPad1AndPadN) {
     // Padded to 16 bytes total (2 prefix + 14 option area, but actually
     // 2 + 9 = 11, round up to 16).
     std::vector<std::uint8_t> opts;
-    opts.push_back(0); // Pad1
+    opts.push_back(0);        // Pad1
     auto padn = BuildPadN(4); // PadN, 4 bytes
     opts.insert(opts.end(), padn.begin(), padn.end());
     auto ra = BuildRouterAlert(0); // Router Alert, 4 bytes
@@ -169,9 +166,8 @@ TCPIP2_TEST(HopByHopWithRouterAlert) {
             TCPIP2_EXPECT_EQ(std::uint8_t{2}, result.hopbyhop_options[i].length);
             TCPIP2_EXPECT_TRUE(result.hopbyhop_options[i].data != nullptr);
             std::uint16_t val =
-                static_cast<std::uint16_t>(
-                    (static_cast<std::uint16_t>(result.hopbyhop_options[i].data[0]) << 8) |
-                    result.hopbyhop_options[i].data[1]);
+                static_cast<std::uint16_t>((static_cast<std::uint16_t>(result.hopbyhop_options[i].data[0]) << 8) |
+                                           result.hopbyhop_options[i].data[1]);
             TCPIP2_EXPECT_EQ(std::uint16_t{1}, val);
         }
     }
@@ -187,7 +183,8 @@ TCPIP2_TEST(HopByHopBadOptionTruncated) {
     opts.push_back(0);
     opts.push_back(0);
     // Pad to make the ext header at least 8 bytes.
-    while (opts.size() < 6) opts.push_back(0);
+    while (opts.size() < 6)
+        opts.push_back(0);
 
     auto hbh = BuildHopByHopWithOptions(6, opts);
     auto pkt = BuildIpv6(Ipv6ExtHeaderType::HopByHop, hbh, 0);
@@ -227,7 +224,8 @@ TCPIP2_TEST(DestinationOptionsBadOption) {
     std::vector<std::uint8_t> opts;
     opts.push_back(100); // type
     opts.push_back(20);  // length = 20, but only 0 bytes of data
-    while (opts.size() < 6) opts.push_back(0);
+    while (opts.size() < 6)
+        opts.push_back(0);
 
     auto dh = BuildHopByHopWithOptions(6, opts);
     auto pkt = BuildIpv6(Ipv6ExtHeaderType::DestinationOptions, dh, 0);

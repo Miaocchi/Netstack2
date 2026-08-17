@@ -34,12 +34,12 @@ namespace tcpip2 {
 class Runtime;
 
 class Netstack2 final {
-public:
+  public:
     explicit Netstack2(NetstackConfig config) noexcept;
     ~Netstack2();
 
-    Netstack2(const Netstack2&) = delete;
-    Netstack2& operator=(const Netstack2&) = delete;
+    Netstack2(const Netstack2 &) = delete;
+    Netstack2 &operator=(const Netstack2 &) = delete;
 
     /**
      * Start with an external packet I/O. nullptr = no I/O (validate config
@@ -50,7 +50,7 @@ public:
      * session factory, clock, or event sink. Prefer Start(const
      * RuntimeDependencies&).
      */
-    bool Start(IPacketIo* packet_io = nullptr) noexcept;
+    bool Start(IPacketIo *packet_io = nullptr) noexcept;
 
     /**
      * Start with structured runtime dependencies (ADR-005).
@@ -59,7 +59,7 @@ public:
      * wires the session factory, clock, and event sink into every shard.
      * Returns false if deps.Validate() fails or the Runtime fails to start.
      */
-    bool Start(const RuntimeDependencies& deps) noexcept;
+    bool Start(const RuntimeDependencies &deps) noexcept;
 
     /**
      * Stop with the default finite deadline. Existing statement-style
@@ -73,14 +73,14 @@ public:
      * Runtime and its pools in Stopping; call Stop again after the backend can
      * complete/cancel outstanding TX.
      */
-    StopResult Stop(const StopOptions& options) noexcept;
+    StopResult Stop(const StopOptions &options) noexcept;
 
-    const NetstackConfig& Config() const noexcept { return config_; }
+    const NetstackConfig &Config() const noexcept { return config_; }
     bool IsRunning() const noexcept;
 
-    Runtime* GetRuntime() const noexcept;
+    Runtime *GetRuntime() const noexcept;
 
-private:
+  private:
     NetstackConfig config_;
     std::unique_ptr<Runtime> runtime_;
     bool started_ = false;

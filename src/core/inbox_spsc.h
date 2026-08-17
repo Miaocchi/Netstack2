@@ -26,13 +26,11 @@
 
 namespace tcpip2 {
 
-template <typename T>
-class SpscRing {
-public:
+template <typename T> class SpscRing {
+  public:
     explicit SpscRing(std::size_t capacity) noexcept
         : mask_(NextPow2Mask(capacity)),
-          slots_(static_cast<T*>(::operator new((mask_ + 1) * sizeof(T), std::nothrow))),
-          head_(0), tail_(0) {
+          slots_(static_cast<T *>(::operator new((mask_ + 1) * sizeof(T), std::nothrow))), head_(0), tail_(0) {
         if (slots_ == nullptr) {
             // Allocation failure: degrade to 0 usable capacity.
             mask_ = 0;
@@ -55,29 +53,31 @@ public:
         }
     }
 
-    bool Push(T&& item) noexcept {
-        if (slots_ == nullptr) return false;
+    bool Push(T &&item) noexcept {
+        if (slots_ == nullptr)
+            return false;
         const std::size_t head = head_.load(std::memory_order_relaxed);
         const std::size_t tail = tail_.load(std::memory_order_acquire);
-        if (head - tail > mask_) return false;  // full
+        if (head - tail > mask_)
+            return false; // full
         slots_[head & mask_] = std::move(item);
         head_.store(head + 1, std::memory_order_release);
         return true;
     }
 
-    bool Pop(T& out) noexcept {
-        if (slots_ == nullptr) return false;
+    bool Pop(T &out) noexcept {
+        if (slots_ == nullptr)
+            return false;
         const std::size_t tail = tail_.load(std::memory_order_relaxed);
         const std::size_t head = head_.load(std::memory_order_acquire);
-        if (tail == head) return false;  // empty
+        if (tail == head)
+            return false; // empty
         out = std::move(slots_[tail & mask_]);
         tail_.store(tail + 1, std::memory_order_release);
         return true;
     }
 
-    std::size_t Capacity() const noexcept {
-        return slots_ ? mask_ + 1 : 0;
-    }
+    std::size_t Capacity() const noexcept { return slots_ ? mask_ + 1 : 0; }
 
     std::size_t Size() const noexcept {
         const std::size_t head = head_.load(std::memory_order_relaxed);
@@ -91,12 +91,13 @@ public:
         return head == tail;
     }
 
-    SpscRing(const SpscRing&) = delete;
-    SpscRing& operator=(const SpscRing&) = delete;
+    SpscRing(const SpscRing &) = delete;
+    SpscRing &operator=(const SpscRing &) = delete;
 
-private:
+  private:
     static std::size_t NextPow2Mask(std::size_t capacity) noexcept {
-        if (capacity == 0) return 0;
+        if (capacity == 0)
+            return 0;
         --capacity;
         capacity |= capacity >> 1;
         capacity |= capacity >> 2;
@@ -108,9 +109,9 @@ private:
     }
 
     std::size_t mask_;
-    T* slots_;
-    std::atomic<std::size_t> head_{0};  // producer writes
-    std::atomic<std::size_t> tail_{0};  // consumer writes
+    T *slots_;
+    std::atomic<std::size_t> head_{0}; // producer writes
+    std::atomic<std::size_t> tail_{0}; // consumer writes
 };
 
 using InboxSpsc = SpscRing<BufferLease>;

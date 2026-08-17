@@ -20,11 +20,11 @@ namespace tcpip2 {
 namespace test {
 
 class PoolLeakCheck final {
-public:
-    explicit PoolLeakCheck(const PktBufferPool& pool) noexcept : pool_(pool) {}
+  public:
+    explicit PoolLeakCheck(const PktBufferPool &pool) noexcept : pool_(pool) {}
 
-    PoolLeakCheck(const PoolLeakCheck&) = delete;
-    PoolLeakCheck& operator=(const PoolLeakCheck&) = delete;
+    PoolLeakCheck(const PoolLeakCheck &) = delete;
+    PoolLeakCheck &operator=(const PoolLeakCheck &) = delete;
 
     ~PoolLeakCheck() {
         if (pool_.OutstandingCount() != 0) {
@@ -35,8 +35,8 @@ public:
     std::size_t Outstanding() const { return pool_.OutstandingCount(); }
     std::size_t Free() const { return pool_.FreeCount(); }
 
-private:
-    const PktBufferPool& pool_;
+  private:
+    const PktBufferPool &pool_;
 };
 
 } // namespace test
