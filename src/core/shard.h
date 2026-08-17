@@ -180,7 +180,7 @@ private:
     void SendEchoReply(BufferLease lease, const FlowKey& reply_flow) noexcept;
     void HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept;
     void HandleReassembledUdp(const IpAddress& source, const IpAddress& destination,
-                               BufferLease&& lease) noexcept;
+                               BufferLease&& lease, std::uint64_t now_ms) noexcept;
     /// Emit an ICMP destination-unreachable (port unreachable) back to the
     /// sender of a rejected UDP datagram (R7 step 9). @p original is the full
     /// original IP packet used for the quote; @p reply_flow is the ICMP

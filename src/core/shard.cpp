@@ -572,7 +572,12 @@ void StackShard::ProcessPacket(BufferLease&& lease, std::uint64_t now_ms) noexce
             }
             if (protocol == 17) {
                 const FragmentInfo fragment = ExtractFragmentInfo(lease.Data(), lease.Size());
-                if (fragment.valid && fragment.protocol == 17) {
+                // Route to the reassembler only for real fragments: a
+                // non-fragmented datagram takes the direct HandleUdp path.
+                // ExtractFragmentInfo marks any well-formed IPv4 packet valid,
+                // so the fragment flags must be checked here.
+                if (fragment.valid && fragment.protocol == 17 &&
+                    (fragment.fragment_offset != 0 || fragment.more_fragments)) {
                     HandleFragment(lease.Data(), lease.Size(), now_ms);
                     return;
                 }
@@ -611,7 +616,8 @@ void StackShard::ProcessEnvelope(PacketEnvelope&& envelope, std::uint64_t now_ms
         ProcessTcpSegment(tcp.segment, now_ms);
         return;
     }
-    HandleReassembledUdp(envelope.source, envelope.destination, std::move(envelope.lease));
+    HandleReassembledUdp(envelope.source, envelope.destination, std::move(envelope.lease),
+                         now_ms);
 }
 
 void StackShard::ProcessTcpSegment(const TcpSegmentView& segment,
@@ -724,7 +730,7 @@ void StackShard::HandleFragment(const std::uint8_t* packet, std::size_t length,
             }
             std::memcpy(local.Data(), result.payload.data(), result.total_length);
             local.Resize(result.total_length);
-            HandleReassembledUdp(src, dst, std::move(local));
+            HandleReassembledUdp(src, dst, std::move(local), now_ms);
             return;
         }
 
@@ -869,7 +875,7 @@ void StackShard::HandleUdp(BufferLease&& lease, std::uint64_t now_ms) noexcept {
 }
 
 void StackShard::HandleReassembledUdp(const IpAddress& source, const IpAddress& destination,
-                                      BufferLease&& lease) noexcept {
+                                      BufferLease&& lease, std::uint64_t now_ms) noexcept {
     if (!lease) return;
     const bool validate_checksum = source.IsIpv6() ||
         (lease.Size() >= 8 && (lease.Data()[6] != 0 || lease.Data()[7] != 0));
@@ -889,7 +895,7 @@ void StackShard::HandleReassembledUdp(const IpAddress& source, const IpAddress& 
     // larger than the path MTU cannot be fragmented (UDP is atomic), so drop it
     // and report ICMP Fragmentation Needed (IPv4) / Packet Too Big (IPv6).
     const PmtuLookupResult pmtu = pmtu_cache_.Lookup(
-        udp.flow.destination.Bytes(), is_v4 ? 4 : 6, clock_->NowMs());
+        udp.flow.destination.Bytes(), is_v4 ? 4 : 6, now_ms);
     if (pmtu.found && (header_len + lease.Size()) > pmtu.pmtu) {
         udp_oversize_.fetch_add(1, std::memory_order_relaxed);
         FlowKey reply = udp.flow;
@@ -918,7 +924,7 @@ void StackShard::HandleReassembledUdp(const IpAddress& source, const IpAddress& 
     }
 
     const UdpFlowTable::Dispatch d = udp_->OnClientDatagram(
-        udp.flow, udp.payload, udp.payload_length, clock_->NowMs());
+        udp.flow, udp.payload, udp.payload_length, now_ms);
     if (d == UdpFlowTable::Dispatch::Accepted) {
         return;
     }

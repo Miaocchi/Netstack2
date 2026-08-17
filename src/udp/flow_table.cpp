@@ -36,8 +36,6 @@ UdpFlowTable::Dispatch UdpFlowTable::OnClientDatagram(
         return Dispatch::Ignored;
     }
     Flow* const f = FindOrCreate(flow, now_ms);
-    std::fprintf(stderr, "[flowdbg] OnClientDatagram proto=%u f=%p flows=%zu\n",
-                 flow.protocol, (void*)f, flows_.size());
     if (f == nullptr) {
         return Dispatch::NoCapacity;
     }
