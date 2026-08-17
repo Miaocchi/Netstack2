@@ -24,3 +24,6 @@ compile_commands.json
 
 # Local test output
 /Testing/
+
+# Local benchmark runs (committed runs are immutable; local ones are not shared)
+/bench/runs/

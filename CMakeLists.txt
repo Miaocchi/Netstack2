@@ -12,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(ENABLE_COVERAGE "Enable LLVM coverage instrumentation" OFF)
 option(ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(ENABLE_TSAN "Enable ThreadSanitizer (cannot be combined with ENABLE_SANITIZERS)" OFF)
+option(NETSTACK2_BUILD_BENCHMARKS "Build the P0 benchmark binary (bench/bench_p0)" OFF)
 
 if(ENABLE_SANITIZERS AND ENABLE_TSAN)
     message(FATAL_ERROR "ENABLE_SANITIZERS (ASan/UBSan) and ENABLE_TSAN cannot be combined")
@@ -38,3 +39,7 @@ enable_testing()
 
 add_subdirectory(src)
 add_subdirectory(tests)
+
+if(NETSTACK2_BUILD_BENCHMARKS)
+    add_subdirectory(bench)
+endif()

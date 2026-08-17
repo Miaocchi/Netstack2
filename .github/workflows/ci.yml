@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Gate 1: plain build + full unit-test suite on both major compilers.
+  build-test:
+    name: build+test (${{ matrix.cxx }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --parallel 4
+
+  # Gate 2: sanitizers. build-asan.sh runs ASan+UBSan, build-tsan.sh runs
+  # ThreadSanitizer; they are mutually exclusive by design (CMake enforces it).
+  sanitizers:
+    name: ${{ matrix.script }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        script: [build-asan.sh, build-tsan.sh]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Run ${{ matrix.script }}
+        run: bash scripts/${{ matrix.script }}
+
+  # Gate 3: formatting. Every tracked .cpp/.h must match .clang-format.
+  format-check:
+    name: clang-format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+      - name: Check formatting
+        run: |
+          git ls-files '*.cpp' '*.h' '*.hpp' | xargs clang-format --dry-run --Werror
+
+  # Gate 4: P0 baseline benchmark. Runs on release-build numbers only; no
+  # pass/fail threshold yet (CI runners are noisy) — the record must be valid
+  # and the run must complete. Baselines get tracked in bench/runs/ artifacts.
+  bench:
+    name: bench (P0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Configure (benchmarks)
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNETSTACK2_BUILD_BENCHMARKS=ON
+      - name: Build bench
+        run: cmake --build build --target bench_p0
+      - name: Run P0 benchmark
+        run: BUILD_DIR=build ./bench/run_p0.sh
+      - name: Upload benchmark records
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-records
+          path: bench/runs/
+          if-no-files-found: error
