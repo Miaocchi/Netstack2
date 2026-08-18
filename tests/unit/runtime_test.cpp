@@ -60,6 +60,8 @@ class OwnerCheckingQueue final : public IPacketQueue {
         return inner_->RecvBatch(out, capacity, error);
     }
 
+    bool Empty() const noexcept override { return inner_->Empty(); }
+
     std::size_t SendBatch(BufferLease packets[], std::size_t count, IoError &error) noexcept override {
         {
             std::lock_guard<std::mutex> lock(state_->mutex);

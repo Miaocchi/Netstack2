@@ -95,6 +95,13 @@ class TapQueue final : public IPacketQueue {
         return taken;
     }
 
+    bool Empty() const noexcept override {
+        // TAP reads are non-blocking; peeking would consume the packet, so a
+        // conservative "not empty" answer keeps the shard from parking on a
+        // live TAP (it will get WouldBlock from RecvBatch and re-poll).
+        return rx_stopped_.load(std::memory_order_acquire);
+    }
+
     std::size_t SendBatch(BufferLease packets[], std::size_t count, IoError &error) noexcept override {
         if (count == 0) {
             error = IoError::None;

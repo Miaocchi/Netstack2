@@ -92,6 +92,8 @@ class OpenPppPacketIo final : public IPacketIo {
             return 0;
         }
 
+        bool Empty() const noexcept override { return true; }
+
         std::size_t SendBatch(BufferLease /*packets*/[], std::size_t count, IoError &error) noexcept override {
             error = IoError::None;
             return count;

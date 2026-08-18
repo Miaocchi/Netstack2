@@ -32,9 +32,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <utility>
 #include <vector>
+
+#include <core/inbox_spsc.h>
 
 namespace tcpip2 {
 
@@ -51,6 +54,12 @@ struct NullPacketIo::Impl {
     std::vector<std::vector<std::vector<std::uint8_t>>> egress;
     std::vector<std::function<void()>> recv_handler;
     std::vector<bool> rx_stopped;
+    // Optional lock-free SPSC fast path for benchmark backends: a queue
+    // switched to fast mode must be injected from exactly one thread while
+    // the shard drains it. Eliminates the mutex + deque node allocation per
+    // packet on the RX hot path.
+    std::vector<bool> fast;
+    std::vector<std::unique_ptr<SpscRing<BufferLease>>> fast_backlog;
 };
 
 namespace {
@@ -64,6 +73,20 @@ class NullQueue final : public IPacketQueue {
         if (capacity == 0) {
             error = IoError::None;
             return 0;
+        }
+        if (impl_->fast[queue_id_]) {
+            SpscRing<BufferLease> &ring = *impl_->fast_backlog[queue_id_];
+            error = IoError::None;
+            std::size_t taken = 0;
+            while (taken < capacity) {
+                BufferLease lease;
+                if (!ring.Pop(lease))
+                    break;
+                if (!lease)
+                    continue;
+                out[taken++] = std::move(lease);
+            }
+            return taken;
         }
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if (impl_->rx_stopped[queue_id_]) {
@@ -83,6 +106,14 @@ class NullQueue final : public IPacketQueue {
             error = IoError::WouldBlock;
         }
         return taken;
+    }
+
+    bool Empty() const noexcept override {
+        if (impl_->fast[queue_id_]) {
+            return impl_->fast_backlog[queue_id_]->Empty();
+        }
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        return impl_->rx_backlog[queue_id_].empty();
     }
 
     std::size_t SendBatch(BufferLease packets[], std::size_t count, IoError &error) noexcept override {
@@ -122,6 +153,15 @@ class NullQueue final : public IPacketQueue {
     void SetBufferPool(PktBufferPool *pool) noexcept override { pool_ = pool; }
 
     void StopRx() noexcept override {
+        if (impl_->fast[queue_id_]) {
+            impl_->recv_handler[queue_id_] = nullptr;
+            impl_->rx_stopped[queue_id_] = true;
+            BufferLease lease;
+            while (impl_->fast_backlog[queue_id_]->Pop(lease)) {
+                lease.Reset();
+            }
+            return;
+        }
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->recv_handler[queue_id_] = nullptr;
         impl_->rx_stopped[queue_id_] = true;
@@ -170,6 +210,8 @@ NullPacketIo::NullPacketIo(std::size_t queue_count) : impl_(std::make_shared<Imp
     impl_->egress.resize(queue_count);
     impl_->recv_handler.resize(queue_count);
     impl_->rx_stopped.resize(queue_count, false);
+    impl_->fast.resize(queue_count, false);
+    impl_->fast_backlog.resize(queue_count);
 }
 
 NullPacketIo::~NullPacketIo() = default;
@@ -189,6 +231,13 @@ std::unique_ptr<IPacketQueue> NullPacketIo::OpenQueue(std::size_t queue_id) {
 bool NullPacketIo::Inject(std::size_t queue_id, BufferLease &&lease) {
     if (!lease || queue_id >= impl_->queue_count)
         return false;
+    if (impl_->fast[queue_id]) {
+        // Lock-free single-producer path. The receiver drains the ring; a
+        // full ring rejects the injection like a busy device would.
+        if (impl_->rx_stopped[queue_id])
+            return false;
+        return impl_->fast_backlog[queue_id]->Push(std::move(lease));
+    }
     std::function<void()> wake;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -205,6 +254,13 @@ bool NullPacketIo::Inject(std::size_t queue_id, BufferLease &&lease) {
     if (wake)
         wake();
     return true;
+}
+
+void NullPacketIo::SetFastQueue(std::size_t queue_id, std::size_t capacity) {
+    if (queue_id >= impl_->queue_count)
+        return;
+    impl_->fast[queue_id] = true;
+    impl_->fast_backlog[queue_id] = std::make_unique<SpscRing<BufferLease>>(capacity);
 }
 
 void NullPacketIo::SetMaxSendPerBatch(std::size_t n) {

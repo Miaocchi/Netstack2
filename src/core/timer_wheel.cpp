@@ -74,6 +74,8 @@ std::size_t TimerWheel::AdvanceTo(std::uint64_t now_ms) {
     if (now_ms <= cursor_ms_)
         return 0;
     cursor_ms_ = now_ms;
+    if (pending_ == 0)
+        return 0; // no timers scheduled: skip the 256-slot sweep
 
     std::vector<Entry> due;
     due.reserve(pending_);

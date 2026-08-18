@@ -30,34 +30,47 @@ TcpInputResult ParseIpTcpPacket(const std::uint8_t *packet, std::size_t length) 
             result.error = TcpInputError::BadIpv4Checksum;
             return result;
         }
+        result.ip_version = 4;
+        result.ip_protocol = ip.header.protocol;
+        result.ip_fragment = ip.header.fragment_offset != 0 || (ip.header.flags & 0x01u) != 0;
+        result.ip_payload = ip.payload;
+        result.ip_payload_length = ip.header.payload_length;
+        result.ip_src =
+            IpAddress::Ipv4(ip.header.src_ip[0], ip.header.src_ip[1], ip.header.src_ip[2], ip.header.src_ip[3]);
+        result.ip_dst =
+            IpAddress::Ipv4(ip.header.dst_ip[0], ip.header.dst_ip[1], ip.header.dst_ip[2], ip.header.dst_ip[3]);
         if (ip.header.protocol != 6) {
             result.error = TcpInputError::NotTcp;
             return result;
         }
-        if (ip.header.fragment_offset != 0 || (ip.header.flags & 0x01u) != 0) {
+        if (result.ip_fragment) {
             result.error = TcpInputError::FragmentRequiresReassembly;
             return result;
         }
-        tcp = ParseTcpSegment(
-            IpAddress::Ipv4(ip.header.src_ip[0], ip.header.src_ip[1], ip.header.src_ip[2], ip.header.src_ip[3]),
-            IpAddress::Ipv4(ip.header.dst_ip[0], ip.header.dst_ip[1], ip.header.dst_ip[2], ip.header.dst_ip[3]),
-            ip.payload, ip.header.payload_length, ip.header.ecn);
+        tcp = ParseTcpSegment(result.ip_src, result.ip_dst, ip.payload, ip.header.payload_length, ip.header.ecn);
     } else if (version == 6) {
         const Ipv6ParseResult ip = ParseIpv6(packet, length);
         if (ip.error != Ipv6ParseResult::Error::None) {
             result.error = TcpInputError::MalformedIp;
             return result;
         }
+        result.ip_version = 6;
+        result.ip_protocol = ip.final_next_header;
+        result.ip_fragment = ip.fragment_header_present;
+        result.ip_payload = ip.payload;
+        result.ip_payload_length = ip.payload_length;
+        result.ip_src = IpAddress::Ipv6(ip.header.src_ip);
+        result.ip_dst = IpAddress::Ipv6(ip.header.dst_ip);
         if (ip.final_next_header != 6) {
             result.error = TcpInputError::NotTcp;
             return result;
         }
-        if (ip.fragment_header_present) {
+        if (result.ip_fragment) {
             result.error = TcpInputError::FragmentRequiresReassembly;
             return result;
         }
-        tcp = ParseTcpSegment(IpAddress::Ipv6(ip.header.src_ip), IpAddress::Ipv6(ip.header.dst_ip), ip.payload,
-                              ip.payload_length, static_cast<std::uint8_t>(ip.header.traffic_class & 0x03u));
+        tcp = ParseTcpSegment(result.ip_src, result.ip_dst, ip.payload, ip.payload_length,
+                              static_cast<std::uint8_t>(ip.header.traffic_class & 0x03u));
     } else {
         result.error = TcpInputError::UnsupportedIpVersion;
         return result;

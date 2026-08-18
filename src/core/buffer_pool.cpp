@@ -41,45 +41,80 @@ PktBufferPool::PktBufferPool(std::size_t slot_count, std::size_t slot_capacity)
     const std::uint64_t slot_count_u = slot_count;
     const std::uint64_t slot_cap_u = slot_capacity;
     if (slot_count_u != 0 && slot_cap_u > UINT64_MAX / slot_count_u) {
+        free_head_.store(slot_count, std::memory_order_relaxed); // empty free list
         return; // arithmetic overflow — degrade to 0 usable slots
     }
     const std::uint64_t total_bytes_u = slot_count_u * slot_cap_u;
     if (total_bytes_u > static_cast<std::uint64_t>(SIZE_MAX)) {
+        free_head_.store(slot_count, std::memory_order_relaxed); // empty free list
         return; // exceeds address space — degrade to 0 usable slots
     }
     arena_.reset(new (std::nothrow) std::uint8_t[total_bytes_u]);
     if (arena_ == nullptr) {
         // Arena allocation failed: degrade to 0 usable slots.
         // slots_ and states_ exist but no buffer has valid data_.
-        // free_slots_ remains empty, so Allocate() always returns empty.
+        // The free list stays empty, so Allocate() always returns empty.
+        free_head_.store(slot_count, std::memory_order_relaxed); // empty free list
         return;
     }
-    free_slots_.reserve(slot_count);
+    free_next_.resize(slot_count + 1, 0);
     for (std::size_t i = 0; i < slot_count; ++i) {
         PktBuffer &b = slots_[i];
         b.pool_ = this;
         b.slot_ = i;
         b.capacity_ = slot_capacity;
         b.data_ = arena_.get() + i * slot_capacity;
-        free_slots_.push_back(i);
+        free_next_[i] = static_cast<std::uint32_t>(i + 1);
     }
+    // Sentinel slot_count_ terminates the LIFO; the stack starts at slot 0.
+    free_next_[slot_count] = static_cast<std::uint32_t>(slot_count);
+    free_head_.store(0, std::memory_order_relaxed);
+    free_count_.store(slot_count, std::memory_order_relaxed);
 }
 
 PktBufferPool::~PktBufferPool() = default;
 
-BufferLease PktBufferPool::Allocate() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (free_slots_.empty() && !return_queue_.empty()) {
-        DrainLocked();
+std::size_t PktBufferPool::PopFree() noexcept {
+    std::uint64_t head = free_head_.load(std::memory_order_acquire);
+    for (;;) {
+        const std::uint32_t idx = static_cast<std::uint32_t>(head & 0xFFFFFFFFu);
+        if (idx >= slot_count_)
+            return slot_count_; // empty
+        const std::uint32_t next = free_next_[idx];
+        const std::uint64_t new_head = (((head >> 32) + 1) << 32) | static_cast<std::uint64_t>(next);
+        if (free_head_.compare_exchange_weak(head, new_head, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+            free_count_.fetch_sub(1, std::memory_order_relaxed);
+            return idx;
+        }
     }
-    if (free_slots_.empty())
-        return {};
-    const std::size_t idx = free_slots_.back();
-    free_slots_.pop_back();
+}
+
+void PktBufferPool::PushFree(std::size_t idx) noexcept {
+    std::uint64_t head = free_head_.load(std::memory_order_relaxed);
+    for (;;) {
+        free_next_[idx] = static_cast<std::uint32_t>(head & 0xFFFFFFFFu);
+        const std::uint64_t new_head = (((head >> 32) + 1) << 32) | static_cast<std::uint64_t>(idx);
+        if (free_head_.compare_exchange_weak(head, new_head, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+            free_count_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+}
+
+BufferLease PktBufferPool::Allocate() {
+    std::size_t idx = PopFree();
+    if (idx == slot_count_) {
+        // Free list empty — recycle foreign-thread returns before giving up.
+        std::lock_guard<std::mutex> lock(mutex_);
+        DrainLocked();
+        idx = PopFree();
+        if (idx == slot_count_)
+            return {};
+    }
     if (states_[idx] != SlotState::Free)
         Die("allocate on non-free slot");
     states_[idx] = SlotState::Leased;
-    ++outstanding_;
+    outstanding_.fetch_add(1, std::memory_order_relaxed);
     PktBuffer &b = slots_[idx];
     b.size_ = 0;
     return BufferLease(&b);
@@ -95,7 +130,7 @@ BufferRef PktBufferPool::Retain(BufferLease &&lease) {
         if (states_[idx] != SlotState::Leased)
             Die("retain on non-leased slot");
         states_[idx] = SlotState::Retained;
-        ++retained_;
+        retained_.fetch_add(1, std::memory_order_relaxed);
         p->ref_count_ = 1;
     }
     lease.pkt_ = nullptr;
@@ -113,12 +148,12 @@ void PktBufferPool::ReleaseRetained(PktBuffer *pkt) {
         Die("buffer pointer/slot mismatch");
     if (states_[idx] != SlotState::Retained)
         Die("release on non-retained slot");
-    --retained_;
+    retained_.fetch_sub(1, std::memory_order_relaxed);
     if (std::this_thread::get_id() == owner_thread_id_) {
         states_[idx] = SlotState::Free;
         pkt->size_ = 0;
-        --outstanding_;
-        free_slots_.push_back(idx);
+        outstanding_.fetch_sub(1, std::memory_order_relaxed);
+        PushFree(idx);
     } else {
         states_[idx] = SlotState::Queued;
         return_queue_.push_back(idx);
@@ -128,20 +163,23 @@ void PktBufferPool::ReleaseRetained(PktBuffer *pkt) {
 void PktBufferPool::ReturnBuffer(PktBuffer *pkt) {
     if (pkt == nullptr)
         return;
-    std::lock_guard<std::mutex> lock(mutex_);
     if (pkt->pool_ != this)
         Die("buffer returned to wrong pool");
     const std::size_t idx = pkt->slot_;
     if (&slots_[idx] != pkt)
         Die("buffer pointer/slot mismatch");
-    if (states_[idx] != SlotState::Leased)
-        Die("double release / invalid return");
     if (std::this_thread::get_id() == owner_thread_id_) {
+        // Owner-thread fast path: lock-free LIFO push.
+        if (states_[idx] != SlotState::Leased)
+            Die("double release / invalid return");
         states_[idx] = SlotState::Free;
         pkt->size_ = 0;
-        --outstanding_;
-        free_slots_.push_back(idx);
+        outstanding_.fetch_sub(1, std::memory_order_relaxed);
+        PushFree(idx);
     } else {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (states_[idx] != SlotState::Leased)
+            Die("double release / invalid return");
         states_[idx] = SlotState::Queued;
         return_queue_.push_back(idx);
     }
@@ -155,8 +193,8 @@ void PktBufferPool::DrainLocked() noexcept {
             Die("drain on non-queued slot");
         states_[idx] = SlotState::Free;
         slots_[idx].size_ = 0;
-        --outstanding_;
-        free_slots_.push_back(idx);
+        outstanding_.fetch_sub(1, std::memory_order_relaxed);
+        PushFree(idx);
     }
 }
 
@@ -229,18 +267,15 @@ std::size_t PktBufferPool::SlotCount() const noexcept {
 }
 
 std::size_t PktBufferPool::FreeCount() const noexcept {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return free_slots_.size();
+    return free_count_.load(std::memory_order_relaxed);
 }
 
 std::size_t PktBufferPool::OutstandingCount() const noexcept {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return outstanding_;
+    return outstanding_.load(std::memory_order_relaxed);
 }
 
 std::size_t PktBufferPool::RetainedCount() const noexcept {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return retained_;
+    return retained_.load(std::memory_order_relaxed);
 }
 
 } // namespace tcpip2

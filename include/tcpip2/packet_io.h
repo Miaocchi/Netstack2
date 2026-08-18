@@ -61,6 +61,14 @@ class IPacketQueue {
     virtual std::size_t RecvBatch(BufferLease out[], std::size_t capacity, IoError &error) noexcept = 0;
 
     /**
+     * True when the queue currently holds no RX packets.
+     *
+     * Must be safe to call concurrently with RecvBatch() (relaxed peek);
+     * used by the shard to busy-poll for the next burst before parking.
+     */
+    virtual bool Empty() const noexcept = 0;
+
+    /**
      * Transmit up to @p count packets from @p packets.
      *
      * Returns n <= count. Ownership of packets[0..n-1] transfers to the
@@ -157,6 +165,16 @@ class NullPacketIo final : public IPacketIo {
      * The backend becomes the owner of @p lease on success.
      */
     bool Inject(std::size_t queue_id, BufferLease &&lease);
+
+    /**
+     * Switch @p queue_id to a lock-free single-producer ring backend.
+     * After this call Inject() must be called from exactly one thread at a
+     * time (the producer) while the shard drains the queue. Capacity is
+     * rounded up to a power of two; a full ring rejects injections.
+     * Intended for benchmark backends that want device-like zero-copy RX
+     * without per-packet mutex contention.
+     */
+    void SetFastQueue(std::size_t queue_id, std::size_t capacity);
 
     /**
      * Test knob: cap the number of leases SendBatch() accepts per call

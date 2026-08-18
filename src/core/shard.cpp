@@ -363,11 +363,19 @@ void StackShard::EventLoopIteration() noexcept {
     if (!rx_queues_.empty() && queue_visits != 0) {
         next_rx_queue_ = (next_rx_queue_ + queue_visits) % queue_count;
     }
-
     // Step 3: Drain dedicated inbound source->target lanes round-robin. Each
     // lane has one producer, avoiding an unsafe MPSC use of InboxSpsc.
     if (!inbound_lanes_.empty()) {
-        for (std::size_t i = 0; i < kPacketInboxBudget; ++i) {
+        // Pre-check: when every lane is empty (the common case), skip the
+        // whole kPacketInboxBudget pop sweep instead of paying 64 failed pops.
+        bool lane_has_data = false;
+        for (ShardPacketLane *l : inbound_lanes_) {
+            if (l != nullptr && l->MessageCount() != 0) {
+                lane_has_data = true;
+                break;
+            }
+        }
+        for (std::size_t i = 0; lane_has_data && i < kPacketInboxBudget; ++i) {
             ShardPacketLane *lane = inbound_lanes_[next_inbound_lane_];
             next_inbound_lane_ = (next_inbound_lane_ + 1) % inbound_lanes_.size();
             if (lane == nullptr)
@@ -390,7 +398,6 @@ void StackShard::EventLoopIteration() noexcept {
         packets_received_.fetch_add(1, std::memory_order_relaxed);
         ProcessPacket(std::move(lease), now_ms);
     }
-
     // Step 4: Drain control inbox (MPSC). Check for StopMessage first.
     bool session_data_blocked = false;
     if (deferred_session_data_.data && tcp_) {
@@ -448,6 +455,7 @@ void StackShard::EventLoopIteration() noexcept {
     if (stop_requested_.load(std::memory_order_relaxed))
         return;
 
+
     // Step 5: advance timers, then drain bounded retry/control output.
     timer_.AdvanceTo(now_ms);
     reassembler_.Purge(now_ms);
@@ -455,28 +463,27 @@ void StackShard::EventLoopIteration() noexcept {
     if (udp_)
         udp_->PurgeExpired(now_ms);
     if (tcp_) {
-        tcp_->PumpSessionDeliveries(now_ms, kControlInboxBudget);
-        TcpResponse response;
-        while (fq_codel_.QueueLength() < kTcpTxBudget && tcp_->PopPendingResponse(response)) {
-            if (!EnqueueTcpResponse(response)) {
-                tcp_->DeferResponse(response);
-                break;
+        const std::size_t pcb_count = tcp_->PcbCount();
+        const std::size_t half_open = tcp_->HalfOpenCount();
+        if (pcb_count != 0 || half_open != 0) {
+            tcp_->PumpSessionDeliveries(now_ms, kControlInboxBudget);
+            TcpResponse response;
+            while (fq_codel_.QueueLength() < kTcpTxBudget && tcp_->PopPendingResponse(response)) {
+                if (!EnqueueTcpResponse(response)) {
+                    tcp_->DeferResponse(response);
+                    break;
+                }
             }
+            PumpTcpSendPaths(now_ms);
+            const std::size_t remote_low_watermark =
+                std::max<std::size_t>(1, control_inbox_.Capacity() / kRemoteReceiveLowWatermarkDivisor);
+            const std::size_t remote_backlog =
+                control_inbox_.Count(ShardMessageType::kSessionData) + (deferred_session_data_.data ? 1U : 0U);
+            tcp_->ResumeSessionReceives(remote_backlog, remote_low_watermark);
         }
-        tcp_pcb_count_.store(tcp_->PcbCount(), std::memory_order_relaxed);
-        tcp_half_open_count_.store(tcp_->HalfOpenCount(), std::memory_order_relaxed);
+        tcp_pcb_count_.store(pcb_count, std::memory_order_relaxed);
+        tcp_half_open_count_.store(half_open, std::memory_order_relaxed);
     }
-
-    // Step 7: pump TCP send paths (new data, retransmissions, persist probes).
-    if (tcp_) {
-        PumpTcpSendPaths(now_ms);
-        const std::size_t remote_low_watermark =
-            std::max<std::size_t>(1, control_inbox_.Capacity() / kRemoteReceiveLowWatermarkDivisor);
-        const std::size_t remote_backlog =
-            control_inbox_.Count(ShardMessageType::kSessionData) + (deferred_session_data_.data ? 1U : 0U);
-        tcp_->ResumeSessionReceives(remote_backlog, remote_low_watermark);
-    }
-
     // Step 8: admit cross-shard egress into its queue-owner scheduler, then
     // route the bounded local FQ-CoDel output to the selected TX queue owner.
     DrainEgressLanes();
@@ -507,15 +514,22 @@ void StackShard::EventLoopIteration() noexcept {
     // immediately: a fixed wait here would throttle throughput to one batch
     // (kRxBudget packets) per timeout, since RX packets arrive on the packet
     // queues and do not wake the control-inbox wait.
+    // When idle, loop without parking: RX packets arrive on the packet queues
+    // and never wake the control-inbox wait, so parking would stall the next
+    // burst for the full timeout. Pure polling keeps the shard hot (CPU cost
+    // on an idle shard; the intended trade-off for low-latency RX).
     if (!stop_requested_.load(std::memory_order_relaxed) && iter_rx == 0) {
-        control_inbox_.Wait(1);
+        control_inbox_.Wait(0);
     }
 }
 
 void StackShard::RouteRxPacket(BufferLease &&lease, std::uint64_t now_ms) noexcept {
     if (!lease)
         return;
-    if (dispatcher_ == nullptr) {
+    // Single-shard deployment: there is no cross-shard routing to do, and
+    // Dispatch would re-parse the IP and transport headers purely to compute
+    // an owner shard that is always this shard. Skip it.
+    if (dispatcher_ == nullptr || dispatcher_->ShardCount() == 1) {
         ProcessPacket(std::move(lease), now_ms);
         return;
     }
@@ -541,43 +555,22 @@ void StackShard::ProcessPacket(BufferLease &&lease, std::uint64_t now_ms) noexce
     }
     if (input.error != TcpInputError::None) {
         if (input.error == TcpInputError::NotTcp) {
-            const std::uint8_t version = static_cast<std::uint8_t>(lease.Data()[0] >> 4);
-            const std::uint8_t protocol = (version == 4) ? [&] {
-                const Ipv4ParseResult ip = ParseIpv4(lease.Data(), lease.Size());
-                return (ip.error == Ipv4ParseError::None) ? ip.header.protocol : static_cast<std::uint8_t>(0);
-            }()
-                                          : (version == 6) ? [&] {
-                                                const Ipv6ParseResult ip = ParseIpv6(lease.Data(), lease.Size());
-                                                return (ip.error == Ipv6ParseResult::Error::None)
-                                                           ? ip.final_next_header
-                                                           : static_cast<std::uint8_t>(0);
-                                            }()
-                                                           : static_cast<std::uint8_t>(0);
-
+            // IP-layer classification comes from the single ParseIpv4/6 call
+            // inside ParseIpTcpPacket; do not re-parse the IP header here.
+            const std::uint8_t protocol = input.ip_protocol;
             if (protocol == 1 || protocol == 58) {
                 HandleIcmp(lease, now_ms);
                 return;
             }
             if (protocol == 17) {
-                const FragmentInfo fragment = ExtractFragmentInfo(lease.Data(), lease.Size());
-                // Route to the reassembler only for real fragments: a
+                // Route to the reassembler only for real fragments; a
                 // non-fragmented datagram takes the direct HandleUdp path.
-                // ExtractFragmentInfo marks any well-formed IPv4 packet valid,
-                // so the fragment flags must be checked here.
-                if (fragment.valid && fragment.protocol == 17 &&
-                    (fragment.fragment_offset != 0 || fragment.more_fragments)) {
+                if (input.ip_fragment) {
                     HandleFragment(lease.Data(), lease.Size(), now_ms);
                     return;
                 }
-                const UdpInputResult udp = ParseIpUdpPacket(lease.Data(), lease.Size());
-                if (udp.error == UdpInputResult::Error::None) {
-                    if (dispatcher_ != nullptr && dispatcher_->FlowShard(udp.datagram.flow) != shard_id_) {
-                        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
-                        return;
-                    }
-                    HandleUdp(std::move(lease), now_ms);
-                    return;
-                }
+                HandleUdp(std::move(lease), now_ms, input);
+                return;
             }
         }
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
@@ -788,30 +781,43 @@ void StackShard::EmitUdpPmtuError(const std::uint8_t *original, std::size_t orig
     }
 }
 
-void StackShard::HandleUdp(BufferLease &&lease, std::uint64_t now_ms) noexcept {
+void StackShard::HandleUdp(BufferLease &&lease, std::uint64_t now_ms, const TcpInputResult &input) noexcept {
     udp_datagrams_received_.fetch_add(1, std::memory_order_relaxed);
     if (!udp_ || !lease)
         return;
-    const UdpInputResult input = ParseIpUdpPacket(lease.Data(), lease.Size());
-    if (input.error != UdpInputResult::Error::None) {
+    if (input.ip_payload == nullptr || input.ip_payload_length < 8) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    const std::uint8_t version = static_cast<std::uint8_t>(lease.Data()[0] >> 4);
+    // IPv4: validate checksum only if the UDP checksum field is non-zero
+    // (byte offset 6-7 of the UDP header); IPv6: always validate.
+    const bool validate_checksum = input.ip_version == 6 ||
+        (input.ip_payload[6] != 0 || input.ip_payload[7] != 0);
+    const UdpParseResult udp = ParseUdpDatagram(input.ip_src, input.ip_dst, input.ip_payload,
+                                                input.ip_payload_length, validate_checksum);
+    if (udp.error != UdpParseError::None) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (dispatcher_ != nullptr && dispatcher_->ShardCount() != 1 &&
+        dispatcher_->FlowShard(udp.flow) != shard_id_) {
+        packets_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const std::uint8_t version = input.ip_version;
 
     // R7 step 8: enforce the learned path MTU to the remote. A client datagram
     // larger than the path MTU cannot be fragmented (UDP is atomic), so drop it
     // and report ICMP Fragmentation Needed (IPv4) / Packet Too Big (IPv6) to
     // the sender.
-    const PmtuLookupResult pmtu = pmtu_cache_.Lookup(input.datagram.flow.destination.Bytes(),
-                                                     input.datagram.flow.destination.IsIpv4() ? 4 : 6, now_ms);
+    const PmtuLookupResult pmtu = pmtu_cache_.Lookup(udp.flow.destination.Bytes(), version == 4 ? 4 : 6, now_ms);
     if (pmtu.found && lease.Size() > pmtu.pmtu) {
         udp_oversize_.fetch_add(1, std::memory_order_relaxed);
-        FlowKey reply = input.datagram.flow;
-        reply.source = input.datagram.flow.destination;
-        reply.destination = input.datagram.flow.source;
-        reply.source_port = input.datagram.flow.destination_port;
-        reply.destination_port = input.datagram.flow.source_port;
+        FlowKey reply = udp.flow;
+        reply.source = udp.flow.destination;
+        reply.destination = udp.flow.source;
+        reply.source_port = udp.flow.destination_port;
+        reply.destination_port = udp.flow.source_port;
         reply.protocol = (version == 4) ? 1 : 58;
         EmitUdpPmtuError(lease.Data(), lease.Size(), version, pmtu.pmtu, reply);
         return;
@@ -819,8 +825,7 @@ void StackShard::HandleUdp(BufferLease &&lease, std::uint64_t now_ms) noexcept {
 
     // Client datagram -> remote session (flow table opens the adapter session
     // on the first packet and forwards the payload).
-    const UdpFlowTable::Dispatch d =
-        udp_->OnClientDatagram(input.datagram.flow, input.datagram.payload, input.datagram.payload_length, now_ms);
+    const UdpFlowTable::Dispatch d = udp_->OnClientDatagram(udp.flow, udp.payload, udp.payload_length, now_ms);
     if (d == UdpFlowTable::Dispatch::Accepted) {
         return;
     }
@@ -828,11 +833,11 @@ void StackShard::HandleUdp(BufferLease &&lease, std::uint64_t now_ms) noexcept {
         // No session / policy rejection: report port unreachable to the
         // sender (configurable), and keep it observable.
         udp_rejected_.fetch_add(1, std::memory_order_relaxed);
-        FlowKey reply = input.datagram.flow;
-        reply.source = input.datagram.flow.destination;
-        reply.destination = input.datagram.flow.source;
-        reply.source_port = input.datagram.flow.destination_port;
-        reply.destination_port = input.datagram.flow.source_port;
+        FlowKey reply = udp.flow;
+        reply.source = udp.flow.destination;
+        reply.destination = udp.flow.source;
+        reply.source_port = udp.flow.destination_port;
+        reply.destination_port = udp.flow.source_port;
         reply.protocol = (version == 4) ? 1 : 58;
         EmitUdpUnreachable(lease.Data(), lease.Size(), version, reply);
         return;

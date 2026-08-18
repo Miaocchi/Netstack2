@@ -28,6 +28,7 @@
  *                to the pool when the last copy is destroyed or reset.
  */
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -257,19 +258,34 @@ class PktBufferPool final {
 
     void DrainLocked() noexcept;
 
+    /** Lock-free LIFO pop of a free slot index; returns slot_count_ when empty. */
+    std::size_t PopFree() noexcept;
+
+    /** Lock-free LIFO push of a freed slot index. */
+    void PushFree(std::size_t idx) noexcept;
+
     /** Return a retained buffer to the pool (called by BufferRef on last reference). */
     void ReleaseRetained(PktBuffer *pkt);
 
     std::size_t slot_count_;
     std::vector<PktBuffer> slots_;
     std::vector<SlotState> states_;
-    std::vector<std::size_t> free_slots_;
+    // Lock-free free list: free_head_ packs (tag << 32 | next index); the
+    // sentinel index == slot_count_ marks an empty stack. free_next_[i] is
+    // the successor of slot i while i is on the stack. Tagged 64-bit CAS
+    // defeats ABA on the index reuse.
+    std::vector<std::uint32_t> free_next_;
+    std::atomic<std::uint64_t> free_head_{0};
+    std::atomic<std::size_t> free_count_{0}; // number of slots on the free list
     std::deque<std::size_t> return_queue_;
     std::unique_ptr<std::uint8_t[]> arena_;
-    mutable std::mutex mutex_;
+    // Isolated on its own cache line: the shard thread takes this mutex on
+    // every iteration (DrainReturnQueue) while producers hammer free_head_;
+    // sharing a line would bounce the free-list CAS on every shard wakeup.
+    alignas(64) mutable std::mutex mutex_; // return_queue_ + retained bookkeeping only
     std::thread::id owner_thread_id_;
-    std::size_t outstanding_ = 0;
-    std::size_t retained_ = 0;
+    std::atomic<std::size_t> outstanding_{0};
+    std::atomic<std::size_t> retained_{0};
 };
 
 } // namespace tcpip2

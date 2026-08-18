@@ -29,6 +29,7 @@
 #include <tcpip2/packet_io.h>
 #include <tcpip2/session_factory.h>
 #include <tcpip2/transport_session.h>
+#include <tcp/input.h>
 #include <udp/flow_table.h>
 
 #include <core/inbox_mpsc.h>
@@ -152,7 +153,7 @@ class StackShard {
     /// Enqueue an in-place-built ICMP echo reply through the generic FQ-CoDel
     /// egress scheduler. The lease is consumed (sent or dropped on failure).
     void SendEchoReply(BufferLease lease, const FlowKey &reply_flow) noexcept;
-    void HandleUdp(BufferLease &&lease, std::uint64_t now_ms) noexcept;
+    void HandleUdp(BufferLease &&lease, std::uint64_t now_ms, const TcpInputResult &input) noexcept;
     void HandleReassembledUdp(const IpAddress &source, const IpAddress &destination, BufferLease &&lease,
                               std::uint64_t now_ms) noexcept;
     /// Emit an ICMP destination-unreachable (port unreachable) back to the
