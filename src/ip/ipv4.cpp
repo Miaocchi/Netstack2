@@ -1,5 +1,6 @@
 #include <ip/ipv4.h>
 #include <ip/checksum.h>
+#include <cstring>
 
 namespace tcpip2 {
 
@@ -12,14 +13,11 @@ Ipv4ParseResult ParseIpv4(const std::uint8_t *data, std::size_t len) noexcept {
         return result;
     }
 
-    ReadCursor cur(data, len);
-
-    std::uint8_t version_ihl;
-    if (!cur.ReadU8(version_ihl)) {
-        result.error = Ipv4ParseError::TooShort;
-        return result;
-    }
-
+    // Direct byte-offset extraction (no per-field bounds-checked cursor):
+    // for a 64-byte packet the whole header is one or two cache lines and
+    // the compiler merges these loads into wide reads. Every validation the
+    // cursor version performed is preserved below.
+    const std::uint8_t version_ihl = data[0];
     result.header.version = static_cast<std::uint8_t>(version_ihl >> 4);
     result.header.ihl = static_cast<std::uint8_t>(version_ihl & 0x0F);
 
@@ -32,72 +30,52 @@ Ipv4ParseResult ParseIpv4(const std::uint8_t *data, std::size_t len) noexcept {
         return result;
     }
 
-    // header_length = IHL * 4 — use checked arithmetic
-    std::size_t header_len;
-    if (!CheckedMul<std::size_t>(result.header.ihl, std::size_t{4}, header_len)) {
-        result.error = Ipv4ParseError::BadIhl;
-        return result;
-    }
+    // header_length = IHL * 4 — IHL <= 15 so no overflow is possible.
+    const std::size_t header_len = static_cast<std::size_t>(result.header.ihl) * 4u;
     result.header.header_length = header_len;
 
-    // DSCP/ECN
-    std::uint8_t dscp_ecn;
-    cur.ReadU8(dscp_ecn);
+    const std::uint8_t dscp_ecn = data[1];
     result.header.dscp = static_cast<std::uint8_t>(dscp_ecn >> 2);
     result.header.ecn = static_cast<std::uint8_t>(dscp_ecn & 0x03);
 
-    // Total length
-    cur.ReadU16(result.header.total_length);
+    result.header.total_length = static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[2]) << 8) | data[3]);
+    result.header.identification = static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[4]) << 8) | data[5]);
 
-    // Identification
-    cur.ReadU16(result.header.identification);
-
-    // Flags + fragment offset (2 bytes)
-    std::uint16_t flags_frag;
-    cur.ReadU16(flags_frag);
+    const std::uint16_t flags_frag = static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[6]) << 8) | data[7]);
     result.header.flags = static_cast<std::uint8_t>((flags_frag >> 13) & 0x07);
     result.header.fragment_offset = static_cast<std::uint16_t>(flags_frag & 0x1FFF);
 
-    // TTL
-    cur.ReadU8(result.header.ttl);
+    result.header.ttl = data[8];
+    result.header.protocol = data[9];
+    result.header.header_checksum = static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[10]) << 8) | data[11]);
 
-    // Protocol
-    cur.ReadU8(result.header.protocol);
+    std::memcpy(result.header.src_ip, data + 12, 4);
+    std::memcpy(result.header.dst_ip, data + 16, 4);
 
-    // Header checksum
-    cur.ReadU16(result.header.header_checksum);
-
-    // Source IP (4 bytes)
-    cur.ReadBytes(result.header.src_ip, 4);
-
-    // Destination IP (4 bytes)
-    cur.ReadBytes(result.header.dst_ip, 4);
-
-    // Verify we have the full header (including options)
+    // Verify we have the full header (including options).
     if (len < header_len) {
         result.error = Ipv4ParseError::TruncatedHeader;
         return result;
     }
 
-    // Verify total_length is at least header_len
+    // Verify total_length is at least header_len.
     if (result.header.total_length < header_len) {
         result.error = Ipv4ParseError::TruncatedTotal;
         return result;
     }
 
-    // Verify buffer has at least total_length bytes
+    // Verify buffer has at least total_length bytes.
     if (len < result.header.total_length) {
         result.error = Ipv4ParseError::TruncatedTotal;
         return result;
     }
 
-    // Compute payload offset and length
+    // Compute payload offset and length.
     result.header.payload_offset = header_len;
-    // payload_length = total_length - header_length (both are size_t/uint16_t)
     result.header.payload_length = static_cast<std::size_t>(result.header.total_length) - header_len;
     result.payload = data + header_len;
 
-    // Verify header checksum (over the entire header including options)
+    // Verify header checksum (over the entire header including options).
     result.checksum_ok = (InternetChecksum(data, header_len, 0) == 0);
 
     return result;
