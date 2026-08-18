@@ -513,12 +513,31 @@ void StackShard::EventLoopIteration() noexcept {
     // immediately: a fixed wait here would throttle throughput to one batch
     // (kRxBudget packets) per timeout, since RX packets arrive on the packet
     // queues and do not wake the control-inbox wait.
-    // When idle, loop without parking: RX packets arrive on the packet queues
-    // and never wake the control-inbox wait, so parking would stall the next
-    // burst for the full timeout. Pure polling keeps the shard hot (CPU cost
-    // on an idle shard; the intended trade-off for low-latency RX).
+    // When idle, busy-poll a bounded number of iterations (RX packets arrive
+    // on the packet queues and never wake the control-inbox wait, so an
+    // unconditional park would stall the next burst for the full timeout),
+    // then park 1 ms once so a fully idle shard does not burn a core. The
+    // burst-gap case (producer paused for tens of microseconds) is caught by
+    // the polling window; the long-idle case parks and wakes cheaply.
     if (!stop_requested_.load(std::memory_order_relaxed) && iter_rx == 0) {
-        control_inbox_.Wait(0);
+        // Time-bounded busy-poll: RX packets never wake the control-inbox
+        // wait, so an unconditional park would stall a burst arriving just
+        // after drain. Poll up to ~300us (covers producer burst gaps), then
+        // park 1 ms so a fully idle shard does not burn a core.
+        bool rx_arrived = false;
+        const auto poll_deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(800);
+        while (std::chrono::steady_clock::now() < poll_deadline) {
+            for (const auto &q : rx_queues_) {
+                if (!q->Empty()) {
+                    rx_arrived = true;
+                    break;
+                }
+            }
+            if (rx_arrived)
+                break;
+        }
+        if (!rx_arrived)
+            control_inbox_.Wait(1);
     }
 }
 
