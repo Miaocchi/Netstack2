@@ -1,17 +1,29 @@
 #include <ip/checksum.h>
 
+#include <cstring>
+
 namespace tcpip2 {
 
 std::uint16_t InternetChecksum(const std::uint8_t *data, std::size_t len, std::uint32_t seed) noexcept {
     std::uint32_t acc = seed;
     std::size_t i = 0;
+    // 32-bit words: each big-endian 4-byte group contributes two 16-bit
+    // words. Half the loop iterations of the byte-pair version and one
+    // 4-byte load instead of two byte loads per step.
+    for (; i + 4 <= len; i += 4) {
+        std::uint32_t w;
+        std::memcpy(&w, data + i, sizeof(w)); // unaligned-safe
+        const std::uint32_t be = __builtin_bswap32(w);
+        acc += (be & 0xFFFFu) + (be >> 16);
+    }
     for (; i + 1 < len; i += 2) {
-        const std::uint16_t word = static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[i]) << 8) | data[i + 1]);
-        acc += word;
+        acc += static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[i]) << 8) | data[i + 1]);
     }
     if (i < len) {
         acc += static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[i]) << 8);
     }
+    // Fold any carries. acc stays bounded: each 4-byte step adds at most
+    // 2*0xFFFF, so for typical packet sizes it never overflows 32 bits.
     while ((acc >> 16) != 0) {
         acc = (acc & 0xFFFFu) + (acc >> 16);
     }
