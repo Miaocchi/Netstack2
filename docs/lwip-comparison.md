@@ -14,10 +14,10 @@
 |---|---:|---:|---:|---|
 | 缓冲池分配/释放 | 38.7M ops/s | 570M ops/s | 0.07x | 无锁池的单线程微基准常数开销（跨线程收益见 §6） |
 | 定时器 10k（插/删/推进） | 46.5K ops/s | 99.5K ops/s | 0.47x | 单一规模下 lwIP 的低常数开销占优；不能外推（见 §2） |
-| RX 64B IPv4+UDP（端到端，批同步） | 3.20–3.30M pkt/s（best 3.51–3.58M） | 12.5M pkt/s | 0.26x | 无背压稳态生产者/消费者吞吐；shard 为瓶颈 |
+| RX 64B IPv4+UDP（端到端，批同步） | 3.40–3.45M pkt/s（best 3.67–3.72M） | 12.5M pkt/s | 0.27x | 无背压稳态生产者/消费者吞吐；shard 为瓶颈 |
 | RX 64B IPv4+UDP（端到端，连续注入池受限） | 1.80M pkt/s | 12.5M pkt/s | 0.14x | 池容量（65536）小于注入总量时出现背压震荡 |
 
-这些数字对应约 80ns/包（lwIP）、303–312ns/包（Netstack2 批同步端到端）和 556ns/包（Netstack2 池受限端到端）。它们只描述该机器、该配置和该 harness 下的热路径，不代表真实 NIC 吞吐。
+这些数字对应约 80ns/包（lwIP）、290–294ns/包（Netstack2 批同步端到端）和 556ns/包（Netstack2 池受限端到端）。它们只描述该机器、该配置和该 harness 下的热路径，不代表真实 NIC 吞吐。
 
 > 早期报告中的 1.03M/1.35M RX 数字作废：bench 的 `BuildPacket()` 未清零 IPv4 校验和字段，`ParseIpv4` 拒绝了全部报文，那些数字测量的是丢弃路径（见 §5）。
 
@@ -218,7 +218,8 @@ commit `81a535c` 修复前，`StackShard::EventLoopIteration()` 每轮最多处�
 | 无锁 SPSC RX 队列 | `NullPacketIo::SetFastQueue()`：注入端 `Push` 与 shard `Pop` 走 `SpscRing`（acquire/release，无锁） | 消除队列 mutex 竞争 |
 | 无锁缓冲池 | `PktBufferPool` free list 改为 tagged 64-bit CAS LIFO（ABA 防护），owner 线程 alloc/return 无锁；`return_queue_` 仍用 mutex（低频跨线程释放） | 消除 shard 与注入端在 pool mutex 上的竞争（RX 端到端关键） |
 | 空闲轮纯轮询 | 空闲时 `Wait(0)` 立即循环（RX 包不唤醒 control inbox，park 会按超时限流吞吐） | 端到端 2.03M → 3.19–3.26M（+57%） |
-| Wait(0) 无 futex 快路径 | `InboxMpsc::Wait(0)` 特判为纯锁内队列检查，不再走 `cv_.wait_for(0)`（该调用每次仍付 ~10–13us futex 系统调用） | 空闲轮 12.8us → 0.8us；吞吐持平（3.20–3.30M），空闲 CPU 大幅下降 |
+| Wait(0) 无 futex 快路径 | `InboxMpsc::Wait(0)` 特判为纯锁内队列检查，不再走 `cv_.wait_for(0)`（该调用每次仍付 ~10–13us futex 系统调用） | 空闲轮 12.8us → 0.8us |
+| 时间有界空闲轮询 + 周期 park | 排空后先对 RX 队列忙轮询至多 800us（覆盖生产者突发间隙），再 park 1ms 一次 | e2e 3.40–3.45M avg / best 3.67–3.72M；sync 直调 3.63M（纯轮询下被空闲 shard 干扰掉到 ~1M）；空闲 shard CPU ~44%（纯轮询为 100%） |
 | TimerWheel 空轮快速返回 | `AdvanceTo` 在 `pending_==0` 时跳过 256 槽扫描 | 轮次固定开销下降（约 +4%） |
 | inbound lane 非空预检 | 每轮先检查 lanes 是否有数据，跳过 64 次空 pop | 轮次固定开销下降 |
 
@@ -231,5 +232,5 @@ commit `81a535c` 修复前，`StackShard::EventLoopIteration()` 每轮最多处�
 ## 7. 公平性结论（更新）
 
 - lwIP `NO_SYS` 是单线程、无锁、极简 C 路径；Netstack2 是线程安全、跨线程注入、完整解析 + 流表 + session 抽象的现代 C++ 栈；
-- 苹果对苹果比较是“同步核心处理”（约 228ns/包，4.4M pkt/s，sync 直调测量；该测量中调用线程非池 owner，lease 归还走加锁 return queue，实际 owner 侧处理约 144ns/包）对 lwIP 80ns/包（12.5M），约 2.9x；端到端（含跨线程）3.2M pkt/s 对 12.5M，约 3.9x；
+- 苹果对苹果比较是“同步核心处理”（约 3.63M pkt/s，sync 直调测量；该测量中调用线程非池 owner，lease 归还走加锁 return queue，实际 owner 侧处理约 144ns/包）对 lwIP 80ns/包（12.5M），约 3.4x；端到端（含跨线程）3.4M pkt/s 对 12.5M，约 3.7x；
 - 差距不是“IPv4/UDP 实现慢固定倍数”，而是架构取舍（线程安全、抽象层、检查型解析）的固定成本。要追平 lwIP 需要无检查 fast-path 解析器、零拷贝注入与极简 flow 路径，属架构级重构，不在本次范围。
