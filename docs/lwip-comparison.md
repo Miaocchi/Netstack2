@@ -222,6 +222,7 @@ commit `81a535c` 修复前，`StackShard::EventLoopIteration()` 每轮最多处�
 | 时间有界空闲轮询 + 周期 park | 排空后先对 RX 队列忙轮询至多 800us（覆盖生产者突发间隙），再 park 1ms 一次 | e2e 3.40–3.45M avg / best 3.67–3.72M；sync 直调 3.63M（纯轮询下被空闲 shard 干扰掉到 ~1M）；空闲 shard CPU ~44%（纯轮询为 100%） |
 | TimerWheel 空轮快速返回 | `AdvanceTo` 在 `pending_==0` 时跳过 256 槽扫描 | 轮次固定开销下降（约 +4%） |
 | checksum 32 位宽读 | `InternetChecksum` 每步读 4B 大端字（循环减半、一次宽 load），替代逐字节组字 | 单线程 checksum 路径常数下降；端到端 RX 被 ILP 隐藏（吞吐持平） |
+| ParseIpv4 直接偏移提取 | 去掉逐字段边界检查 cursor（~15 次分支 + 指针推进），改直接字节偏移读（编译器合并为宽 load）；版本/IHL/长度/checksum 校验全部保留 | owner 侧解析路径折叠；端到端持平（注入端 CAS 竞争为瓶颈） |
 | inbound lane 非空预检 | 每轮先检查 lanes 是否有数据，跳过 64 次空 pop | 轮次固定开销下降 |
 
 ### 结果分解（sync 直调与 e2e 的差距来源）
