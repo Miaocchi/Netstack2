@@ -13,7 +13,7 @@
 | 场景 | Netstack2 | lwIP | Netstack2/lwIP | 正确解读 |
 |---|---:|---:|---:|---|
 | 缓冲池分配/释放 | 38.7M ops/s | 570M ops/s | 0.07x | 无锁池的单线程微基准常数开销（跨线程收益见 §6） |
-| 定时器 8k | 46.5K ops/s | 99.5K ops/s | 0.47x | 小规模下 lwIP 的低常数开销占优 |
+| 定时器 10k（插/删/推进） | 46.5K ops/s | 99.5K ops/s | 0.47x | 单一规模下 lwIP 的低常数开销占优；不能外推（见 §2） |
 | RX 64B IPv4+UDP（端到端，批同步） | 3.19–3.26M pkt/s（best 3.45–3.65M） | 12.5M pkt/s | 0.26x | 无背压稳态生产者/消费者吞吐；shard 为瓶颈 |
 | RX 64B IPv4+UDP（端到端，连续注入池受限） | 1.80M pkt/s | 12.5M pkt/s | 0.14x | 池容量（65536）小于注入总量时出现背压震荡 |
 
@@ -37,26 +37,26 @@
 
 当 `MEMP_MEM_MALLOC=0` 时，lwIP `memp` 使用固定大小内存池。分配从单向 free-list 表头摘取节点，释放再把节点压回表头。若 benchmark 反复执行一次分配后立即释放，则通常持续复用同一个热节点，不会遍历 4096 个槽，也不会读取每槽 2048B payload。
 
-`memp_malloc()`/`memp_free()` 仍由 `SYS_ARCH_PROTECT` 包围。只有在 `SYS_LIGHTWEIGHT_PROT=0` 或 port 将保护宏实现为空操作时，才能称为没有同步开销。由于测试使用的 `lwipopts.h` 未入库，不能确认本次 578M ops/s 是否处于这一配置。
+`memp_malloc()`/`memp_free()` 仍由 `SYS_ARCH_PROTECT` 包围。只有在 `SYS_LIGHTWEIGHT_PROT=0` 或 port 将保护宏实现为空操作时，才能称为没有同步开销。由于测试使用的 `lwipopts.h` 未入库，不能确认本次 570M ops/s 是否处于这一配置。
 
 #### Netstack2
 
-`PktBufferPool::Allocate()` 和 owner-thread 释放路径都会获取同一个 `std::mutex`，并执行：
+当前版本（`da0bf70` 起）的 `PktBufferPool` 使用 tagged 64-bit CAS 无锁 free list：
 
-- free-slot 与 slot 状态检查；
-- `Leased`、`Free` 或 `Queued` 状态转换；
-- owner-thread 判断；
-- `outstanding_` 更新；
-- `std::vector` free list 或跨线程 return queue 操作。
+- `Allocate()` 从无锁 LIFO 摘槽（一次 compare-exchange，ABA 由 tag 位防护）；
+- owner 线程（shard）归还也走无锁 push；跨线程归还进 mutex 保护的 `return_queue_`，由 shard 每轮 drain；
+- 每个槽还执行 `Leased`/`Free`/`Queued` 状态检查与 `outstanding_` 原子计数。
 
-因此一个 alloc/free 对至少包含两次 mutex 获取/释放以及额外的所有权 bookkeeping。池性能差距由同步、状态管理、容器操作和测试访问模式共同造成，不能归因成“纯 mutex 代价”。
+因此一个 alloc/free 对至少包含两次 tagged CAS 与状态 bookkeeping。单线程微基准下无锁版本的常数略高于旧的 mutex 版本（79.6M ops/s），但消除了跨线程竞争，是 RX 端到端提升的关键（§6）。池性能差距由同步、状态管理、容器操作和测试访问模式共同造成，不能归因成“纯 mutex 代价”（旧版本）或“纯 CAS 代价”（当前版本）。
 
-仓库 `bench_p0` 将 allocate 和 release 分别计为一个 op。若外部对比沿用同一口径，则：
+仓库 `bench_p0` 将 allocate 和 release 分别计为一个 op。若外部对比沿用同一口径，则（本次复测，无锁池版本）：
 
-- 79.6M ops/s 约为 12.6ns/单项操作、25.1ns/alloc+free 对；
-- 578M ops/s 约为 1.73ns/单项操作、3.46ns/alloc+free 对。
+- 38.7M ops/s 约为 25.8ns/单项操作、51.7ns/alloc+free 对；
+- 570M ops/s 约为 1.75ns/单项操作、3.51ns/alloc+free 对。
 
-原报告中的“12.6ns/对”混淆了单项操作与操作对。
+原报告中的“12.6ns/对”混淆了单项操作与操作对：12.6ns 是单项操作（allocate 或 release 之一），不是 alloc/free 对。
+
+> 注意：无锁池的跨线程收益体现在 RX 端到端（§6），而单线程 alloc/free 微基准下它比旧的 mutex 版本（79.6M ops/s）反而慢，原因是每操作两次 tagged CAS + free-count 原子更新，常数略高于 mutex 快速路径。两类数字不能互换使用。
 
 ### 2. 定时器
 
@@ -69,7 +69,7 @@
 - `sys_untimeout(handler, arg)` 查找目标最坏也是 O(n)；
 - 若按不利顺序批量插入 n 个 timer，建表总成本可能接近 O(n²)。
 
-因此 8k 增长到 16k 时，链表扫描和 pointer chasing 可能快速增加。具体退化程度高度依赖 deadline 分布、插入顺序、取消顺序和缓存状态。
+规模增大时，链表扫描和 pointer chasing 会快速增加。具体退化程度高度依赖 deadline 分布、插入顺序、取消顺序和缓存状态。
 
 #### Netstack2
 
@@ -77,11 +77,11 @@
 
 - `Schedule()` 和 `Cancel()` 平均为 O(1)，最坏情况仍受 hash 冲突和 rehash 影响；
 - list 节点、unordered-map 节点和 hash 计算带来较高的固定成本，因此小规模时可能慢于 lwIP；
-- `AdvanceTo()` 当前会遍历全部 256 个槽及全部 pending entry，其复杂度是 Θ(slot count + pending)，并不是经典时间轮的 O(到期槽数)。
+- `AdvanceTo()` 在没有任何 pending timer 时 O(1) 直接返回（本仓库已优化）；只要存在 pending timer，就会遍历全部 256 个槽及全部 pending entry，复杂度是 Θ(slot count + pending)，并不是经典时间轮的 O(到期槽数)。
 
 本次 benchmark 使用空 callback 时，小 callable 通常会进入 `std::function` 的 small-buffer optimization；不能断言每个 timer 都由 `std::function` 额外触发一次堆分配。确定存在的分配主要来自 list 和 unordered-map 节点。
 
-所以 8k 到 16k 的结果说明：在该 harness 中，lwIP 的有序链表扫描最终超过了 Netstack2 较高的固定成本。约 11k 只是本次数据点之间的经验交叉，不能推广成产品场景的固定阈值，也不能据此声称 Netstack2 的整个定时器路径都是 O(1)。
+本次复测只有 10k 单一规模（46.5K vs 99.5K ops/s），在该规模下 lwIP 的有序链表常数更低。早期报告中 8k/12k/16k 多规模数据（曾出现经验交叉）未随本次复测重跑，已从总览表移除；单点数据既不能推广成产品场景的固定阈值，也不能据此声称 Netstack2 的整个定时器路径都是 O(1)。
 
 ### 3. RX 64B IPv4+UDP
 
@@ -92,6 +92,8 @@
 不过它不会像报告对应版本的 Netstack2 那样反复调用多个完整 IPv4 parser。单 flow、单 PCB、固定 packet 的微基准还会使代码、packet 和 PCB 保持热缓存，分支预测也处于理想状态。
 
 #### Netstack2 路径
+
+> 本节分析的是报告对应版本（修复前，`81a535c` 前后）的路径。修复前的“约 740ns/包”来自 1.35M pkt/s 的旧测量，而那组数字本身还叠加了 bench 校验和 bug（§5）：`BuildPacket()` 未清零 IPv4/UDP 校验和字段，`ParseIpv4` 拒绝了全部报文，测的是丢弃路径。修复并优化后的真实路径数字见 §6/§7（同步核心约 228ns/包，端到端约 307ns/包）。
 
 报告对应版本的端到端稳态路径至少包含：
 
@@ -124,7 +126,7 @@
 
 `ParseIpv4()` 每次都会重新校验 IPv4 header checksum，UDP parser 也可能重复执行 UDP checksum。原报告所称“3 次 IP 解析”低估了该版本的重复工作。
 
-对于 64B 小包，payload 极小，mutex、checksum、hash、分支、虚调用和队列管理等固定开销无法被摊薄。因此约 80ns/包与约 740ns/包的差距在方向上可以解释，但不能只归因于线程模型，也不能直接推广到大包、多 flow 或真实 Packet I/O backend。
+对于 64B 小包，payload 极小，mutex、checksum、hash、分支、虚调用和队列管理等固定开销无法被摊薄。因此约 80ns/包（lwIP）与数百 ns/包（Netstack2）的差距在方向上可以解释，但不能只归因于线程模型，也不能直接推广到大包、多 flow 或真实 Packet I/O backend。
 
 ## 对比过程中发现并修复的等待缺陷
 
@@ -175,7 +177,7 @@ commit `81a535c` 修复前，`StackShard::EventLoopIteration()` 每轮最多处�
 - Netstack2 的 IPv4/UDP 协议核心普遍比 lwIP 慢固定倍数；
 - 缓冲池差距全部来自 mutex；
 - Netstack2 定时器整体为 O(1)；
-- 约 11k 是普遍适用的定时器交叉点；
+- 任何单一规模下观察到的“经验交叉”是普遍适用的定时器交叉点；
 - 两侧运行参数相同就代表执行语义和比较层级相同。
 
 后续公平比较应至少拆成三个层级：
@@ -211,7 +213,7 @@ commit `81a535c` 修复前，`StackShard::EventLoopIteration()` 每轮最多处�
 
 | 优化 | 内容 | 效果 |
 |---|---|---|
-| 修复重复解析 | `ParseIpTcpPacket` 单次解析填充 `TcpInputResult`（ip_version/protocol/fragment/payload/src/dst），TCP/UDP/ICMP 共享，消除 5 次重复解析 | 解析不再是大头（净收益小） |
+| 修复重复解析 | `ParseIpTcpPacket` 单次解析填充 `TcpInputResult`（ip_version/protocol/fragment/payload/src/dst），TCP/UDP/ICMP 共享；修复前一个 IPv4+UDP 包最多触发 6 次 `ParseIpv4`（§3），优化后仅 1 次 | 解析不再是大头（净收益小） |
 | 单 shard 跳过分发 | `RouteRxPacket`/`HandleUdp` 在 `ShardCount()==1` 时跳过 `Dispatch`/`FlowShard`（省掉一次完整 IP+传输头重解析） | 消除分发开销 |
 | 无锁 SPSC RX 队列 | `NullPacketIo::SetFastQueue()`：注入端 `Push` 与 shard `Pop` 走 `SpscRing`（acquire/release，无锁） | 消除队列 mutex 竞争 |
 | 无锁缓冲池 | `PktBufferPool` free list 改为 tagged 64-bit CAS LIFO（ABA 防护），owner 线程 alloc/return 无锁；`return_queue_` 仍用 mutex（低频跨线程释放） | 消除 shard 与注入端在 pool mutex 上的竞争（RX 端到端关键） |
@@ -228,5 +230,5 @@ commit `81a535c` 修复前，`StackShard::EventLoopIteration()` 每轮最多处�
 ## 7. 公平性结论（更新）
 
 - lwIP `NO_SYS` 是单线程、无锁、极简 C 路径；Netstack2 是线程安全、跨线程注入、完整解析 + 流表 + session 抽象的现代 C++ 栈；
-- 苹果对苹果比较是“同步核心处理”（约 228ns/包，4.4M pkt/s）对 lwIP 80ns/包（12.5M），约 2.9x；端到端（含跨线程）3.2M pkt/s 对 12.5M，约 3.9x；
+- 苹果对苹果比较是“同步核心处理”（约 228ns/包，4.4M pkt/s，sync 直调测量；该测量中调用线程非池 owner，lease 归还走加锁 return queue，实际 owner 侧处理约 144ns/包）对 lwIP 80ns/包（12.5M），约 2.9x；端到端（含跨线程）3.2M pkt/s 对 12.5M，约 3.9x；
 - 差距不是“IPv4/UDP 实现慢固定倍数”，而是架构取舍（线程安全、抽象层、检查型解析）的固定成本。要追平 lwIP 需要无检查 fast-path 解析器、零拷贝注入与极简 flow 路径，属架构级重构，不在本次范围。
