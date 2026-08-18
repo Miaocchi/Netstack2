@@ -52,6 +52,13 @@ class InboxMpsc {
     void Wake() noexcept { cv_.notify_all(); }
 
     bool Wait(std::uint64_t timeout_ms) noexcept {
+        if (timeout_ms == 0) {
+            // Zero-timeout poll used by the shard's idle loop: never touch the
+            // condition variable (a wait_for(0) still pays a futex syscall,
+            // ~10us, which would throttle a polling shard to ~100k loops/s).
+            std::lock_guard<std::mutex> lock(mutex_);
+            return !queue_.empty();
+        }
         std::unique_lock<std::mutex> lock(mutex_);
         if (!queue_.empty())
             return true;
