@@ -42,12 +42,12 @@ PktBufferPool::PktBufferPool(std::size_t slot_count, std::size_t slot_capacity)
     const std::uint64_t slot_cap_u = slot_capacity;
     if (slot_count_u != 0 && slot_cap_u > UINT64_MAX / slot_count_u) {
         free_head_.store(slot_count, std::memory_order_relaxed); // empty free list
-        return; // arithmetic overflow — degrade to 0 usable slots
+        return;                                                  // arithmetic overflow — degrade to 0 usable slots
     }
     const std::uint64_t total_bytes_u = slot_count_u * slot_cap_u;
     if (total_bytes_u > static_cast<std::uint64_t>(SIZE_MAX)) {
         free_head_.store(slot_count, std::memory_order_relaxed); // empty free list
-        return; // exceeds address space — degrade to 0 usable slots
+        return;                                                  // exceeds address space — degrade to 0 usable slots
     }
     arena_.reset(new (std::nothrow) std::uint8_t[total_bytes_u]);
     if (arena_ == nullptr) {
@@ -266,16 +266,10 @@ std::size_t PktBufferPool::SlotCount() const noexcept {
     return slot_count_;
 }
 
-std::size_t PktBufferPool::FreeCount() const noexcept {
-    return free_count_.load(std::memory_order_relaxed);
-}
+std::size_t PktBufferPool::FreeCount() const noexcept { return free_count_.load(std::memory_order_relaxed); }
 
-std::size_t PktBufferPool::OutstandingCount() const noexcept {
-    return outstanding_.load(std::memory_order_relaxed);
-}
+std::size_t PktBufferPool::OutstandingCount() const noexcept { return outstanding_.load(std::memory_order_relaxed); }
 
-std::size_t PktBufferPool::RetainedCount() const noexcept {
-    return retained_.load(std::memory_order_relaxed);
-}
+std::size_t PktBufferPool::RetainedCount() const noexcept { return retained_.load(std::memory_order_relaxed); }
 
 } // namespace tcpip2

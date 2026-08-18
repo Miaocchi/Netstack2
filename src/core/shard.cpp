@@ -455,7 +455,6 @@ void StackShard::EventLoopIteration() noexcept {
     if (stop_requested_.load(std::memory_order_relaxed))
         return;
 
-
     // Step 5: advance timers, then drain bounded retry/control output.
     timer_.AdvanceTo(now_ms);
     reassembler_.Purge(now_ms);
@@ -791,16 +790,14 @@ void StackShard::HandleUdp(BufferLease &&lease, std::uint64_t now_ms, const TcpI
     }
     // IPv4: validate checksum only if the UDP checksum field is non-zero
     // (byte offset 6-7 of the UDP header); IPv6: always validate.
-    const bool validate_checksum = input.ip_version == 6 ||
-        (input.ip_payload[6] != 0 || input.ip_payload[7] != 0);
-    const UdpParseResult udp = ParseUdpDatagram(input.ip_src, input.ip_dst, input.ip_payload,
-                                                input.ip_payload_length, validate_checksum);
+    const bool validate_checksum = input.ip_version == 6 || (input.ip_payload[6] != 0 || input.ip_payload[7] != 0);
+    const UdpParseResult udp =
+        ParseUdpDatagram(input.ip_src, input.ip_dst, input.ip_payload, input.ip_payload_length, validate_checksum);
     if (udp.error != UdpParseError::None) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    if (dispatcher_ != nullptr && dispatcher_->ShardCount() != 1 &&
-        dispatcher_->FlowShard(udp.flow) != shard_id_) {
+    if (dispatcher_ != nullptr && dispatcher_->ShardCount() != 1 && dispatcher_->FlowShard(udp.flow) != shard_id_) {
         packets_dropped_.fetch_add(1, std::memory_order_relaxed);
         return;
     }

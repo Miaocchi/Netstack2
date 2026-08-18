@@ -33,11 +33,11 @@ struct TcpInputResult {
     // for TCP segments). Non-TCP fast paths consume these instead of
     // re-parsing the IP header, which used to happen up to four times per
     // UDP packet (protocol lookup, fragment check, UDP parse, HandleUdp).
-    std::uint8_t ip_version = 0;          // 4 or 6
-    std::uint8_t ip_protocol = 0;         // upper-layer protocol number
-    bool ip_fragment = false;             // fragment_offset != 0 || MF
+    std::uint8_t ip_version = 0;              // 4 or 6
+    std::uint8_t ip_protocol = 0;             // upper-layer protocol number
+    bool ip_fragment = false;                 // fragment_offset != 0 || MF
     const std::uint8_t *ip_payload = nullptr; // transport payload
-    std::size_t ip_payload_length = 0;    // transport payload length
+    std::size_t ip_payload_length = 0;        // transport payload length
     IpAddress ip_src;
     IpAddress ip_dst;
 };
