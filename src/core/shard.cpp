@@ -333,6 +333,7 @@ void StackShard::Run() noexcept {
 
 void StackShard::EventLoopIteration() noexcept {
     const std::uint64_t now_ms = clock_->NowMs();
+    std::size_t iter_rx = 0;
 
     // Step 1: DrainReturnQueue — recycle foreign-thread releases.
     pool_.DrainReturnQueue();
@@ -353,6 +354,7 @@ void StackShard::EventLoopIteration() noexcept {
         BufferLease rx[kRxBudget];
         IoError error = IoError::None;
         const std::size_t n = rx_queue->RecvBatch(rx, per_queue_budget, error);
+        iter_rx += n;
         for (std::size_t i = 0; i < n; ++i) {
             packets_received_.fetch_add(1, std::memory_order_relaxed);
             RouteRxPacket(std::move(rx[i]), now_ms);
@@ -373,6 +375,7 @@ void StackShard::EventLoopIteration() noexcept {
             PacketEnvelope envelope;
             if (!lane->Pop(envelope))
                 continue;
+            ++iter_rx;
             packets_received_.fetch_add(1, std::memory_order_relaxed);
             ProcessEnvelope(std::move(envelope), now_ms);
         }
@@ -383,6 +386,7 @@ void StackShard::EventLoopIteration() noexcept {
         BufferLease lease;
         if (!packet_inbox_.Pop(lease))
             break;
+        ++iter_rx;
         packets_received_.fetch_add(1, std::memory_order_relaxed);
         ProcessPacket(std::move(lease), now_ms);
     }
@@ -498,10 +502,12 @@ void StackShard::EventLoopIteration() noexcept {
         }
     }
 
-    // Step 10: Wait — block on the control inbox with a short timeout.
-    // This keeps the shard responsive to control messages while avoiding
-    // a busy spin when there is no RX work.
-    if (!stop_requested_.load(std::memory_order_relaxed)) {
+    // Step 10: Wait — block on the control inbox with a short timeout when
+    // the shard is idle. When RX work was drained this iteration, loop
+    // immediately: a fixed wait here would throttle throughput to one batch
+    // (kRxBudget packets) per timeout, since RX packets arrive on the packet
+    // queues and do not wake the control-inbox wait.
+    if (!stop_requested_.load(std::memory_order_relaxed) && iter_rx == 0) {
         control_inbox_.Wait(1);
     }
 }

@@ -584,8 +584,9 @@ ScenarioResult BenchShardDispatch() {
         BufferLease lease = pool->Allocate();
         if (!lease) {
             // Pool momentarily exhausted: the shard thread is draining the
-            // backlog; wait briefly and retry.
-            std::this_thread::sleep_for(std::chrono::microseconds(200));
+            // backlog; yield and retry. A fixed sleep here would throttle the
+            // measured throughput even when the shard frees a slot quickly.
+            std::this_thread::yield();
             continue;
         }
         std::memcpy(lease.Data(), packet.data(), packet.size());
