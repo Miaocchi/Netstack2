@@ -221,6 +221,7 @@ commit `81a535c` 修复前，`StackShard::EventLoopIteration()` 每轮最多处�
 | Wait(0) 无 futex 快路径 | `InboxMpsc::Wait(0)` 特判为纯锁内队列检查，不再走 `cv_.wait_for(0)`（该调用每次仍付 ~10–13us futex 系统调用） | 空闲轮 12.8us → 0.8us |
 | 时间有界空闲轮询 + 周期 park | 排空后先对 RX 队列忙轮询至多 800us（覆盖生产者突发间隙），再 park 1ms 一次 | e2e 3.40–3.45M avg / best 3.67–3.72M；sync 直调 3.63M（纯轮询下被空闲 shard 干扰掉到 ~1M）；空闲 shard CPU ~44%（纯轮询为 100%） |
 | TimerWheel 空轮快速返回 | `AdvanceTo` 在 `pending_==0` 时跳过 256 槽扫描 | 轮次固定开销下降（约 +4%） |
+| checksum 32 位宽读 | `InternetChecksum` 每步读 4B 大端字（循环减半、一次宽 load），替代逐字节组字 | 单线程 checksum 路径常数下降；端到端 RX 被 ILP 隐藏（吞吐持平） |
 | inbound lane 非空预检 | 每轮先检查 lanes 是否有数据，跳过 64 次空 pop | 轮次固定开销下降 |
 
 ### 结果分解（sync 直调与 e2e 的差距来源）
